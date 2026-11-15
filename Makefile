@@ -10,8 +10,13 @@ ARGS ?=
 # Test name filter for `make test-one`, e.g. `make test-one T=exclude`.
 T ?=
 
-# Tool versions come from CI, where Renovate keeps them up to date.
-ci_version = $(shell sed -n 's/^  $(1): //p' .github/workflows/ci.yml)
+# Keep the prettier version in sync with the fmt job in CI and the prettier hook in `prek.toml`.
+prettier := npx prettier@3.9.0
+
+# Tool versions come from CI, where Renovate keeps them up to date. A key that is missing or that
+# matches more than once stops make instead of passing a bad version to `cargo install`.
+ci_version = $(call ci_version_once,$(1),$(shell sed -n 's/^  $(1): \([0-9][0-9A-Za-z.+-]*\)$$/\1/p' .github/workflows/ci.yml))
+ci_version_once = $(if $(filter 1,$(words $(2))),$(2),$(error $(1) not found exactly once in .github/workflows/ci.yml))
 
 help: ## List the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-11s %s\n", $$1, $$2}'
@@ -26,6 +31,7 @@ test: ## Run all tests
 	cargo nextest run --workspace
 
 test-one: ## Run the tests whose name matches T
+	$(if $(T),,$(error Set T, e.g. make test-one T=exclude))
 	cargo nextest run --workspace -E 'test($(T))'
 
 test-ncdu: ## Run all tests, including those comparing with ncdu 2.9.2 on PATH
@@ -37,13 +43,13 @@ snapshots: ## Run all tests and accept snapshot changes (needs cargo-insta)
 fmt: ## Format Rust, TOML, Markdown, YAML, and JSON files
 	cargo fmt --all
 	taplo fmt
-	npx prettier@3.9.0 --write .
+	$(prettier) --write .
 
 fmt-check: ## Check formatting (fixes TOML, Markdown, YAML, and JSON files in place)
 	cargo fmt --all --check
 	@# Fix the files, then fail so the change gets noticed.
 	taplo fmt --check || { taplo fmt && false; }
-	npx prettier@3.9.0 --check . || { npx prettier@3.9.0 --write . && false; }
+	$(prettier) --check . || { $(prettier) --write . && false; }
 
 clippy: ## Lint with clippy, warnings are errors
 	cargo clippy --workspace --all-targets --all-features --locked -- -D warnings

@@ -29,6 +29,7 @@ entry = "cargo fmt --all --check"
 pass_filenames = false
 types = ["rust"]
 
+# Keep the prettier version in sync with the fmt job in CI.
 [[repos.hooks]]
 id = "prettier"
 name = "prettier"
