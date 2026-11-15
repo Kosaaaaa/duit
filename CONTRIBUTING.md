@@ -1,14 +1,14 @@
-# Contributing
+# Contributing to duit 👋
 
 duit is at the scaffolding stage. Read [PLAN.md](PLAN.md) before starting work: it defines the
 scope, the crate layout, and the order of the milestones.
 
-## Setup
+## 🛠️ Setup
 
 [Rust](https://rustup.rs/) and a C compiler are required to build duit. The toolchain version is
 pinned in `rust-toolchain.toml`, and rustup installs it on first use.
 
-## Testing
+## 🧪 Testing
 
 For running tests, we recommend [nextest](https://nexte.st/).
 
@@ -44,7 +44,7 @@ Tests that run the real ncdu are behind the `test-ncdu` feature. They need ncdu 
 cargo nextest run --features test-ncdu
 ```
 
-## Formatting
+## 🎨 Formatting
 
 ```shell
 cargo fmt --all
@@ -54,7 +54,7 @@ npx prettier@3.9.0 --write .
 
 TOML files are formatted with [taplo](https://taplo.tamasfe.dev/).
 
-## Linting
+## 🔍 Linting
 
 ```shell
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
@@ -78,7 +78,7 @@ cargo shear
 cargo deny --all-features check
 ```
 
-## Git hooks
+## 🪝 Git hooks
 
 Hooks are optional. [prek](https://prek.j178.dev/) runs the formatting and spelling checks before a
 commit and clippy before a push. prek installs `typos` and `taplo` itself. The other hooks call the
@@ -95,7 +95,7 @@ prek run --all-files
 prek run --all-files --hook-stage pre-push
 ```
 
-## Pull requests
+## 🔀 Pull requests
 
 `master` only accepts changes through pull requests, and every pull request is squash-merged. The
 title becomes the commit subject and the description becomes the commit body, so write both for
@@ -111,7 +111,7 @@ The `all required jobs passed` check must succeed before a pull request can be m
 
 Branch names are free-form. Prefer short kebab-case names, such as `exclude-option`.
 
-## Crate structure
+## 📦 Crate structure
 
 Rust does not allow circular dependencies between crates. The workspace is a flat list under
 `crates/`:
@@ -124,6 +124,6 @@ Rust does not allow circular dependencies between crates. The workspace is a fla
 
 PLAN.md maps each crate to the upstream ncdu source files that it ports.
 
-## Releases
+## 🚀 Releases
 
 There is no release process yet. It is part of milestone M6.
