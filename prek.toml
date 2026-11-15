@@ -1,22 +1,25 @@
 # Convenience hooks that run the same checks as `.github/workflows/ci.yml`, which stays the gate.
-# Keep the tool versions in sync with CI. The `local` hooks call tools that are already installed,
-# and prek installs the tools for the remote hooks itself.
+# The hooks call tools that are already installed: `make tools` installs the versions that CI pins.
 default_install_hook_types = ["pre-commit", "pre-push"]
 default_stages = ["pre-commit"]
 
 [[repos]]
-repo = "https://github.com/crate-ci/typos"
-rev = "v1.49.0"
-hooks = [{ id = "typos" }]
-
-# The hook's PyPI package has no 0.10 release, so it runs taplo 0.9.3 while CI runs 0.10.0.
-[[repos]]
-repo = "https://github.com/ComPWA/taplo-pre-commit"
-rev = "v0.9.3"
-hooks = [{ id = "taplo-format" }]
-
-[[repos]]
 repo = "local"
+
+[[repos.hooks]]
+id = "typos"
+name = "typos"
+language = "system"
+entry = "typos"
+pass_filenames = false
+
+[[repos.hooks]]
+id = "taplo"
+name = "taplo fmt"
+language = "system"
+entry = "taplo fmt --check"
+pass_filenames = false
+types = ["toml"]
 
 [[repos.hooks]]
 id = "rustfmt"
@@ -26,6 +29,7 @@ entry = "cargo fmt --all --check"
 pass_filenames = false
 types = ["rust"]
 
+# Keep the prettier version in sync with the fmt job in CI.
 [[repos.hooks]]
 id = "prettier"
 name = "prettier"

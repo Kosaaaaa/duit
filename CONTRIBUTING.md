@@ -8,6 +8,10 @@ of the milestones.
 [Rust](https://rustup.rs/) and a C compiler are required to build duit. The toolchain version is
 pinned in `rust-toolchain.toml`, and rustup installs it on first use.
 
+Run `make help` to list the shortcuts for the commands in this guide. `make check` runs the CI
+checks except zizmor, fixing TOML, Markdown, YAML, and JSON formatting in place, then the tests the
+way CI does.
+
 ## 🧪 Testing
 
 For running tests, we recommend [nextest](https://nexte.st/).
@@ -69,22 +73,23 @@ typos
 ### Unused Rust dependencies
 
 ```shell
-cargo shear
+cargo shear --deny-warnings
 ```
 
 ### Licenses and sources of dependencies
 
 ```shell
-cargo deny --all-features check
+cargo deny --all-features check licenses sources bans
 ```
 
 ## 🪝 Git hooks
 
 Hooks are optional. [prek](https://prek.j178.dev/) runs the formatting and spelling checks before a
-commit and clippy before a push. prek installs `typos` and `taplo` itself. The other hooks call the
-tools above, so install those first:
+commit and clippy before a push. The hooks call the tools above, so install those first.
+`make tools` installs the versions that CI uses:
 
 ```shell
+make tools
 prek install
 ```
 
