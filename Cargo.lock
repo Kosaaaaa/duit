@@ -42,6 +42,7 @@ name = "duit"
 version = "0.0.1"
 dependencies = [
  "duit-format",
+ "duit-model",
  "duit-scan",
  "insta",
  "libc",

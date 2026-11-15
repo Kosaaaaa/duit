@@ -217,7 +217,9 @@ first day.
    (`/etc/ncdu.conf`, and the user file under `ncdu/`) instead. The fallback is all or nothing: one
    duit file, even an empty one, turns off both ncdu files.
 2. **`progname` in exports.** Decided for JSON: write `duit`. ncdu 2.9.2 imports such an export, as
-   the `test-ncdu` round trip in `duit-format` checks. To verify in M2 for the binary export.
+   the `test-ncdu` round trip in `duit-format` checks. The binary export has no metadata block, so
+   it holds no `progname`: ncdu 2.9.2 reads duit's binary export, as the `test-ncdu` tests of `-O`
+   in `duit` check.
 3. **Invocation as `ncdu`.** Should a symlink named `ncdu` change any behavior? Proposal: no.
 4. **Defaults.** Drop-in compatibility means ncdu's defaults, including one scan thread. Better
    defaults would need an explicit opt-in and wait until after M4.

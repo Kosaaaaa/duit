@@ -10,7 +10,10 @@ use tempfile::TempDir;
 
 #[cfg(feature = "test-ncdu")]
 use crate::{assert_ncdu, ncdu};
-use crate::{duit, redact, render, text};
+use crate::{duit, redact, render, table, text};
+
+/// The first bytes of a binary export.
+const BINARY_SIGNATURE: &[u8] = b"\xbfncduEX1";
 
 /// The start of a valid `CACHEDIR.TAG`.
 const CACHEDIR_TAG: &[u8] = b"Signature: 8a477f597d28d172789f06886806bc55";
@@ -284,10 +287,25 @@ fn write_error() {
     let output = run(executable, &["-o-", "plain"]);
     #[cfg(feature = "test-ncdu")]
     assert_eq!(run(OsStr::new("ncdu"), &["-o-", "plain"]), output);
-    // The compressed export fails with the same error.
-    assert_eq!(run(executable, &["-c", "-o-", "plain"]), output);
-    #[cfg(feature = "test-ncdu")]
-    assert_eq!(run(OsStr::new("ncdu"), &["-c", "-o-", "plain"]), output);
+    // The compressed and the binary export fail with the same error. The binary export writes its
+    // signature before the import is read, so the write fails first.
+    for arguments in [
+        &["-c", "-o-", "plain"][..],
+        &["-O-", "plain"],
+        &["-f", "missing", "-O-"],
+    ] {
+        assert_eq!(
+            run(executable, arguments),
+            output,
+            "arguments: {arguments:?}"
+        );
+        #[cfg(feature = "test-ncdu")]
+        assert_eq!(
+            run(OsStr::new("ncdu"), arguments),
+            output,
+            "arguments: {arguments:?}"
+        );
+    }
     assert_snapshot!(output, @r#"
         exit_code: 1
         ----- stdout -----
@@ -295,4 +313,135 @@ fn write_error() {
         ----- stderr -----
         ^[[JError writing to file: BrokenPipe.
     "#);
+}
+
+/// `-O` writes a binary export, which ncdu reads as it reads its own export of the same scan. `-e`,
+/// `--compress-level`, and `--export-block-size` change the export.
+#[test]
+fn binary() {
+    let directory = fixture();
+    let root = directory.path();
+    fs::create_dir(root.join("many")).expect("directory is created");
+    for index in 0..300 {
+        fs::write(
+            root.join(format!("many/file-with-a-long-name-{index}")),
+            b"x",
+        )
+        .expect("file is written");
+    }
+    let cases: &[&[&str]] = &[
+        &["plain"],
+        &["-e", "plain"],
+        &["--compress-level", "20", "plain"],
+        &["--export-block-size", "4", "many"],
+    ];
+    let mut rendered = String::new();
+    for case in cases {
+        let arguments = [&["-O", "duit.ncdu"], *case].concat();
+        let output = duit(root, &arguments);
+        let _ = writeln!(
+            rendered,
+            "$ duit {}\n{}\n",
+            arguments.join(" "),
+            render(&output).trim_end()
+        );
+        let export = fs::read(root.join("duit.ncdu")).expect("export is written");
+        assert!(export.starts_with(BINARY_SIGNATURE));
+        #[cfg(feature = "test-ncdu")]
+        {
+            let arguments = [&["-O", "ncdu.ncdu"], *case].concat();
+            assert_eq!(render(&ncdu(root, &arguments)), render(&output));
+            assert_eq!(
+                render(&ncdu(root, &["-f", "duit.ncdu", "-o-", "-e"])),
+                render(&ncdu(root, &["-f", "ncdu.ncdu", "-o-", "-e"])),
+                "arguments: {arguments:?}"
+            );
+        }
+    }
+    assert_snapshot!(rendered, @"
+    $ duit -O duit.ncdu plain
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    ^[[J
+
+    $ duit -O duit.ncdu -e plain
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    ^[[J
+
+    $ duit -O duit.ncdu --compress-level 20 plain
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    ^[[J
+
+    $ duit -O duit.ncdu --export-block-size 4 many
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    ^[[J
+    ");
+}
+
+/// `-O-` writes the binary export that `-O FILE` writes to standard output.
+#[test]
+fn binary_stdout() {
+    let directory = fixture();
+    let file = duit(directory.path(), &["-O", "export.ncdu", "plain"]);
+    assert!(file.status.success());
+    let stdout = duit(directory.path(), &["-O-", "plain"]);
+    assert!(stdout.status.success());
+    assert_eq!(stdout.stderr, b"\x1b[J");
+    assert_eq!(
+        stdout.stdout,
+        fs::read(directory.path().join("export.ncdu")).expect("export is written")
+    );
+}
+
+/// A scan that fails at the root still ends the binary export, with an index block that holds no
+/// block and a root reference of 0.
+#[test]
+fn binary_errors() {
+    let directory = fixture();
+    let cases: &[&[&str]] = &[
+        &["-O", "export.ncdu", "missing"],
+        &["-O", "missing/export.ncdu", "plain"],
+    ];
+    #[cfg(feature = "test-ncdu")]
+    for arguments in cases {
+        assert_ncdu(directory.path(), arguments);
+    }
+    assert_snapshot!(table(directory.path(), cases), @"
+    $ duit -O export.ncdu missing
+    exit_code: 1
+    ----- stdout -----
+
+    ----- stderr -----
+    ^[[JError opening directory: No such file or directory.
+
+    $ duit -O missing/export.ncdu plain
+    exit_code: 1
+    ----- stdout -----
+
+    ----- stderr -----
+    ^[[JError opening export file: No such file or directory.
+    ");
+    let export = fs::read(directory.path().join("export.ncdu")).expect("export is written");
+    let index = [&b"\x10\0\0\x10"[..], &[0; 8], b"\x10\0\0\x10"].concat();
+    assert_eq!(export, [BINARY_SIGNATURE, &index].concat());
+    #[cfg(feature = "test-ncdu")]
+    {
+        let output = ncdu(directory.path(), &["-O", "ncdu.ncdu", "missing"]);
+        assert!(!output.status.success());
+        assert_eq!(
+            fs::read(directory.path().join("ncdu.ncdu")).expect("export is written"),
+            export
+        );
+    }
 }

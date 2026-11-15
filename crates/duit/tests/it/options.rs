@@ -600,7 +600,6 @@ fn unsupported() {
     let directory = TempDir::new().expect("temporary directory is created");
     assert_snapshot!(table(directory.path(), &[
         &["-f", "export.json"],
-        &["-O", "export.ncdu", "."],
         &["-t", "2", "-o-", "."],
         &["--quit-after-scan", "."],
     ]), @"
@@ -609,14 +608,7 @@ fn unsupported() {
     ----- stdout -----
 
     ----- stderr -----
-    ^[[JOnly an export with -o is supported yet.
-
-    $ duit -O export.ncdu .
-    exit_code: 1
-    ----- stdout -----
-
-    ----- stderr -----
-    ^[[JThe -O flag is not supported yet.
+    ^[[JOnly an export with -o or -O is supported yet.
 
     $ duit -t 2 -o- .
     exit_code: 1
@@ -630,7 +622,7 @@ fn unsupported() {
     ----- stdout -----
 
     ----- stderr -----
-    ^[[JOnly an export with -o is supported yet.
+    ^[[JOnly an export with -o or -O is supported yet.
     ");
     assert_eq!(
         fs::read_dir(directory.path())

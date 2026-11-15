@@ -47,7 +47,7 @@ fn export(
 /// metadata block, which differs between the two programs.
 #[cfg(feature = "test-ncdu")]
 fn assert_ncdu_reexport(output: &[u8], extended: bool) {
-    let result = ncdu_import(output, if extended { &["-e"] } else { &[] });
+    let result = ncdu_import(output, if extended { &["-o-", "-e"] } else { &["-o-"] });
     assert!(
         result.status.success(),
         "ncdu failed: {}",
@@ -340,7 +340,7 @@ fn extended_enabled() {
 }
 
 /// A writer whose every write fails.
-struct BrokenPipe;
+pub(crate) struct BrokenPipe;
 
 impl Write for BrokenPipe {
     fn write(&mut self, _: &[u8]) -> io::Result<usize> {
@@ -367,7 +367,7 @@ fn write_error() {
 
 /// A writer that accepts every write and fails to flush, as a buffered writer does when the
 /// buffered bytes cannot be written.
-struct FailingFlush;
+pub(crate) struct FailingFlush;
 
 impl Write for FailingFlush {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
