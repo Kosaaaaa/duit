@@ -1,0 +1,151 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  CARGO_TERM_COLOR: always
+  RUSTUP_MAX_RETRIES: 10
+  # renovate: datasource=crate depName=cargo-deny
+  CARGO_DENY_VERSION: 0.20.2
+  # renovate: datasource=crate depName=cargo-nextest
+  CARGO_NEXTEST_VERSION: 0.9.143
+  # renovate: datasource=crate depName=cargo-shear
+  CARGO_SHEAR_VERSION: 1.13.4
+  # renovate: datasource=crate depName=typos-cli
+  TYPOS_VERSION: 1.49.0
+
+jobs:
+  fmt:
+    name: "check | fmt"
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: "Install Rustfmt"
+        run: rustup component add rustfmt
+      - run: cargo fmt --all --check
+      - run: npx prettier@3.9.0 --check .
+
+  clippy:
+    name: "check | clippy"
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: "Install Rust toolchain"
+        run: rustup component add clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: "Clippy"
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+  cargo-deny:
+    name: "check | cargo deny"
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: "Install Rust toolchain"
+        run: rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: "Install cargo-deny"
+        run: cargo install --locked "cargo-deny@${CARGO_DENY_VERSION}"
+      - name: "Check licenses"
+        run: cargo deny --all-features check licenses
+      - name: "Check sources"
+        run: cargo deny --all-features check sources
+      - name: "Check bans"
+        run: cargo deny --all-features check bans
+
+  shear:
+    name: "check | cargo shear"
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: "Install Rust toolchain"
+        run: rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: "Install cargo-shear"
+        run: cargo install --locked "cargo-shear@${CARGO_SHEAR_VERSION}"
+      - run: cargo shear --deny-warnings
+
+  typos:
+    name: "check | typos"
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: "Install Rust toolchain"
+        run: rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: "Install typos"
+        run: cargo install --locked "typos-cli@${TYPOS_VERSION}"
+      - run: typos
+
+  zizmor:
+    name: "check | zizmor"
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          advanced-security: false
+
+  test:
+    name: "cargo test on ${{ matrix.os }}"
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: "Install Rust toolchain"
+        run: rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: "Install cargo-nextest"
+        run: cargo install --locked "cargo-nextest@${CARGO_NEXTEST_VERSION}"
+      - name: "Cargo test"
+        env:
+          RUST_BACKTRACE: 1
+        # `--no-tests=warn` keeps the empty scaffold green. Remove it with the first test.
+        run: cargo nextest run --workspace --locked --profile ci --cargo-profile fast-build --no-tests=warn
