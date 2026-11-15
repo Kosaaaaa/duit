@@ -86,7 +86,9 @@ fn walk<S: Sink>(
         let entry = match frame.entries.read() {
             Some(Ok(entry)) => Some(entry),
             Some(Err(_)) => {
-                // Like ncdu, a directory that fails to read ends at the error.
+                // Like ncdu, a directory that fails to read ends at the error. Unlike ncdu, the
+                // error marks that directory: ncdu marks the directory taken from the scan queue,
+                // which with one thread is always the root.
                 sink.set_read_error(&mut frame.sink)?;
                 None
             }
@@ -280,7 +282,7 @@ fn is_cache_directory(directory: BorrowedFd<'_>) -> bool {
     let Ok(tag) = openat(
         directory,
         c"CACHEDIR.TAG",
-        OFlags::RDONLY | OFlags::CLOEXEC,
+        OFlags::RDONLY | OFlags::NOCTTY | OFlags::CLOEXEC,
         Mode::empty(),
     ) else {
         return false;

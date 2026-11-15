@@ -74,8 +74,11 @@ Refer to `man ncdu` for more information.
 
 fn main() -> ExitCode {
     set_locale();
+    // ncdu looks for `--ignore-config` in every argument, the program name included, before it
+    // parses them.
+    let read_config = env::args_os().all(|argument| argument != "--ignore-config");
     let arguments: Vec<Vec<u8>> = env::args_os().skip(1).map(OsStringExt::into_vec).collect();
-    match run(&arguments) {
+    match run(&arguments, read_config) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             let _ = io::stderr().write_all(&[CLEAR_TO_END, &message].concat());
@@ -100,10 +103,14 @@ fn print(output: &[u8]) {
     let _ = io::stdout().write_all(output);
 }
 
-/// Parse `arguments`, which follow the program name, and run the mode they select. An error is the
-/// message to print before exiting with status 1.
-fn run(arguments: &[Vec<u8>]) -> Result<(), Vec<u8>> {
+/// Apply the config files if `read_config`, then parse `arguments`, which follow the program
+/// name, and run the mode they select. An error is the message to print before exiting with
+/// status 1.
+fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<(), Vec<u8>> {
     let mut config = Config::default();
+    if read_config {
+        config.read_config_files()?;
+    }
     let mut scan_directory = None;
     let mut import_file = None;
     let mut export_json = None;
@@ -141,7 +148,8 @@ fn run(arguments: &[Vec<u8>]) -> Result<(), Vec<u8>> {
             Arg::Long(b"ignore-config") => {}
             // An undocumented option of ncdu, to benchmark a scan or an import.
             Arg::Long(b"quit-after-scan") => quit_after_scan = true,
-            option @ (Arg::Short(_) | Arg::Long(_)) => match config.apply(&mut args, option) {
+            option @ (Arg::Short(_) | Arg::Long(_)) => match config.apply(&mut args, option, false)
+            {
                 Ok(()) => {}
                 Err(OptionError::Unknown) => {
                     return Err(

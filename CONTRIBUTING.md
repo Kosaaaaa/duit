@@ -1,7 +1,7 @@
 # Contributing to duit 👋
 
-duit is at the scaffolding stage. Read [PLAN.md](PLAN.md) before starting work: it defines the
-scope, the crate layout, and the order of the milestones.
+Read [PLAN.md](PLAN.md) before starting work: it defines the scope, the crate layout, and the order
+of the milestones.
 
 ## 🛠️ Setup
 

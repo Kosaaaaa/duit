@@ -1,11 +1,14 @@
+use std::borrow::Cow;
+use std::env;
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
 use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use duit_scan::ExcludePatterns;
 
+use crate::util::{LineReader, expand_user, until_nul};
 use crate::{Arg, Args, open_error};
 
 /// The style of the bars in the graph column, `--graph-style`.
@@ -150,8 +153,14 @@ impl Default for Config {
 
 impl Config {
     /// Apply `option`, and read its value from `args` if it takes one. Of each pair of options
-    /// that turn a setting on and off, the last one wins.
-    pub fn apply(&mut self, args: &mut Args<'_>, option: Arg<'_>) -> Result<(), OptionError> {
+    /// that turn a setting on and off, the last one wins. In a config file, `in_file`, a leading
+    /// `~` in a path or a pattern is expanded to a home directory.
+    pub fn apply(
+        &mut self,
+        args: &mut Args<'_>,
+        option: Arg<'_>,
+        in_file: bool,
+    ) -> Result<(), OptionError> {
         match option {
             Arg::Short(b'q') | Arg::Long(b"slow-ui-updates") => {
                 self.update_delay = Duration::from_secs(2);
@@ -230,13 +239,26 @@ impl Config {
             Arg::Long(b"no-si") => self.si = false,
             Arg::Short(b'L') | Arg::Long(b"follow-symlinks") => self.follow_symlinks = true,
             Arg::Long(b"no-follow-symlinks") => self.follow_symlinks = false,
-            Arg::Long(b"exclude") => self.exclude.add(args.value()?),
+            Arg::Long(b"exclude") => {
+                let value = args.value()?;
+                let pattern = if in_file {
+                    expand_user(value)
+                } else {
+                    Cow::Borrowed(value)
+                };
+                self.exclude.add(&pattern);
+            }
             Arg::Short(b'X') | Arg::Long(b"exclude-from") => {
-                let path = args.value()?;
-                read_exclude_file(path, &mut self.exclude).map_err(|description| {
+                let value = args.value()?;
+                let path = if in_file {
+                    expand_user(value)
+                } else {
+                    Cow::Borrowed(value)
+                };
+                read_exclude_file(&path, &mut self.exclude).map_err(|description| {
                     [
                         b"Error reading excludes from ",
-                        path,
+                        &path[..],
                         b": ",
                         description.as_bytes(),
                         b".\n",
@@ -289,6 +311,147 @@ impl Config {
         }
         Ok(())
     }
+
+    /// Apply the options in the config files: `/etc/duit.conf`, then the user file. If neither
+    /// exists, apply the config files of ncdu instead, so that a config written for ncdu keeps
+    /// working. Fails with the message to print.
+    pub fn read_config_files(&mut self) -> Result<(), Vec<u8>> {
+        for (system, program) in [("/etc/duit.conf", "duit"), ("/etc/ncdu.conf", "ncdu")] {
+            let mut found = self.read_config_file(Path::new(system))?;
+            if let Some(path) = user_config_file(program) {
+                found |= self.read_config_file(&path)?;
+            }
+            if found {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Apply the options in the config file at `path`, and return whether the file exists.
+    fn read_config_file(&mut self, path: &Path) -> Result<bool, Vec<u8>> {
+        let name = path.as_os_str().as_bytes();
+        let file = match File::open(path) {
+            Ok(file) => file,
+            Err(error) => {
+                return match error.raw_os_error() {
+                    Some(libc::ENOENT | libc::ENOTDIR) => Ok(false),
+                    Some(_) | None => Err([
+                        b"Error opening ",
+                        name,
+                        b": ",
+                        open_error(&error).as_bytes(),
+                        b"\n",
+                        IGNORE_CONFIG_HINT,
+                    ]
+                    .concat()),
+                };
+            }
+        };
+        let mut lines = LineReader::new(file);
+        while let Some(line) = lines.next_line().map_err(|description| {
+            [
+                b"Error reading from ",
+                name,
+                b": ",
+                description.as_bytes(),
+                b"\n",
+                IGNORE_CONFIG_HINT,
+            ]
+            .concat()
+        })? {
+            self.apply_config_line(name, line)?;
+        }
+        Ok(true)
+    }
+
+    /// Apply a line of the config file `path`: an option and its value. A line that starts with
+    /// `@` stops at its first error without failing. Empty lines and lines that start with `#` are
+    /// skipped.
+    fn apply_config_line(&mut self, path: &[u8], line: &[u8]) -> Result<(), Vec<u8>> {
+        let line = trim_end(trim_start(line));
+        let (ignore_errors, line) = match line.strip_prefix(b"@") {
+            Some(line) => (true, line),
+            None => (false, line),
+        };
+        if line.is_empty() || line.starts_with(b"#") {
+            return Ok(());
+        }
+        // The option ends at the first space, tab, or `=`, and the rest of the line is its value.
+        let arguments = match line
+            .iter()
+            .position(|byte| matches!(byte, b' ' | b'\t' | b'='))
+        {
+            Some(end) => vec![line[..end].to_vec(), trim_start(&line[end + 1..]).to_vec()],
+            None => vec![line.to_vec()],
+        };
+        let mut args = Args::new(&arguments);
+        loop {
+            let option = match args.next_argument() {
+                Ok(Some(option)) => option,
+                Ok(None) => return Ok(()),
+                Err(_) if ignore_errors => return Ok(()),
+                Err(message) => return Err(message),
+            };
+            match self.apply(&mut args, option, true) {
+                Ok(()) => {}
+                Err(_) if ignore_errors => return Ok(()),
+                Err(OptionError::Unknown) => {
+                    return Err([
+                        b"Unrecognized option in config file '",
+                        path,
+                        b"': ",
+                        &option.to_bytes(),
+                        b".\n",
+                        IGNORE_CONFIG_HINT,
+                    ]
+                    .concat());
+                }
+                Err(OptionError::Invalid(message)) => return Err(message),
+            }
+        }
+    }
+}
+
+/// The end of the messages about a config file that ncdu prints itself.
+const IGNORE_CONFIG_HINT: &[u8] = b"Run with --ignore-config to skip reading config files.\n";
+
+/// The user config file of `program`: `$XDG_CONFIG_HOME/<program>/config`, or
+/// `$HOME/.config/<program>/config` if `XDG_CONFIG_HOME` is not set. An empty variable counts as
+/// set, and makes the path relative.
+fn user_config_file(program: &str) -> Option<PathBuf> {
+    if let Some(base) = env::var_os("XDG_CONFIG_HOME") {
+        return Some(Path::new(&base).join(program).join("config"));
+    }
+    let home = env::var_os("HOME")?;
+    Some(
+        Path::new(&home)
+            .join(".config")
+            .join(program)
+            .join("config"),
+    )
+}
+
+/// Whether `byte` is whitespace as Zig's `std.ascii.whitespace` defines it, which, unlike
+/// [`u8::is_ascii_whitespace`], includes the vertical tab.
+fn is_whitespace(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
+}
+
+fn trim_start(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|&byte| !is_whitespace(byte))
+        .unwrap_or(bytes.len());
+    &bytes[start..]
+}
+
+fn trim_end(bytes: &[u8]) -> &[u8] {
+    let end = bytes
+        .iter()
+        .rposition(|&byte| !is_whitespace(byte))
+        .map_or(0, |last| last + 1);
+    &bytes[..end]
 }
 
 fn unknown_value(option: &[u8], value: &[u8]) -> OptionError {
@@ -325,29 +488,15 @@ fn parse_number(value: &[u8], max: u64) -> Option<u64> {
     (!negative || number == 0).then_some(number)
 }
 
-/// The size of the buffer that ncdu reads a line of an exclude file into, newline included.
-const LINE_BUFFER: usize = 4096;
-
 /// Add the patterns in the file at `path`, one per line, to `exclude`. Empty lines are skipped.
-/// Fails with ncdu's description of the error, also for a line that does not fit into the line
-/// buffer of ncdu.
+/// Fails with ncdu's description of the error.
 fn read_exclude_file(path: &[u8], exclude: &mut ExcludePatterns) -> Result<(), &'static str> {
-    let file = File::open(OsStr::from_bytes(path)).map_err(|error| open_error(&error))?;
-    let mut reader = BufReader::new(file);
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        // Zig's reader reports any read error as `ReadFailed`.
-        (&mut reader)
-            .take(LINE_BUFFER as u64)
-            .read_until(b'\n', &mut line)
-            .map_err(|_| "ReadFailed")?;
-        if line.is_empty() {
-            return Ok(());
-        }
-        if line.pop_if(|byte| *byte == b'\n').is_none() && line.len() == LINE_BUFFER {
-            return Err("StreamTooLong");
-        }
-        exclude.add(&line);
+    // ncdu opens the path as a C string, which ends at the first NUL byte.
+    let file =
+        File::open(OsStr::from_bytes(until_nul(path))).map_err(|error| open_error(&error))?;
+    let mut lines = LineReader::new(file);
+    while let Some(line) = lines.next_line()? {
+        exclude.add(line);
     }
+    Ok(())
 }

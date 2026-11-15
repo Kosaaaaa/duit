@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.98.0-orange.svg?logo=rust)](Cargo.toml)
 [![ncdu](https://img.shields.io/badge/ncdu-2.9.2-informational.svg)](https://dev.yorhel.nl/ncdu)
-[![Status: scaffolding](https://img.shields.io/badge/status-scaffolding-yellow.svg)](PLAN.md)
+[![Status: M1 done](https://img.shields.io/badge/status-M1%20done-yellow.svg)](PLAN.md)
 
 A disk usage analyzer with a terminal interface, written in Rust. duit aims to be a drop-in
 replacement for [ncdu](https://dev.yorhel.nl/ncdu) 2: the same flags, the same keys, and the same
@@ -12,8 +12,8 @@ JSON and binary export formats.
 
 ## 🚧 Status
 
-Scaffolding only. There is no code and no release yet. See [PLAN.md](PLAN.md) for the architecture
-and the milestones.
+M1 is done: `duit -o- DIR` scans a directory and writes ncdu's JSON export. There is no UI and no
+release yet. See [PLAN.md](PLAN.md) for the architecture and the milestones.
 
 ## 🤝 Contributing
 
