@@ -1,0 +1,10 @@
+[profile.default]
+# Mark tests that take longer than 10s as slow.
+# Terminate after 120s as a stop-gap measure to terminate on deadlock.
+slow-timeout = { period = "10s", terminate-after = 12 }
+
+[profile.ci]
+status-level = "skip"
+final-status-level = "slow"
+failure-output = "immediate-final"
+fail-fast = false

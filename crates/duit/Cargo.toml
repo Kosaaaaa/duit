@@ -1,0 +1,17 @@
+[package]
+name = "duit"
+version = { workspace = true }
+description = "A disk usage analyzer with a terminal interface, compatible with ncdu"
+edition = { workspace = true }
+rust-version = { workspace = true }
+repository = { workspace = true }
+authors = { workspace = true }
+license = { workspace = true }
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
