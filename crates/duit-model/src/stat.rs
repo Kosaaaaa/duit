@@ -8,8 +8,8 @@ pub enum EntryType {
     /// Anything that is neither a directory nor a regular file: a device, socket, or FIFO. A
     /// symlink that is not followed is one too.
     NonRegular,
-    /// An entry that is not a directory and has a link count above one. Its size is shared with the other links to the same
-    /// inode.
+    /// An entry that is not a directory and has a link count above one. Its size is shared with
+    /// the other links to the same inode.
     HardLink,
 }
 

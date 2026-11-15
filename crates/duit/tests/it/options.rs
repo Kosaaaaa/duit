@@ -175,6 +175,8 @@ const ERRORS: &[&[&str]] = &[
     &["-o", ""],
     &["-o", "."],
     &["-o-", "missing"],
+    &["-o-", ""],
+    &["-o-", "--", "--arg"],
     &["-o-", "file"],
     &["-o-", "file/x"],
     &["."],
@@ -519,6 +521,22 @@ fn errors() {
         ^[[JError opening export file: Is a directory.
 
         $ duit -o- missing
+        exit_code: 1
+        ----- stdout -----
+        [1,2,{[METADATA]}]
+
+        ----- stderr -----
+        ^[[JError opening directory: No such file or directory.
+
+        $ duit -o- ''
+        exit_code: 1
+        ----- stdout -----
+        [1,2,{[METADATA]}]
+
+        ----- stderr -----
+        ^[[JError opening directory: No such file or directory.
+
+        $ duit -o- -- --arg
         exit_code: 1
         ----- stdout -----
         [1,2,{[METADATA]}]

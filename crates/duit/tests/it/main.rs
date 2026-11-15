@@ -3,9 +3,7 @@
 use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::path::Path;
-use std::process::Output;
-
-use assert_cmd::Command;
+use std::process::{Command, Output};
 
 mod config;
 mod export;
@@ -13,8 +11,7 @@ mod options;
 
 /// Run duit with `arguments` in `directory`. Standard input is not a terminal.
 fn duit(directory: &Path, arguments: &[&str]) -> Output {
-    Command::cargo_bin("duit")
-        .expect("duit is built")
+    Command::new(env!("CARGO_BIN_EXE_duit"))
         .current_dir(directory)
         .arg("--ignore-config")
         .args(arguments)
@@ -25,13 +22,22 @@ fn duit(directory: &Path, arguments: &[&str]) -> Output {
 /// Run `program` with `arguments` in `directory`, with `HOME` and `XDG_CONFIG_HOME` set as in
 /// `environment` and unset otherwise, so that it reads the user config file that `environment`
 /// selects. Standard input is not a terminal.
+///
+/// The system config files are read from fixed paths that a test cannot redirect, so a test fails
+/// up front if one of them exists rather than producing a different snapshot.
 fn with_config(
     program: &OsStr,
     directory: &Path,
     environment: &[(&str, &str)],
     arguments: &[&str],
 ) -> Output {
-    std::process::Command::new(program)
+    for system in ["/etc/duit.conf", "/etc/ncdu.conf"] {
+        assert!(
+            !Path::new(system).exists(),
+            "{system} exists and changes the options of every run, move it aside to run the config tests"
+        );
+    }
+    Command::new(program)
         .current_dir(directory)
         .env_remove("HOME")
         .env_remove("XDG_CONFIG_HOME")
@@ -44,7 +50,7 @@ fn with_config(
 /// Run ncdu with `arguments` in `directory`, like [`duit`].
 #[cfg(feature = "test-ncdu")]
 fn ncdu(directory: &Path, arguments: &[&str]) -> Output {
-    std::process::Command::new("ncdu")
+    Command::new("ncdu")
         .current_dir(directory)
         .arg("--ignore-config")
         .args(arguments)

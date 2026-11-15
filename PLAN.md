@@ -84,6 +84,11 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
   a time, with per-line error suppression, paired on and off flags where the last one wins, and a
   counted `-r`. `lexopt` differs at the edges: it reads a lone `-` as a positional argument, and it
   decodes option names as UTF-8. The port works on bytes and matches ncdu's messages exactly.
+- **Program name: the first argument is skipped whole, unlike ncdu.** At `main.zig:510`, ncdu 2.9.2
+  drops the program name with `args.next()`. If the name starts with `-`, that call returns only its
+  first short option, and the rest of the name is parsed as more short options. Started as `-ncdu`,
+  the way a login shell names its program, ncdu sets `-c` and then stops with
+  `Unrecognized option '-d'.` while duit skips the first argument with `skip(1)` and runs the scan.
 - **System calls: `rustix`.** Safe `openat`, `statat`, `fstatfs`, and directory iteration. The scan
   needs no `unsafe`.
 - **Exclude patterns: `libc::fnmatch` behind one wrapper.** ncdu calls libc `fnmatch`. Any
@@ -99,12 +104,17 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
   async. The default stays one thread, as in ncdu.
 - **Errors: plain enums, and no error crate.** Every message is ncdu's, as bytes that need not be
   UTF-8, so an error carries what the caller needs to build that message, as `ScanError` does.
+- **Read errors: the directory whose `readdir` failed is marked, unlike ncdu.** At `scan.zig:283`,
+  ncdu 2.9.2 calls `setReadError` on the directory taken from the scan queue, which with one thread
+  is always the root, not on the directory that failed. The JSON exports of both ignore which
+  directory it is, so `-o` output is the same. The binary export and the in-memory tree record the
+  flag per directory, so there duit flags the directory that failed, and ncdu flags the root.
 - **Panics: the terminal is restored from the panic hook.** The release profile uses
   `panic = "abort"`, so `Drop` guards do not run.
 - **`unsafe`: `#[expect(unsafe_code)]` plus a `SAFETY` comment.** The workspace lint warns on
   `unsafe`, and CI denies warnings.
 
-None of these dependencies is in a manifest yet. Each one is added with the first code that uses it.
+Each of these dependencies is added to the manifest with the first code that uses it.
 
 ## Testing
 
@@ -118,7 +128,7 @@ ncdu is the oracle.
   committed and imported by duit. These are plain files and run everywhere.
 - **Round trips.** duit writes an export, ncdu reads it, and the reverse.
 - **Unit tests.** The 13 upstream `test` blocks are ported with their modules.
-- **CLI tests.** `assert_cmd` with `insta` snapshots in `crates/duit/tests/it/`.
+- **CLI tests.** `std::process::Command` with `insta` snapshots in `crates/duit/tests/it/`.
 - **UI tests.** `ratatui`'s `TestBackend` with `insta` snapshots.
 - **Hostile input.** The importers read untrusted files. A table of malformed inputs must produce an
   error and never a panic. A fuzz target follows in M6.
@@ -135,8 +145,11 @@ Workspace, lints, CI, and documentation. No code. Done.
 
 ### M1: Scan to JSON
 
-- The option parser for every flag, and config files. Flags without an implementation yet are parsed
-  and rejected with a clear message.
+- The option parser for every flag, and config files. Modes without an implementation yet (`-f`,
+  `-O`, `-c`, `-t` above 1, and any run without `-o`) are rejected with a clear message. Flags that
+  only change the scan progress, the browser, or the actions of M3 and M4 are parsed and have no
+  effect until then, so the ncdu config files that duit falls back to keep working. Until M4, duit
+  shows no scan progress, as with `-0`.
 - The entry types, the sink, and a single-threaded scan with `-x`, `-L`, `-e`, exclude patterns,
   kernfs, and cache directories. `-o` writes the scan straight to the export, so the in-memory tree
   waits for M3.

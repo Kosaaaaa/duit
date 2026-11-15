@@ -166,8 +166,7 @@ jobs:
       - name: "Cargo test"
         env:
           RUST_BACKTRACE: 1
-        # `--no-tests=warn` keeps the empty scaffold green. Remove it with the first test.
-        run: cargo nextest run --workspace --locked --profile ci --cargo-profile fast-build --no-tests=warn
+        run: cargo nextest run --workspace --locked --profile ci --cargo-profile fast-build
 
   # The ruleset on `master` requires only this job, so a new job is enforced once it is listed in
   # `needs`. A skipped or cancelled job fails it, same as a failed one.
