@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
   workflow_dispatch:
 
@@ -53,7 +53,7 @@ jobs:
         run: rustup component add clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: "Clippy"
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
@@ -69,7 +69,7 @@ jobs:
         run: rustup toolchain install --profile minimal
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: "Install cargo-deny"
         run: cargo install --locked "cargo-deny@${CARGO_DENY_VERSION}"
       - name: "Check licenses"
@@ -91,7 +91,7 @@ jobs:
         run: rustup toolchain install --profile minimal
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: "Install cargo-shear"
         run: cargo install --locked "cargo-shear@${CARGO_SHEAR_VERSION}"
       - run: cargo shear --deny-warnings
@@ -108,7 +108,7 @@ jobs:
         run: rustup toolchain install --profile minimal
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: "Install typos"
         run: cargo install --locked "typos-cli@${TYPOS_VERSION}"
       - run: typos
@@ -141,7 +141,7 @@ jobs:
         run: rustup toolchain install --profile minimal
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: "Install cargo-nextest"
         run: cargo install --locked "cargo-nextest@${CARGO_NEXTEST_VERSION}"
       - name: "Cargo test"

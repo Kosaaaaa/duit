@@ -27,7 +27,7 @@
   an entry in `.cargo/deny.toml`
 - NEVER update all dependencies in the lockfile and ALWAYS use `cargo update --precise` to make
   lockfile changes
-- NEVER assume clippy warnings or test failures are pre-existing, it is very rare that `main` has
+- NEVER assume clippy warnings or test failures are pre-existing, it is very rare that `master` has
   warnings
 - PREFER top-level imports over local imports or fully qualified names
 - AVOID shortening variable names, e.g., use `directory` instead of `dir`, and `block_count` instead
