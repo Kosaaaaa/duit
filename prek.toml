@@ -5,9 +5,44 @@ default_stages = ["pre-commit"]
 
 [[repos]]
 repo = "local"
-hooks = [
-  { id = "rustfmt", name = "cargo fmt", language = "system", entry = "cargo fmt --all --check", pass_filenames = false, types = ["rust"] },
-  { id = "typos", name = "typos", language = "system", entry = "typos", pass_filenames = false, always_run = true },
-  { id = "prettier", name = "prettier", language = "system", entry = "npx prettier@3.9.0 --check .", pass_filenames = false, files = "\\.(md|ya?ml|json5?)$" },
-  { id = "clippy", name = "cargo clippy", language = "system", entry = "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings", pass_filenames = false, always_run = true, stages = ["pre-push"] },
-]
+
+[[repos.hooks]]
+id = "rustfmt"
+name = "cargo fmt"
+language = "system"
+entry = "cargo fmt --all --check"
+pass_filenames = false
+types = ["rust"]
+
+[[repos.hooks]]
+id = "taplo"
+name = "taplo fmt"
+language = "system"
+entry = "taplo fmt --check"
+pass_filenames = false
+types = ["toml"]
+
+[[repos.hooks]]
+id = "prettier"
+name = "prettier"
+language = "system"
+entry = "npx prettier@3.9.0 --check ."
+pass_filenames = false
+files = "\\.(md|ya?ml|json5?)$"
+
+[[repos.hooks]]
+id = "typos"
+name = "typos"
+language = "system"
+entry = "typos"
+pass_filenames = false
+always_run = true
+
+[[repos.hooks]]
+id = "clippy"
+name = "cargo clippy"
+language = "system"
+entry = "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
+pass_filenames = false
+always_run = true
+stages = ["pre-push"]
