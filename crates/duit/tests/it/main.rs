@@ -6,9 +6,13 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 mod config;
+mod convert;
 mod export;
 mod import;
 mod options;
+
+/// The first bytes of a binary export.
+const BINARY_SIGNATURE: &[u8] = b"\xbfncduEX1";
 
 /// Run duit with `arguments` in `directory`. Standard input is not a terminal.
 fn duit(directory: &Path, arguments: &[&str]) -> Output {

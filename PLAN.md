@@ -163,7 +163,10 @@ ncdu is the oracle.
   expected values cannot be committed: both programs run on the same machine. These tests sit behind
   a `test-ncdu` cargo feature and need ncdu 2.9.2 on `PATH`.
 - **Golden files.** Exports written by the real ncdu 2.9.2 (JSON, compressed JSON, binary) are
-  committed and imported by duit. These are plain files and run everywhere.
+  committed and imported by duit. These are plain files and run everywhere. ncdu writes them from a
+  hand-written export rather than a scan, so that no field depends on the machine. With the same
+  ncdu build, only the timestamp of the JSON exports changes when
+  `crates/duit/tests/fixtures/generate.sh` writes them again.
 - **Round trips.** duit writes an export, ncdu reads it, and the reverse.
 - **Unit tests.** The 13 upstream `test` blocks are ported with their modules.
 - **CLI tests.** `std::process::Command` with `insta` snapshots in `crates/duit/tests/it/`.
