@@ -11,7 +11,17 @@ fn write_export(
     extended: bool,
     build: impl FnOnce(&mut JsonExport<Vec<u8>>) -> io::Result<()>,
 ) -> Vec<u8> {
-    let mut export = JsonExport::new(Vec::new(), 0, extended).expect("header is written");
+    let mut export = JsonExport::new(Vec::new(), 0, extended, None).expect("header is written");
+    build(&mut export).expect("items are written");
+    export.finish().expect("export is flushed")
+}
+
+/// Like [`write_export`], compressed with zstd at `level`.
+fn write_compressed(
+    level: u8,
+    build: impl FnOnce(&mut JsonExport<Vec<u8>>) -> io::Result<()>,
+) -> Vec<u8> {
+    let mut export = JsonExport::new(Vec::new(), 0, false, Some(level)).expect("header is written");
     build(&mut export).expect("items are written");
     export.finish().expect("export is flushed")
 }
@@ -263,6 +273,37 @@ fn disk_usage_saturates() {
     "#);
 }
 
+/// A root with enough files of different names and sizes to fill several 64 KiB buffers.
+fn many_files(export: &mut JsonExport<Vec<u8>>) -> io::Result<()> {
+    let mut root = export.create_root(b"/root", &directory(1))?;
+    for index in 0..5000 {
+        let name = format!("file{index}");
+        export.add_stat(&mut root, name.as_bytes(), &file(index * 7919, index))?;
+    }
+    export.finish_directory(root, None)
+}
+
+/// A compressed export is one zstd frame that decompresses to the export without compression.
+#[test]
+fn compressed() {
+    let compressed = write_compressed(4, many_files);
+    let output = zstd::decode_all(compressed.as_slice()).expect("export is a zstd frame");
+    assert_eq!(output, write_export(false, many_files));
+}
+
+/// A higher compression level writes a smaller export.
+#[test]
+fn compress_level() {
+    let fastest = write_compressed(1, many_files);
+    let smallest = write_compressed(19, many_files);
+    assert!(
+        smallest.len() < fastest.len(),
+        "level 19 wrote {} bytes, level 1 wrote {}",
+        smallest.len(),
+        fastest.len()
+    );
+}
+
 fn extended_file() -> Stat {
     Stat {
         extended: Extended {
@@ -329,7 +370,7 @@ impl Write for BrokenPipe {
 
 #[test]
 fn write_error() {
-    let mut export = JsonExport::new(BrokenPipe, 0, false).expect("header is buffered");
+    let mut export = JsonExport::new(BrokenPipe, 0, false, None).expect("header is buffered");
     let root = export
         .create_root(b"/root", &directory(1))
         .expect("root is buffered");
@@ -338,4 +379,34 @@ fn write_error() {
         .expect("root is buffered");
     let error = export.finish().err().expect("the final flush fails");
     assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+}
+
+/// A writer that accepts every write and fails to flush, as a buffered writer does when the
+/// buffered bytes cannot be written.
+struct FailingFlush;
+
+impl Write for FailingFlush {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Err(io::ErrorKind::BrokenPipe.into())
+    }
+}
+
+#[test]
+fn flush_error() {
+    for compress_level in [None, Some(4)] {
+        let mut export =
+            JsonExport::new(FailingFlush, 0, false, compress_level).expect("header is buffered");
+        let root = export
+            .create_root(b"/root", &directory(1))
+            .expect("root is buffered");
+        export
+            .finish_directory(root, None)
+            .expect("root is buffered");
+        let error = export.finish().err().expect("the final flush fails");
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+    }
 }

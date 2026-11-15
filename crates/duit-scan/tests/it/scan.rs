@@ -441,7 +441,7 @@ fn assert_ncdu(fixture: &Fixture, flags: &[&str], options: ScanOptions, patterns
         exclude.add(pattern);
     }
     let mut export =
-        JsonExport::new(Vec::new(), 0, flags.contains(&"-e")).expect("header is written");
+        JsonExport::new(Vec::new(), 0, flags.contains(&"-e"), None).expect("header is written");
     scan(&mut export, &fixture.c_path(), options, &exclude).expect("scan succeeds");
     let output = export.finish().expect("export is flushed");
 
