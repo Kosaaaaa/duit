@@ -184,7 +184,8 @@ first day.
 
 1. **Config file location.** Proposal: read `/etc/duit.conf` and `$XDG_CONFIG_HOME/duit/config`. If
    neither exists, read ncdu's files (`/etc/ncdu.conf`, `$XDG_CONFIG_HOME/ncdu/config`).
-2. **`progname` in exports.** Proposal: write `duit`. To verify in M2: ncdu must not reject it.
+2. **`progname` in exports.** Decided for JSON: write `duit`. ncdu 2.9.2 imports such an export, as
+   the `test-ncdu` round trip in `duit-format` checks. To verify in M2 for the binary export.
 3. **Invocation as `ncdu`.** Should a symlink named `ncdu` change any behavior? Proposal: no.
 4. **Defaults.** Drop-in compatibility means ncdu's defaults, including one scan thread. Better
    defaults would need an explicit opt-in and wait until after M4.
