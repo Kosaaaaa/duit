@@ -1,0 +1,35 @@
+[bans]
+wildcards = "deny"
+
+# NOTE: Rust as a whole simply has too many split resolutions
+# for us to enforce a single version per crate. Maybe
+# in the distant future.
+multiple-versions = "allow"
+
+[bans.build]
+# Every dependency that runs a build script must be listed here. Review the script
+# before adding a crate, and remove the entry when the crate leaves the lockfile.
+allow-build-scripts = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+
+[licenses]
+confidence-threshold = 0.95
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+exceptions = []

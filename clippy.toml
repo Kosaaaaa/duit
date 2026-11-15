@@ -1,0 +1,6 @@
+doc-valid-idents = [
+  "CBOR",
+  "POSIX",
+  "SemVer",
+  "..", # Include the defaults
+]
