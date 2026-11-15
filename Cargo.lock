@@ -45,7 +45,12 @@ version = "0.0.1"
 name = "duit-scan"
 version = "0.0.1"
 dependencies = [
+ "duit-format",
+ "duit-model",
+ "insta",
  "libc",
+ "rustix",
+ "tempfile",
 ]
 
 [[package]]
