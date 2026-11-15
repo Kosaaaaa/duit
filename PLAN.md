@@ -134,8 +134,9 @@ Workspace, lints, CI, and documentation. No code. Done.
 
 - The option parser for every flag, and config files. Flags without an implementation yet are parsed
   and rejected with a clear message.
-- The model, the sink, and a single-threaded scan with `-x`, `-L`, `-e`, exclude patterns, kernfs,
-  and cache directories.
+- The entry types, the sink, and a single-threaded scan with `-x`, `-L`, `-e`, exclude patterns,
+  kernfs, and cache directories. `-o` writes the scan straight to the export, so the in-memory tree
+  waits for M3.
 - JSON export (`-o`).
 
 Done when `duit -o- DIR` equals `ncdu -o- DIR` on the fixture trees, on Linux and macOS.
@@ -152,8 +153,10 @@ panic.
 
 ### M3: Browser
 
-A read-only UI over the in-memory tree and over a binary export: navigation, sorting, columns, info,
-help, quit, colors, and every display flag.
+- The in-memory tree (`mem_sink.zig`, `mem_src.zig`, and the tree in `model.zig`), with hard link
+  accounting and size aggregation. The browser is its first consumer.
+- A read-only UI over the in-memory tree and over a binary export: navigation, sorting, columns,
+  info, help, quit, colors, and every display flag.
 
 Done when the snapshot tests pass and a manual side-by-side checklist against ncdu is complete.
 
@@ -182,9 +185,10 @@ first day.
 
 ## Open questions
 
-1. **Config file location.** Proposal: read `/etc/duit.conf` and `$XDG_CONFIG_HOME/duit/config`. If
+1. **Config file location.** Decided: read `/etc/duit.conf` and `$XDG_CONFIG_HOME/duit/config`. If
    neither exists, read ncdu's files (`/etc/ncdu.conf`, `$XDG_CONFIG_HOME/ncdu/config`).
-2. **`progname` in exports.** Proposal: write `duit`. To verify in M2: ncdu must not reject it.
+2. **`progname` in exports.** Decided for JSON: write `duit`. ncdu 2.9.2 imports such an export, as
+   the `test-ncdu` round trip in `duit-format` checks. To verify in M2 for the binary export.
 3. **Invocation as `ncdu`.** Should a symlink named `ncdu` change any behavior? Proposal: no.
 4. **Defaults.** Drop-in compatibility means ncdu's defaults, including one scan thread. Better
    defaults would need an explicit opt-in and wait until after M4.

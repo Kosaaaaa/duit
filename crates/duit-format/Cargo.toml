@@ -14,4 +14,12 @@ doctest = false
 [lints]
 workspace = true
 
+[features]
+# Run tests that compare with the real ncdu 2.9.2, which must be on `PATH`.
+test-ncdu = []
+
 [dependencies]
+duit-model = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }

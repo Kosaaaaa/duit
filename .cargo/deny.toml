@@ -9,7 +9,7 @@ multiple-versions = "allow"
 [bans.build]
 # Every dependency that runs a build script must be listed here. Review the script
 # before adding a crate, and remove the entry when the crate leaves the lockfile.
-allow-build-scripts = []
+allow-build-scripts = ["getrandom", "libc", "rustix"]
 
 [sources]
 unknown-registry = "deny"
