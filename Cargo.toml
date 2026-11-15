@@ -21,6 +21,7 @@ license = "MIT"
 duit-model = { version = "0.0.1", path = "crates/duit-model" }
 
 insta = { version = "1.46.0" }
+libc = { version = "0.2.191" }
 
 [workspace.lints.rust]
 unsafe_code = "warn"
