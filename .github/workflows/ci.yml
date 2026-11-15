@@ -24,6 +24,8 @@ env:
   CARGO_NEXTEST_VERSION: 0.9.143
   # renovate: datasource=crate depName=cargo-shear
   CARGO_SHEAR_VERSION: 1.13.4
+  # renovate: datasource=crate depName=taplo-cli
+  TAPLO_VERSION: 0.10.0
   # renovate: datasource=crate depName=typos-cli
   TYPOS_VERSION: 1.49.0
 
@@ -95,6 +97,23 @@ jobs:
       - name: "Install cargo-shear"
         run: cargo install --locked "cargo-shear@${CARGO_SHEAR_VERSION}"
       - run: cargo shear --deny-warnings
+
+  taplo:
+    name: "check | taplo"
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: "Install Rust toolchain"
+        run: rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: "Install taplo"
+        run: cargo install --locked "taplo-cli@${TAPLO_VERSION}"
+      - run: taplo fmt --check
 
   typos:
     name: "check | typos"
