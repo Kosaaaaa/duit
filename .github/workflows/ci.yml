@@ -179,6 +179,7 @@ jobs:
       - clippy
       - cargo-deny
       - shear
+      - taplo
       - typos
       - zizmor
       - test
