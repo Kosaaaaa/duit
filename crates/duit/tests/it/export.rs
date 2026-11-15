@@ -3,7 +3,6 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io;
 use std::os::unix::fs::symlink;
-use std::path::Path;
 use std::process::{Command, Stdio};
 
 use insta::assert_snapshot;
@@ -11,7 +10,7 @@ use tempfile::TempDir;
 
 #[cfg(feature = "test-ncdu")]
 use crate::assert_ncdu;
-use crate::{duit, render, text};
+use crate::{duit, redact, render, text};
 
 /// The start of a valid `CACHEDIR.TAG`.
 const CACHEDIR_TAG: &[u8] = b"Signature: 8a477f597d28d172789f06886806bc55";
@@ -36,31 +35,6 @@ fn fixture() -> TempDir {
     fs::create_dir(root.join("links")).expect("directory is created");
     symlink("../target", root.join("links/link")).expect("symlink is created");
     directory
-}
-
-/// An export with the fields that differ between filesystems, users, and runs replaced. `dsize`
-/// is removed, because an export leaves it out when it is 0, as it is for a directory on APFS.
-fn redact(export: &str, root: &Path) -> String {
-    let mut redacted = export.replace(&root.display().to_string(), "[ROOT]");
-    for key in [
-        "asize", "dsize", "dev", "ino", "mtime", "uid", "gid", "mode",
-    ] {
-        let pattern = format!(",\"{key}\":");
-        let mut rest = redacted.as_str();
-        let mut output = String::new();
-        while let Some(start) = rest.find(&pattern) {
-            output.push_str(&rest[..start]);
-            if key != "dsize" {
-                output.push_str(&pattern);
-                output.push_str("[N]");
-            }
-            rest = rest[start + pattern.len()..]
-                .trim_start_matches(|character: char| character.is_ascii_digit());
-        }
-        output.push_str(rest);
-        redacted = output;
-    }
-    redacted
 }
 
 /// The scan options reach the scan. The scan itself is tested in `duit-scan`.

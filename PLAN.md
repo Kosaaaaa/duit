@@ -187,8 +187,10 @@ first day.
 
 ## Open questions
 
-1. **Config file location.** Decided: read `/etc/duit.conf` and `$XDG_CONFIG_HOME/duit/config`. If
-   neither exists, read ncdu's files (`/etc/ncdu.conf`, `$XDG_CONFIG_HOME/ncdu/config`).
+1. **Config file location.** Decided: read `/etc/duit.conf` and `$XDG_CONFIG_HOME/duit/config`, or
+   `$HOME/.config/duit/config` if `XDG_CONFIG_HOME` is not set. If neither exists, read ncdu's files
+   (`/etc/ncdu.conf`, and the user file under `ncdu/`) instead. The fallback is all or nothing: one
+   duit file, even an empty one, turns off both ncdu files.
 2. **`progname` in exports.** Decided for JSON: write `duit`. ncdu 2.9.2 imports such an export, as
    the `test-ncdu` round trip in `duit-format` checks. To verify in M2 for the binary export.
 3. **Invocation as `ncdu`.** Should a symlink named `ncdu` change any behavior? Proposal: no.
