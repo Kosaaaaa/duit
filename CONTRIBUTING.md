@@ -95,6 +95,22 @@ prek run --all-files
 prek run --all-files --hook-stage pre-push
 ```
 
+## Pull requests
+
+`master` only accepts changes through pull requests, and every pull request is squash-merged. The
+title becomes the commit subject and the description becomes the commit body, so write both for
+someone reading `git log`:
+
+- Write the title as an imperative sentence in sentence case, with no trailing period and no type
+  prefix such as `feat:`. For example: `Port the --exclude option`.
+- Fill in the Summary (what changed and why) and the Test Plan sections of the template, and delete
+  its HTML comments.
+- Keep each pull request to one change, since it lands as one commit.
+
+The `all required jobs passed` check must succeed before a pull request can be merged.
+
+Branch names are free-form. Prefer short kebab-case names, such as `exclude-option`.
+
 ## Crate structure
 
 Rust does not allow circular dependencies between crates. The workspace is a flat list under
