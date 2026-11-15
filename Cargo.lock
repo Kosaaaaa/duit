@@ -44,6 +44,9 @@ version = "0.0.1"
 [[package]]
 name = "duit-scan"
 version = "0.0.1"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "duit-tui"
