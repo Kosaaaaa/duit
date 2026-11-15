@@ -20,7 +20,9 @@ license = "MIT"
 [workspace.dependencies]
 duit-format = { version = "0.0.1", path = "crates/duit-format" }
 duit-model = { version = "0.0.1", path = "crates/duit-model" }
+duit-scan = { version = "0.0.1", path = "crates/duit-scan" }
 
+assert_cmd = { version = "2.2.2" }
 insta = { version = "1.46.0" }
 libc = { version = "0.2.191" }
 rustix = { version = "1.1.6", features = ["fs"] }

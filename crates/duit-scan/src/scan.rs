@@ -22,6 +22,19 @@ pub struct ScanOptions {
     pub exclude_caches: bool,
 }
 
+/// Why a [`scan`] failed. ncdu describes the `errno` of each step differently, so the caller needs
+/// to know which step failed.
+#[derive(Debug)]
+pub enum ScanError {
+    /// The root could not be stat'ed.
+    Stat(io::Error),
+    /// The root could not be opened as a directory.
+    Open(io::Error),
+    /// The sink failed. An error from `dirfd`, which does not happen for an open directory, ends
+    /// up here too.
+    Sink(io::Error),
+}
+
 /// A directory whose entries are being read.
 struct Frame<'a, D> {
     entries: Dir,
@@ -41,21 +54,34 @@ pub fn scan<S: Sink>(
     path: &CStr,
     options: ScanOptions,
     exclude: &ExcludePatterns,
-) -> io::Result<()> {
-    let (stat, _) = stat_at(CWD, path, true)?;
-    let entries = Dir::new(openat(
+) -> Result<(), ScanError> {
+    let (stat, _) = stat_at(CWD, path, true).map_err(ScanError::Stat)?;
+    let entries = openat(
         CWD,
         path,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
         Mode::empty(),
-    )?)?;
-    let root = sink.create_root(path.to_bytes(), &stat)?;
-    let mut stack = vec![Frame {
+    )
+    .and_then(Dir::new)
+    .map_err(|error| ScanError::Open(error.into()))?;
+    let root = sink
+        .create_root(path.to_bytes(), &stat)
+        .map_err(ScanError::Sink)?;
+    let stack = vec![Frame {
         entries,
         device: stat.device,
         patterns: exclude.for_path(path),
         sink: root,
     }];
+    walk(sink, stack, options).map_err(ScanError::Sink)
+}
+
+/// Read the directories on `stack` depth-first until it is empty.
+fn walk<S: Sink>(
+    sink: &mut S,
+    mut stack: Vec<Frame<'_, S::Directory>>,
+    options: ScanOptions,
+) -> io::Result<()> {
     while let Some(frame) = stack.last_mut() {
         let entry = match frame.entries.read() {
             Some(Ok(entry)) => Some(entry),

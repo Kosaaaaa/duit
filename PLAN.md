@@ -79,9 +79,11 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
 
 - **Terminal: `ratatui` with `crossterm`, not ncurses.** No C dependency, static builds, and
   `TestBackend` makes the UI snapshot-testable. Cost: the ncdu look is rebuilt by hand.
-- **Option parsing: `lexopt`, not `clap`.** ncdu feeds config file lines through the argv parser one
-  line at a time, with per-line error suppression, paired on and off flags where the last one wins,
-  and a counted `-r`. A hand-written loop mirrors `main.zig` one to one.
+- **Option parsing: a port of ncdu's own parser, not `lexopt` or `clap`.** ncdu parses arguments in
+  the style of `getopt_long` with its own `Args`, and feeds config file lines through it one line at
+  a time, with per-line error suppression, paired on and off flags where the last one wins, and a
+  counted `-r`. `lexopt` differs at the edges: it reads a lone `-` as a positional argument, and it
+  decodes option names as UTF-8. The port works on bytes and matches ncdu's messages exactly.
 - **System calls: `rustix`.** Safe `openat`, `statat`, `fstatfs`, and directory iteration. The scan
   needs no `unsafe`.
 - **Exclude patterns: `libc::fnmatch` behind one wrapper.** ncdu calls libc `fnmatch`. Any
