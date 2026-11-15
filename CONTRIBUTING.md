@@ -48,8 +48,11 @@ cargo nextest run --features test-ncdu
 
 ```shell
 cargo fmt --all
+taplo fmt
 npx prettier@3.9.0 --write .
 ```
+
+TOML files are formatted with [taplo](https://taplo.tamasfe.dev/).
 
 ## Linting
 
