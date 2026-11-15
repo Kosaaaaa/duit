@@ -1,0 +1,13 @@
+# Local convenience hooks. They call the tools that are already installed and run the same
+# commands as `.github/workflows/ci.yml`, which stays the gate. Keep the two in sync.
+default_install_hook_types = ["pre-commit", "pre-push"]
+default_stages = ["pre-commit"]
+
+[[repos]]
+repo = "local"
+hooks = [
+  { id = "rustfmt", name = "cargo fmt", language = "system", entry = "cargo fmt --all --check", pass_filenames = false, types = ["rust"] },
+  { id = "typos", name = "typos", language = "system", entry = "typos", pass_filenames = false, always_run = true },
+  { id = "prettier", name = "prettier", language = "system", entry = "npx prettier@3.9.0 --check .", pass_filenames = false, files = "\\.(md|ya?ml|json5?)$" },
+  { id = "clippy", name = "cargo clippy", language = "system", entry = "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings", pass_filenames = false, always_run = true, stages = ["pre-push"] },
+]
