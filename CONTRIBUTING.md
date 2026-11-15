@@ -75,6 +75,22 @@ cargo shear
 cargo deny --all-features check
 ```
 
+## Git hooks
+
+Hooks are optional. [prek](https://prek.j178.dev/) runs the formatting and spelling checks before a
+commit and clippy before a push. The hooks call the tools above, so install those first:
+
+```shell
+prek install
+```
+
+To run every hook on all files:
+
+```shell
+prek run --all-files
+prek run --all-files --hook-stage pre-push
+```
+
 ## Crate structure
 
 Rust does not allow circular dependencies between crates. The workspace is a flat list under
