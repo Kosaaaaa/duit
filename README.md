@@ -1,4 +1,4 @@
-# duit 📊
+# duit 📊🦀
 
 [![CI](https://github.com/Kosaaaaa/duit/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/Kosaaaaa/duit/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)

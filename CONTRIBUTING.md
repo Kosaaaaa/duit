@@ -81,10 +81,11 @@ cargo deny --all-features check
 ## 🪝 Git hooks
 
 Hooks are optional. [prek](https://prek.j178.dev/) runs the formatting and spelling checks before a
-commit and clippy before a push. prek installs `typos` and `taplo` itself. The other hooks call the
-tools above, so install those first:
+commit and clippy before a push. The hooks call the tools above, so install those first.
+`make tools` installs the versions that CI uses:
 
 ```shell
+make tools
 prek install
 ```
 
