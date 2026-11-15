@@ -603,35 +603,35 @@ fn unsupported() {
         &["-O", "export.ncdu", "."],
         &["-t", "2", "-o-", "."],
         &["--quit-after-scan", "."],
-    ]), @r#"
-        $ duit -f export.json
-        exit_code: 1
-        ----- stdout -----
+    ]), @"
+    $ duit -f export.json
+    exit_code: 1
+    ----- stdout -----
 
-        ----- stderr -----
-        ^[[JThe -f flag is not supported yet.
+    ----- stderr -----
+    ^[[JOnly an export with -o is supported yet.
 
-        $ duit -O export.ncdu .
-        exit_code: 1
-        ----- stdout -----
+    $ duit -O export.ncdu .
+    exit_code: 1
+    ----- stdout -----
 
-        ----- stderr -----
-        ^[[JThe -O flag is not supported yet.
+    ----- stderr -----
+    ^[[JThe -O flag is not supported yet.
 
-        $ duit -t 2 -o- .
-        exit_code: 1
-        ----- stdout -----
+    $ duit -t 2 -o- .
+    exit_code: 1
+    ----- stdout -----
 
-        ----- stderr -----
-        ^[[JA scan with more than one thread is not supported yet.
+    ----- stderr -----
+    ^[[JA scan with more than one thread is not supported yet.
 
-        $ duit --quit-after-scan .
-        exit_code: 1
-        ----- stdout -----
+    $ duit --quit-after-scan .
+    exit_code: 1
+    ----- stdout -----
 
-        ----- stderr -----
-        ^[[JOnly an export with -o is supported yet.
-    "#);
+    ----- stderr -----
+    ^[[JOnly an export with -o is supported yet.
+    ");
     assert_eq!(
         fs::read_dir(directory.path())
             .expect("directory is read")

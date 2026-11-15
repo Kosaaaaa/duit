@@ -99,6 +99,12 @@ impl<W: Write> JsonExport<W> {
         Ok(out)
     }
 
+    /// Drop the export without writing what is still buffered, as ncdu does when it stops on an
+    /// error.
+    pub fn discard(self) {
+        drop(self.out.into_parts());
+    }
+
     fn close_directory_entry(&mut self, read_error: bool) -> io::Result<()> {
         if self.directory_open {
             self.directory_open = false;

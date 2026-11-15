@@ -112,6 +112,12 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
   `-2` scan screen differs the same way: `setReadError` also stores the root as `last_error` at
   `sink.zig:139`, which `drawProgress` shows as "Warning: error scanning" (`sink.zig:380-391`). duit
   names the directory that failed there.
+- **JSON import: a root that is not a directory is an error, and nesting has no depth limit, unlike
+  ncdu.** At `json_import.zig:519-522`, ncdu 2.9.2 crashes on a root that is written as an array but
+  whose fields make it an excluded, special, or hard-linked entry, such as
+  `[{"name":"/","excluded":"pattern"}]`. duit stops with `parent item must be a directory`, the
+  message for a root that is not an array. ncdu reads nested directories and values by recursion, so
+  a deep enough nesting overflows its stack. duit keeps a stack of its own.
 - **Panics: the terminal is restored from the panic hook.** The release profile uses
   `panic = "abort"`, so `Drop` guards do not run.
 - **`unsafe`: `#[expect(unsafe_code)]` plus a `SAFETY` comment.** The workspace lint warns on

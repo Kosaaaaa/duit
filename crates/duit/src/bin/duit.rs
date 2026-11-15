@@ -3,20 +3,24 @@
 use std::env;
 use std::ffi::{CString, OsStr};
 use std::fs::{self, File};
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::num::NonZero;
+use std::os::fd::AsFd;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::process::ExitCode;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use duit::{Arg, Args, Config, OptionError, open_error, stat_error, write_error};
-use duit_format::JsonExport;
+use duit::{Arg, Args, Config, OptionError, open_error, read_error, stat_error, write_error};
+use duit_format::{ImportError, JsonExport, import};
 use duit_scan::{ScanError, ScanOptions, scan};
 
 /// The terminal sequence that clears from the cursor to the end of the screen. ncdu writes it to
 /// standard error before an error message and at the end of a scan, to clear a progress line.
 const CLEAR_TO_END: &[u8] = b"\x1b[J";
+
+/// The first bytes of a binary export.
+const BINARY_SIGNATURE: &[u8; 8] = b"\xbfncduEX1";
 
 const HELP: &str = "\
 duit <options> <directory>
@@ -179,16 +183,13 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<(), Vec<u8>> {
     }
 
     // The modes that are not ported yet.
-    if import_file.is_some() {
-        return Err(b"The -f flag is not supported yet.\n".to_vec());
-    }
     if export_binary.is_some() {
         return Err(b"The -O flag is not supported yet.\n".to_vec());
     }
     let Some(export_path) = export_json else {
         return Err(b"Only an export with -o is supported yet.\n".to_vec());
     };
-    if config.threads > 1 {
+    if import_file.is_none() && config.threads > 1 {
         return Err(b"A scan with more than one thread is not supported yet.\n".to_vec());
     }
 
@@ -206,6 +207,8 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<(), Vec<u8>> {
             })?,
         )
     };
+    // As in ncdu, the export file is created before the import is read.
+    let import_input = import_file.map(open_import).transpose()?;
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |time| time.as_secs());
@@ -216,6 +219,27 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<(), Vec<u8>> {
         config.compress.then_some(config.compress_level),
     )
     .map_err(|error| writing(&error))?;
+
+    if let Some((input, head)) = import_input {
+        match import(&mut export, input, &head) {
+            Ok(()) => {}
+            Err(ImportError::Input {
+                line,
+                byte,
+                message,
+            }) => {
+                export.discard();
+                return Err(
+                    format!("Error importing file on line {line}:{byte}: {message}.\n")
+                        .into_bytes(),
+                );
+            }
+            Err(ImportError::Sink(error)) => return Err(writing(&error)),
+        }
+        export.finish().map_err(|error| writing(&error))?;
+        let _ = io::stderr().write_all(CLEAR_TO_END);
+        return Ok(());
+    }
 
     // ncdu scans the absolute path if it can resolve one.
     let directory = scan_directory.unwrap_or(b".");
@@ -244,6 +268,43 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<(), Vec<u8>> {
     }
     let _ = io::stderr().write_all(CLEAR_TO_END);
     Ok(())
+}
+
+/// Open the import file at `path`, or standard input for `-`, and read its first 8 bytes, which
+/// tell the formats apart.
+fn open_import(path: &[u8]) -> Result<(File, [u8; 8]), Vec<u8>> {
+    let reading = |description: &str| {
+        [
+            b"Error reading file '",
+            path,
+            b"': ",
+            description.as_bytes(),
+            b".\n",
+        ]
+        .concat()
+    };
+    let mut file = if path == b"-" {
+        // A read of the duplicated descriptor fails as a read of standard input would.
+        io::stdin()
+            .as_fd()
+            .try_clone_to_owned()
+            .map(File::from)
+            .map_err(|error| reading(read_error(&error)))?
+    } else {
+        File::open(OsStr::from_bytes(path)).map_err(|error| reading(open_error(&error)))?
+    };
+    let mut head = [0; 8];
+    file.read_exact(&mut head).map_err(|error| {
+        if error.kind() == io::ErrorKind::UnexpectedEof {
+            reading("Unexpected end of file")
+        } else {
+            reading(read_error(&error))
+        }
+    })?;
+    if &head == BINARY_SIGNATURE {
+        return Err(b"Importing a binary export is not supported yet.\n".to_vec());
+    }
+    Ok((file, head))
 }
 
 fn opening_directory(description: &str) -> Vec<u8> {

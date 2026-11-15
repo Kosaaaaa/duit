@@ -1,10 +1,11 @@
 use std::io::{self, Write};
-#[cfg(feature = "test-ncdu")]
-use std::process::{Command, Stdio};
 
 use duit_format::JsonExport;
 use duit_model::{EntryType, Extended, Sink, Special, Stat};
 use insta::assert_snapshot;
+
+#[cfg(feature = "test-ncdu")]
+use crate::ncdu_import;
 
 /// Run `build` against a [`JsonExport`] with timestamp 0 and return the export as bytes.
 fn write_export(
@@ -46,24 +47,7 @@ fn export(
 /// metadata block, which differs between the two programs.
 #[cfg(feature = "test-ncdu")]
 fn assert_ncdu_reexport(output: &[u8], extended: bool) {
-    let mut command = Command::new("ncdu");
-    command.args(["--ignore-config", "-f-", "-o-"]);
-    if extended {
-        command.arg("-e");
-    }
-    let mut child = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("ncdu 2.9.2 is on PATH");
-    child
-        .stdin
-        .take()
-        .expect("stdin is piped")
-        .write_all(output)
-        .expect("ncdu reads the export");
-    let result = child.wait_with_output().expect("ncdu exits");
+    let result = ncdu_import(output, if extended { &["-e"] } else { &[] });
     assert!(
         result.status.success(),
         "ncdu failed: {}",
@@ -81,7 +65,7 @@ fn assert_ncdu_reexport(output: &[u8], extended: bool) {
     assert_eq!(items(&result.stdout), items(output));
 }
 
-fn file(size: u64, blocks: u64) -> Stat {
+pub(crate) fn file(size: u64, blocks: u64) -> Stat {
     Stat {
         size,
         blocks,
@@ -89,7 +73,7 @@ fn file(size: u64, blocks: u64) -> Stat {
     }
 }
 
-fn directory(device: u64) -> Stat {
+pub(crate) fn directory(device: u64) -> Stat {
     Stat {
         entry_type: EntryType::Directory,
         size: 4096,
@@ -274,7 +258,7 @@ fn disk_usage_saturates() {
 }
 
 /// A root with enough files of different names and sizes to fill several 64 KiB buffers.
-fn many_files(export: &mut JsonExport<Vec<u8>>) -> io::Result<()> {
+pub(crate) fn many_files(export: &mut JsonExport<Vec<u8>>) -> io::Result<()> {
     let mut root = export.create_root(b"/root", &directory(1))?;
     for index in 0..5000 {
         let name = format!("file{index}");
