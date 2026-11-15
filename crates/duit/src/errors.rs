@@ -45,6 +45,14 @@ pub fn open_error(error: &io::Error) -> &'static str {
     }
 }
 
+/// The description of an error of a seek to the end (`std.posix.lseek_END`).
+pub fn seek_error(error: &io::Error) -> &'static str {
+    match error.raw_os_error() {
+        Some(libc::EINVAL | libc::EOVERFLOW | libc::ESPIPE | libc::ENXIO) => "Unseekable",
+        _ => "Unexpected",
+    }
+}
+
 /// The description of an error of `write` (`std.posix.write`).
 pub fn write_error(error: &io::Error) -> &'static str {
     match error.raw_os_error() {

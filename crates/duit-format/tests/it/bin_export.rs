@@ -19,7 +19,7 @@ const KEYS: [&str; 19] = [
 /// Every kind of entry, with hard links that are all found in a subdirectory, links that are
 /// found in different directories, links that are not all found, a link without a link count, and
 /// links on another device.
-const TREE: &[u8] = b"[1,2,{\"progname\":\"ncdu\",\"progver\":\"2.9.2\",\"timestamp\":1},
+pub(crate) const TREE: &[u8] = b"[1,2,{\"progname\":\"ncdu\",\"progver\":\"2.9.2\",\"timestamp\":1},
 [{\"name\":\"/root\",\"asize\":4096,\"dsize\":4096,\"dev\":1},
 {\"name\":\"file\",\"asize\":100,\"dsize\":4096,\"uid\":501,\"gid\":20,\"mode\":33188,\"mtime\":1700000000},
 {\"name\":\"raw \xff\xfe\"},
