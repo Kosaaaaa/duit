@@ -34,7 +34,7 @@ fn with_config(
     for system in ["/etc/duit.conf", "/etc/ncdu.conf"] {
         assert!(
             !Path::new(system).exists(),
-            "{system} exists and changes the options of every run, move it aside to run the config tests"
+            "{system} exists and changes every run, move it aside to run the config tests"
         );
     }
     Command::new(program)

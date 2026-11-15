@@ -108,7 +108,10 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
   ncdu 2.9.2 calls `setReadError` on the directory taken from the scan queue, which with one thread
   is always the root, not on the directory that failed. The JSON exports of both ignore which
   directory it is, so `-o` output is the same. The binary export and the in-memory tree record the
-  flag per directory, so there duit flags the directory that failed, and ncdu flags the root.
+  flag per directory, so there duit flags the directory that failed, and ncdu flags the root. The
+  `-2` scan screen differs the same way: `setReadError` also stores the root as `last_error` at
+  `sink.zig:139`, which `drawProgress` shows as "Warning: error scanning" (`sink.zig:380-391`). duit
+  names the directory that failed there.
 - **Panics: the terminal is restored from the panic hook.** The release profile uses
   `panic = "abort"`, so `Drop` guards do not run.
 - **`unsafe`: `#[expect(unsafe_code)]` plus a `SAFETY` comment.** The workspace lint warns on
