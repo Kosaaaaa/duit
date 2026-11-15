@@ -97,7 +97,8 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
   means a packed layout with documented `unsafe`, decided in M5.
 - **Threads: `std::thread` with a mutex and condvar queue.** Same model as upstream. No `rayon`, no
   async. The default stays one thread, as in ncdu.
-- **Errors: `thiserror` in libraries, `anyhow` in `duit`.** Same convention as uv.
+- **Errors: plain enums, and no error crate.** Every message is ncdu's, as bytes that need not be
+  UTF-8, so an error carries what the caller needs to build that message, as `ScanError` does.
 - **Panics: the terminal is restored from the panic hook.** The release profile uses
   `panic = "abort"`, so `Drop` guards do not run.
 - **`unsafe`: `#[expect(unsafe_code)]` plus a `SAFETY` comment.** The workspace lint warns on
@@ -141,7 +142,7 @@ Workspace, lints, CI, and documentation. No code. Done.
   waits for M3.
 - JSON export (`-o`).
 
-Done when `duit -o- DIR` equals `ncdu -o- DIR` on the fixture trees, on Linux and macOS.
+Done when `duit -o- DIR` equals `ncdu -o- DIR` on the fixture trees, on Linux and macOS. Done.
 
 ### M2: Formats
 
