@@ -15,4 +15,11 @@ doctest = false
 workspace = true
 
 [dependencies]
+duit-model = { workspace = true }
+libc = { workspace = true }
+ratatui = { workspace = true }
 unicode-width = { workspace = true }
+
+[dev-dependencies]
+duit-format = { workspace = true }
+insta = { workspace = true }
