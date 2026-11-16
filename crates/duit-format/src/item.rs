@@ -10,8 +10,9 @@ pub(crate) enum ItemType {
 }
 
 /// Add the imported item `name` of type `kind` to `parent` in `sink`, and return it if it is a
-/// directory, whose entries the caller reads next. The type is copied into `stat`, which the
-/// sink reads it from.
+/// directory, whose entries the caller reads next. The entry type of an [`ItemType::Stat`] is
+/// copied into `stat`, which the sink reads it from, and an [`ItemType::Special`] reaches the sink
+/// without `stat`.
 pub(crate) fn add_entry<S: Sink>(
     sink: &mut S,
     parent: &mut S::Directory,
