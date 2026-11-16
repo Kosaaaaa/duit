@@ -1267,7 +1267,8 @@ fn display_keys() {
     );
 }
 
-/// With `--confirm-quit`, `q` opens a window that asks for confirmation.
+/// With `--confirm-quit`, `q` opens a window that asks for confirmation. The window clears the
+/// reverse video of the cursor row below it.
 #[test]
 fn quit_confirmation() {
     let tree = tree_of(SOURCE, false);
@@ -1275,7 +1276,8 @@ fn quit_confirmation() {
         confirm_quit: true,
         ..imported()
     };
-    assert_snapshot!(screen(&tree, root(&tree), &options, &[Key::Char('q')], (80, 10)), @r#"
+    let keys = [Key::Down, Key::Down, Key::Char('q')];
+    assert_snapshot!(screen(&tree, root(&tree), &options, &keys, (80, 10)), @r#"
     "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 KiB S   4.0 KiB [###########] /src                                      "
@@ -1288,9 +1290,9 @@ fn quit_confirmation() {
     "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
     RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
     ................................................................................
-    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
-    ................................BBBBBBBBBBBBBB..................................
     ................................................................................
+    ................................BBBBBBBBBBBBBB..................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRR......................RRRRRRRRRRRRRRRRRRRRRRRRRRRRR
     .............................................B.B................................
     ................................................................................
     ................................................................................

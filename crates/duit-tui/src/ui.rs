@@ -149,6 +149,9 @@ impl FmtSize {
 pub(crate) const PLAIN: Style = Style::new();
 /// The `bold`, `box_title` and `key` styles of ncdu's `off` color scheme.
 pub(crate) const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
+/// The box of a [`Window`]. It clears the attributes of the screen below it, as ncurses replaces
+/// them when it draws the box in the `default` style.
+const CLEAR: Style = Style::new().remove_modifier(Modifier::all());
 /// The header, the footer, and the cursor row, which ncdu's `off` color scheme draws in reverse
 /// video.
 pub(crate) const REVERSE: Style = Style::new().add_modifier(Modifier::REVERSED);
@@ -201,15 +204,15 @@ impl Window {
                 _ if row == height - 1 => ('└', '─', '┘'),
                 _ => ('│', ' ', '│'),
             };
-            window.text(buffer, row, 0, &left.to_string(), PLAIN);
+            window.text(buffer, row, 0, &left.to_string(), CLEAR);
             window.text(
                 buffer,
                 row,
                 1,
                 &fill.to_string().repeat((width - 2).into()),
-                PLAIN,
+                CLEAR,
             );
-            window.text(buffer, row, width - 1, &right.to_string(), PLAIN);
+            window.text(buffer, row, width - 1, &right.to_string(), CLEAR);
         }
         window.text(buffer, 0, 3, &format!(" {title} "), BOLD);
         window
