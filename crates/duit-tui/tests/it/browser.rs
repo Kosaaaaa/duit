@@ -2,7 +2,7 @@ use std::fmt::Write as _;
 
 use duit_format::import;
 use duit_model::{DirectoryId, EntryKind, MemorySink, Tree};
-use duit_tui::{Browser, BrowserOptions, GraphStyle, SharedColumn, SortColumn, SortOrder};
+use duit_tui::{Browser, BrowserOptions, GraphStyle, Key, SharedColumn, SortColumn, SortOrder};
 use insta::assert_snapshot;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -112,22 +112,29 @@ fn imported() -> BrowserOptions {
     }
 }
 
-/// Draw `directory` of `tree` on a terminal of `width` by `height`, with the cursor on the row
-/// `cursor` of the listing. Returns the text of each line, quoted, then one line of attributes per
-/// line: `R` for reverse video, `B` for bold, `#` for both, and `.` for neither.
+/// Open `directory` of `tree` on a terminal of `width` by `height`, and draw it again after each
+/// of `keys`, as ncdu does between key presses. Returns the text of each line of the last screen,
+/// quoted, then one line of attributes per line: `R` for reverse video, `B` for bold, `#` for
+/// both, and `.` for neither.
 fn screen(
     tree: &Tree,
     directory: DirectoryId,
     options: &BrowserOptions,
-    cursor: usize,
+    keys: &[Key],
     (width, height): (u16, u16),
 ) -> String {
-    let mut browser = Browser::new(tree, directory, options);
-    browser.select(cursor);
+    let mut options = options.clone();
+    let mut browser = Browser::new(tree, directory, &options);
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal opens");
     terminal
-        .draw(|frame| browser.draw(frame, tree, options))
+        .draw(|frame| browser.draw(frame, tree, &options))
         .expect("browser draws");
+    for &key in keys {
+        browser.key_input(tree, &mut options, key, height);
+        terminal
+            .draw(|frame| browser.draw(frame, tree, &options))
+            .expect("browser draws");
+    }
     let buffer = terminal.backend().buffer();
     let mut screen = terminal.backend().to_string();
     for row in 0..height {
@@ -180,7 +187,7 @@ fn redact_times(screen: &str) -> String {
 #[test]
 fn default_columns() {
     let tree = tree_of(SOURCE, false);
-    assert_snapshot!(screen(&tree, root(&tree), &imported(), 0, (80, 18)), @r#"
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &[], (80, 18)), @r#"
     "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 KiB S   4.0 KiB [###########] /src                                      "
@@ -229,7 +236,7 @@ fn shared_column_unique() {
         shared_column: SharedColumn::Unique,
         ..imported()
     };
-    assert_snapshot!(screen(&tree, root(&tree), &options, 0, (80, 18)), @r#"
+    assert_snapshot!(screen(&tree, root(&tree), &options, &[], (80, 18)), @r#"
     "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 KiB U  12.0 KiB [###########] /src                                      "
@@ -277,7 +284,7 @@ fn shared_column_off() {
         shared_column: SharedColumn::Off,
         ..imported()
     };
-    assert_snapshot!(screen(&tree, root(&tree), &options, 0, (80, 18)), @r#"
+    assert_snapshot!(screen(&tree, root(&tree), &options, &[], (80, 18)), @r#"
     "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 KiB [###########] /src                                                  "
@@ -327,7 +334,7 @@ fn si_apparent_size() {
         show_blocks: false,
         ..imported()
     };
-    assert_snapshot!(screen(&tree, root(&tree), &options, 0, (80, 18)), @r#"
+    assert_snapshot!(screen(&tree, root(&tree), &options, &[], (80, 18)), @r#"
     "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "    9.4 kB S 300.0  B [           ] /src                                        "
@@ -376,7 +383,7 @@ fn hidden_shown() {
         can_delete: false,
         ..BrowserOptions::default()
     };
-    assert_snapshot!(screen(&tree, root(&tree), &options, 0, (80, 14)), @r#"
+    assert_snapshot!(screen(&tree, root(&tree), &options, &[], (80, 14)), @r#"
     "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [readonly]"
     "--- /data ----------------------------------------------------------------------"
     "   40.0 KiB             [###########]  .big                                     "
@@ -418,7 +425,7 @@ fn hidden_hidden() {
         show_hidden: false,
         ..BrowserOptions::default()
     };
-    assert_snapshot!(screen(&tree, root(&tree), &options, 0, (80, 9)), @r#"
+    assert_snapshot!(screen(&tree, root(&tree), &options, &[], (80, 9)), @r#"
     "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
     "--- /data ----------------------------------------------------------------------"
     "   24.0 KiB [######     ] /photos                                               "
@@ -450,7 +457,7 @@ fn graph_eighth_block_percent() {
         graph_style: GraphStyle::EighthBlock,
         ..imported()
     };
-    assert_snapshot!(screen(&tree, root(&tree), &options, 0, (80, 9)), @r#"
+    assert_snapshot!(screen(&tree, root(&tree), &options, &[], (80, 9)), @r#"
     "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /graph ---------------------------------------------------------------------"
     "   44.0 KiB [ 48.6% ███████████]  a                                             "
@@ -480,7 +487,7 @@ fn graph_half_block() {
         graph_style: GraphStyle::HalfBlock,
         ..imported()
     };
-    assert_snapshot!(screen(&tree, root(&tree), &options, 0, (80, 9)), @r#"
+    assert_snapshot!(screen(&tree, root(&tree), &options, &[], (80, 9)), @r#"
     "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /graph ---------------------------------------------------------------------"
     "   44.0 KiB [███████████]  a                                                    "
@@ -511,7 +518,7 @@ fn percent_without_graph() {
         show_graph: false,
         ..imported()
     };
-    assert_snapshot!(screen(&tree, root(&tree), &options, 0, (80, 9)), @r#"
+    assert_snapshot!(screen(&tree, root(&tree), &options, &[], (80, 9)), @r#"
     "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /graph ---------------------------------------------------------------------"
     "   44.0 KiB [ 48.6%]  a                                                         "
@@ -546,7 +553,7 @@ fn item_count() {
         sort_column: SortColumn::Items,
         ..imported()
     };
-    assert_snapshot!(screen(&tree, root(&tree), &options, 0, (80, 7)), @r#"
+    assert_snapshot!(screen(&tree, root(&tree), &options, &[], (80, 7)), @r#"
     "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /items ---------------------------------------------------------------------"
     "    0.0   B [           ] 12,345 /many                                          "
@@ -575,7 +582,7 @@ fn mtime() {
         sort_order: SortOrder::Ascending,
         ..imported()
     };
-    assert_snapshot!(redact_times(&screen(&tree, root(&tree), &options, 0, (80, 8))), @r#"
+    assert_snapshot!(redact_times(&screen(&tree, root(&tree), &options, &[], (80, 8))), @r#"
     "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /mtime ---------------------------------------------------------------------"
     "    4.0 KiB [########   ]                   no mtime  nomtime                   "
@@ -604,7 +611,7 @@ fn mtime_parent_row() {
         ..imported()
     };
     let old = subdirectory(&tree, b"old");
-    assert_snapshot!(redact_times(&screen(&tree, old, &options, 0, (80, 5))), @r#"
+    assert_snapshot!(redact_times(&screen(&tree, old, &options, &[], (80, 5))), @r#"
     "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /mtime/old -----------------------------------------------------------------"
     "                           2024-01-04 HH:MM:SS +ZZZZ /..                        "
@@ -630,7 +637,7 @@ fn sort_name_bytes_directories_first() {
         sort_directories_first: true,
         ..imported()
     };
-    assert_snapshot!(screen(&tree, root(&tree), &options, 0, (80, 9)), @r#"
+    assert_snapshot!(screen(&tree, root(&tree), &options, &[], (80, 9)), @r#"
     "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /names ---------------------------------------------------------------------"
     "e   4.0 KiB [###########] /dir                                                  "
@@ -661,7 +668,7 @@ fn sort_name_natural_descending() {
         sort_order: SortOrder::Descending,
         ..imported()
     };
-    assert_snapshot!(screen(&tree, root(&tree), &options, 0, (80, 9)), @r#"
+    assert_snapshot!(screen(&tree, root(&tree), &options, &[], (80, 9)), @r#"
     "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /names ---------------------------------------------------------------------"
     ">   0.0   B [           ] /zfs                                                  "
@@ -689,7 +696,7 @@ fn sort_name_natural_descending() {
 fn subdirectory_cursor() {
     let tree = tree_of(SOURCE, false);
     let src = subdirectory(&tree, b"src");
-    assert_snapshot!(screen(&tree, src, &imported(), 1, (80, 6)), @r#"
+    assert_snapshot!(screen(&tree, src, &imported(), &[Key::Down], (80, 6)), @r#"
     "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project/src -----------------------------------------------------"
     "                          /..                                                   "
@@ -709,7 +716,7 @@ fn subdirectory_cursor() {
 #[test]
 fn scroll_to_cursor() {
     let tree = tree_of(SOURCE, false);
-    assert_snapshot!(screen(&tree, root(&tree), &imported(), 9, (80, 8)), @r#"
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &[Key::Down; 9], (80, 8)), @r#"
     "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "    0.0   B             [           ]  sparse                                   "
@@ -740,7 +747,7 @@ fn narrow_terminal() {
         show_mtime: true,
         ..imported()
     };
-    assert_snapshot!(screen(&tree, root(&tree), &options, 0, (31, 9)), @r#"
+    assert_snapshot!(screen(&tree, root(&tree), &options, &[], (31, 9)), @r#"
     "duit 0.0.1 ~ Use the [imported]"
     "--- /data ---------------------"
     "   24.0 KiB      1 /photos     "
@@ -760,4 +767,577 @@ fn narrow_terminal() {
     ...............................
     R##################RRRRRRRRRRRR
     "#);
+}
+
+/// Page down moves the cursor by the rows of the listing, and stops at the last row.
+#[test]
+fn page_down_to_end() {
+    let tree = tree_of(SOURCE, false);
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &[Key::PageDown; 3], (80, 8)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "@   0.0   B             [           ]  socket                                   "
+    "^   0.0   B             [           ] /proc                                     "
+    "<   0.0   B             [           ]  node_modules                             "
+    ">   0.0   B             [           ] /mnt                                      "
+    "    0.0   B             [           ]  broken                                   "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// End moves the cursor to the last row, down stops there, and page up and up move it back.
+#[test]
+fn end_page_up() {
+    let tree = tree_of(SOURCE, false);
+    let keys = [Key::End, Key::Down, Key::PageUp, Key::Up];
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 8)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "    0.0   B             [           ]  raw \xFF\xFE                             "
+    "    0.0   B             [           ]  quote " backslash \...\x09 control \x01 é"
+    "@   0.0   B             [           ]  socket                                   "
+    "^   0.0   B             [           ] /proc                                     "
+    "<   0.0   B             [           ]  node_modules                             "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// Home moves the cursor to the first row, and up stops there.
+#[test]
+fn home() {
+    let tree = tree_of(SOURCE, false);
+    let mut keys = vec![Key::Char('j'); 9];
+    keys.extend([Key::Home, Key::Char('k')]);
+    assert_eq!(
+        screen(&tree, root(&tree), &imported(), &keys, (80, 8)),
+        screen(&tree, root(&tree), &imported(), &[], (80, 8))
+    );
+}
+
+/// Going back to a directory restores both the cursor and the scroll position it had, so the
+/// cursor stays on the first row of the listing.
+#[test]
+fn enter_parent_restores_view() {
+    let tree = tree_of(SOURCE, false);
+    let keys = [
+        Key::Char('j'),
+        Key::Char('j'),
+        Key::Char('k'),
+        Key::Char('l'),
+        Key::Char('h'),
+    ];
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 5)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "!   4.0 KiB             [####       ] /unreadable                               "
+    "e   4.0 KiB             [####       ] /empty                                    "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// Opening a directory again puts the cursor on the entry it was on.
+#[test]
+fn enter_subdirectory_restores_cursor() {
+    let tree = tree_of(SOURCE, false);
+    let keys = [Key::Right, Key::Down, Key::Down, Key::Left, Key::Right];
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 6)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /home/user/project/src -----------------------------------------------------"
+    "                          /..                                                   "
+    "    8.0 KiB [###########]  main.rs                                              "
+    "H   4.0 KiB [########   ]  linked                                               "
+    "*Total disk usage:  16.0 KiB   Apparent size:   9.2 KiB   Items: 2              "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// Enter on the row of the parent directory goes back to it.
+#[test]
+fn enter_parent_row() {
+    let tree = tree_of(SOURCE, false);
+    let keys = [Key::Down, Key::Down, Key::Enter, Key::Enter];
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 8)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "   16.0 KiB S   4.0 KiB [###########] /src                                      "
+    "!   4.0 KiB             [####       ] /unreadable                               "
+    "e   4.0 KiB             [####       ] /empty                                    "
+    "    4.0 KiB             [####       ]  README.md                                "
+    "H   4.0 KiB             [####       ]  also-linked                              "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// Enter does nothing on a file or on a directory that was not read, such as one on another
+/// filesystem, and going to the parent does nothing in the root.
+#[test]
+fn enter_without_directory() {
+    let tree = tree_of(SOURCE, false);
+    let screen = |keys: &[Key]| screen(&tree, root(&tree), &imported(), keys, (80, 18));
+    let mut readme = vec![Key::Down; 3];
+    assert_eq!(screen(&readme), {
+        readme.push(Key::Enter);
+        screen(&readme)
+    });
+    let mut mnt = vec![Key::Down; 11];
+    assert_eq!(screen(&mnt), {
+        mnt.push(Key::Enter);
+        screen(&mnt)
+    });
+    assert_eq!(screen(&[]), screen(&[Key::Left]));
+    for parent in [Key::Char('h'), Key::Char('<'), Key::Backspace] {
+        assert_eq!(screen(&[]), screen(&[Key::Right, parent]));
+    }
+}
+
+/// Going to the parent directory cuts the last component of the path, so a root whose name ends
+/// with `/` loses it, and the view that was saved under its name is not found.
+#[test]
+fn enter_parent_cuts_path() {
+    let tree = tree_of(
+        br#"[1,2,{"progname":"ncdu","progver":"2.9.2"},
+[{"name":"/data/","asize":4096,"dsize":4096},
+{"name":"big","asize":8192,"dsize":8192},
+[{"name":"sub","asize":4096,"dsize":4096}]]]"#,
+        false,
+    );
+    let keys = [Key::Down, Key::Right, Key::Left];
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 5)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /data ----------------------------------------------------------------------"
+    "    8.0 KiB [###########]  big                                                  "
+    "e   4.0 KiB [########   ] /sub                                                  "
+    "*Total disk usage:  16.0 KiB   Apparent size:  16.0 KiB   Items: 2              "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// A sort key keeps the cursor on its entry and restores the scroll position that was saved
+/// with the previous key.
+#[test]
+fn sort_keeps_cursor() {
+    let tree = tree_of(SOURCE, false);
+    let mut keys = vec![Key::Down; 9];
+    keys.push(Key::Char('n'));
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 8)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /home/user/project ---------------------------------------------------------"
+    ">   0.0   B             [           ] /mnt                                      "
+    "<   0.0   B             [           ]  node_modules                             "
+    "^   0.0   B             [           ] /proc                                     "
+    "    0.0   B             [           ]  quote " backslash \...\x09 control \x01 é"
+    "    0.0   B             [           ]  raw \xFF\xFE                             "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// A sort key before any other key puts the cursor on the first row, as no view of the directory
+/// was saved yet.
+#[test]
+fn sort_first_key() {
+    let tree = tree_of(SOURCE, false);
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &[Key::Char('n')], (80, 8)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "    4.0 KiB             [####       ]  README.md                                "
+    "H   4.0 KiB             [####       ]  also-linked                              "
+    "    0.0   B             [           ]  broken                                   "
+    "e   4.0 KiB             [####       ] /empty                                    "
+    ">   0.0   B             [           ] /mnt                                      "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// The same sort key again reverses the order.
+#[test]
+fn sort_name_toggle() {
+    let tree = tree_of(NAMES.as_bytes(), false);
+    let keys = [Key::Char('n'), Key::Char('n')];
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 9)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /names ---------------------------------------------------------------------"
+    ">   0.0   B [           ] /zfs                                                  "
+    "    4.0 KiB [###########]  file10                                               "
+    "    4.0 KiB [###########]  file9                                                "
+    "e   4.0 KiB [###########] /dir                                                  "
+    "<   0.0   B [           ]  apattern                                             "
+    "    4.0 KiB [###########]  File2                                                "
+    "*Total disk usage:  16.0 KiB   Apparent size:  40.0   B   Items: 6              "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// `a` switches to apparent sizes and sorts by them, and `s` then reverses the order.
+#[test]
+fn sort_apparent_size_ascending() {
+    let tree = tree_of(SOURCE, false);
+    let keys = [Key::Char('a'), Key::Char('s')];
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 10)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "    2.0   B             [           ]  raw \xFF\xFE                             "
+    "H 300.0   B             [           ]  also-linked                              "
+    "    1.2 KiB             [           ]  README.md                                "
+    "e   4.0 KiB             [           ] /empty                                    "
+    "!   4.0 KiB             [           ] /unreadable                               "
+    "    9.2 KiB S 300.0   B [           ] /src                                      "
+    "    1.0 MiB             [###########]  sparse                                   "
+    " Total disk usage:  32.0 KiB  *Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRR##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// `C` sorts by item count in descending order, and again in ascending order.
+#[test]
+fn sort_item_count_ascending() {
+    let tree = tree_of(
+        item_counts(&[("few", 3), ("thousands", 1234), ("many", 12345)]).as_bytes(),
+        false,
+    );
+    let keys = [Key::Char('c'), Key::Char('C'), Key::Char('C')];
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 7)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /items ---------------------------------------------------------------------"
+    "    0.0   B [           ]         file                                          "
+    "    0.0   B [           ]      3 /few                                           "
+    "    0.0   B [           ]  1,234 /thousands                                     "
+    "    0.0   B [           ] 12,345 /many                                          "
+    "*Total disk usage:   0.0   B   Apparent size:   0.0   B   Items: 13,586         "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// `m` shows the mtime and `M` sorts by it, in descending order and then in ascending order.
+#[test]
+fn sort_mtime_ascending() {
+    let tree = tree_of(MTIME.as_bytes(), true);
+    let options = BrowserOptions {
+        extended: true,
+        ..imported()
+    };
+    let keys = [Key::Char('m'), Key::Char('M'), Key::Char('M')];
+    assert_snapshot!(redact_times(&screen(&tree, root(&tree), &options, &keys, (80, 8))), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /mtime ---------------------------------------------------------------------"
+    "    4.0 KiB [########   ]                   no mtime  nomtime                   "
+    "    4.0 KiB [########   ]  2024-01-03 HH:MM:SS +ZZZZ  early.txt                 "
+    "    8.0 KiB [###########]  2024-01-04 HH:MM:SS +ZZZZ /old                       "
+    "    4.0 KiB [########   ]  2024-01-06 HH:MM:SS +ZZZZ  latest.txt                "
+    "    4.0 KiB [########   ]                   no mtime  plain                     "
+    "*Total disk usage:  28.0 KiB   Apparent size:   8.5 KiB   Items: 6              "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// Without `-e`, `m` and `M` do nothing.
+#[test]
+fn mtime_keys_without_extended() {
+    let tree = tree_of(MTIME.as_bytes(), false);
+    let keys = [Key::Char('m'), Key::Char('M')];
+    assert_eq!(
+        screen(&tree, root(&tree), &imported(), &keys, (80, 8)),
+        screen(&tree, root(&tree), &imported(), &[], (80, 8))
+    );
+}
+
+/// `t` lists the directories first.
+#[test]
+fn sort_directories_first_toggle() {
+    let tree = tree_of(NAMES.as_bytes(), false);
+    let keys = [Key::Char('n'), Key::Char('t')];
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 9)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /names ---------------------------------------------------------------------"
+    "e   4.0 KiB [###########] /dir                                                  "
+    ">   0.0   B [           ] /zfs                                                  "
+    "    4.0 KiB [###########]  File2                                                "
+    "<   0.0   B [           ]  apattern                                             "
+    "    4.0 KiB [###########]  file9                                                "
+    "    4.0 KiB [###########]  file10                                               "
+    "*Total disk usage:  16.0 KiB   Apparent size:  40.0   B   Items: 6              "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// `e` hides the hidden entries and keeps the cursor on its entry.
+#[test]
+fn hide_hidden_keeps_cursor() {
+    let tree = tree_of(HIDDEN.as_bytes(), false);
+    let keys = [Key::Down, Key::Down, Key::Char('e')];
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 9)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /data ----------------------------------------------------------------------"
+    "   24.0 KiB [######     ] /photos                                               "
+    "   10.0 KiB [##         ]  notes.txt                                            "
+    "    4.0 KiB [#          ]  a-very-long-file-name.txt                            "
+    "H   4.0 KiB [#          ]  settings-link                                        "
+    "                                                                                "
+    "                                                                                "
+    "*Total disk usage:  98.0 KiB   Apparent size:  92.5 KiB   Items: 12             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// When `e` hides the entry under the cursor, the cursor goes to the first row.
+#[test]
+fn hide_hidden_cursor_entry() {
+    let tree = tree_of(HIDDEN.as_bytes(), false);
+    let keys = [Key::Down, Key::Down, Key::Down, Key::Char('e')];
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 9)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /data ----------------------------------------------------------------------"
+    "   24.0 KiB [######     ] /photos                                               "
+    "   10.0 KiB [##         ]  notes.txt                                            "
+    "    4.0 KiB [#          ]  a-very-long-file-name.txt                            "
+    "H   4.0 KiB [#          ]  settings-link                                        "
+    "                                                                                "
+    "                                                                                "
+    "*Total disk usage:  98.0 KiB   Apparent size:  92.5 KiB   Items: 12             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// `g` cycles through the graph, the percentage, both, and neither, `u` cycles the shared column
+/// through unique and off, `c` shows the item counts, and `a` twice goes back to disk usage. Each
+/// draws as its option does.
+#[test]
+fn display_keys() {
+    let tree = tree_of(SOURCE, false);
+    let screen = |options: &BrowserOptions, keys: &[Key]| {
+        screen(&tree, root(&tree), options, keys, (80, 18))
+    };
+    let graph = |show_graph, show_percent| BrowserOptions {
+        show_graph,
+        show_percent,
+        ..imported()
+    };
+    assert_eq!(
+        screen(&imported(), &[Key::Char('g')]),
+        screen(&graph(false, true), &[])
+    );
+    assert_eq!(
+        screen(&imported(), &[Key::Char('g'); 2]),
+        screen(&graph(true, true), &[])
+    );
+    assert_eq!(
+        screen(&imported(), &[Key::Char('g'); 3]),
+        screen(&graph(false, false), &[])
+    );
+    assert_eq!(
+        screen(&imported(), &[Key::Char('g'); 4]),
+        screen(&imported(), &[])
+    );
+    let shared = |shared_column| BrowserOptions {
+        shared_column,
+        ..imported()
+    };
+    assert_eq!(
+        screen(&imported(), &[Key::Char('u')]),
+        screen(&shared(SharedColumn::Unique), &[])
+    );
+    assert_eq!(
+        screen(&imported(), &[Key::Char('u'); 2]),
+        screen(&shared(SharedColumn::Off), &[])
+    );
+    assert_eq!(
+        screen(&imported(), &[Key::Char('u'); 3]),
+        screen(&imported(), &[])
+    );
+    let item_count = BrowserOptions {
+        show_item_count: true,
+        ..imported()
+    };
+    assert_eq!(
+        screen(&imported(), &[Key::Char('c')]),
+        screen(&item_count, &[])
+    );
+    // The first `a` puts the cursor on `sparse`, the first row by apparent size, as no view was
+    // saved yet, and the second keeps it there.
+    assert_eq!(
+        screen(&imported(), &[Key::Char('a'); 2]),
+        screen(&imported(), &[Key::Down; 5])
+    );
+}
+
+/// With `--confirm-quit`, `q` opens a window that asks for confirmation.
+#[test]
+fn quit_confirmation() {
+    let tree = tree_of(SOURCE, false);
+    let options = BrowserOptions {
+        confirm_quit: true,
+        ..imported()
+    };
+    assert_snapshot!(screen(&tree, root(&tree), &options, &[Key::Char('q')], (80, 10)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "   16.0 KiB S   4.0 KiB [###########] /src                                      "
+    "!   4.0 KiB             [####┌── Confirm quit ────┐                             "
+    "e   4.0 KiB             [####│                    │                             "
+    "    4.0 KiB             [####│ Really quit? (y/N) │                             "
+    "H   4.0 KiB             [####└────────────────────┘                             "
+    "    0.0   B             [           ]  sparse                                   "
+    "    0.0   B             [           ]  raw \xFF\xFE                             "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................BBBBBBBBBBBBBB..................................
+    ................................................................................
+    .............................................B.B................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// `q` quits, or with `--confirm-quit` asks first: `y` or `Y` quits, and any other key closes
+/// the window and does nothing else.
+#[test]
+fn quit_keys() {
+    let tree = tree_of(SOURCE, false);
+    let quits = |options: &BrowserOptions, keys: &[Key]| {
+        let mut options = options.clone();
+        let mut browser = Browser::new(&tree, root(&tree), &options);
+        keys.iter()
+            .map(|&key| browser.key_input(&tree, &mut options, key, 24))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(quits(&imported(), &[Key::Char('q')]), [true]);
+    let options = BrowserOptions {
+        confirm_quit: true,
+        ..imported()
+    };
+    let keys = [
+        Key::Char('q'),
+        Key::Char('q'),
+        Key::Char('q'),
+        Key::Char('n'),
+        Key::Char('q'),
+        Key::Char('y'),
+        Key::Char('q'),
+        Key::Char('Y'),
+    ];
+    assert_eq!(
+        quits(&options, &keys),
+        [false, false, false, false, false, true, false, true]
+    );
+    assert_eq!(
+        screen(
+            &tree,
+            root(&tree),
+            &options,
+            &[Key::Char('q'), Key::Char('j')],
+            (80, 10)
+        ),
+        screen(&tree, root(&tree), &options, &[], (80, 10))
+    );
 }

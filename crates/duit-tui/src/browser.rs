@@ -1,7 +1,8 @@
-//! The file browser of `browser.zig`: the sorted listing of the open directory, and the screen
-//! that shows it.
+//! The file browser of `browser.zig`: the sorted listing of the open directory, the screen that
+//! shows it, and the keys that move through it.
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
 use duit_model::{DirectoryId, Entry, EntryId, EntryKind, Special, Tree};
 use ratatui::Frame;
@@ -9,8 +10,8 @@ use ratatui::buffer::Buffer;
 use ratatui::style::Style;
 
 use crate::ui::{
-    BOLD_REVERSE, PLAIN, REVERSE, draw_line, draw_size, draw_text, format_number, format_timestamp,
-    shorten, to_utf8,
+    BOLD, BOLD_REVERSE, PLAIN, REVERSE, Window, draw_line, draw_size, draw_text, format_number,
+    format_timestamp, shorten, to_utf8,
 };
 use crate::util::{fmt5dec, strnatcmp};
 
@@ -71,6 +72,10 @@ pub struct BrowserOptions {
     pub can_delete: bool,
     /// The separator between groups of three digits in full numbers.
     pub thousands_separator: String,
+    /// The tree has extended information, `-e`, which the mtime keys need.
+    pub extended: bool,
+    /// Ask before quitting, `--confirm-quit`.
+    pub confirm_quit: bool,
 }
 
 impl Default for BrowserOptions {
@@ -92,15 +97,55 @@ impl Default for BrowserOptions {
             imported: false,
             can_delete: true,
             thousands_separator: ",".to_string(),
+            extended: false,
+            confirm_quit: false,
         }
     }
+}
+
+/// A key press, as the browser reads it from ncurses `getch`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Key {
+    /// A character key.
+    Char(char),
+    /// The Enter key, which ncurses reports as `\n`.
+    Enter,
+    Backspace,
+    Up,
+    Down,
+    Left,
+    Right,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+}
+
+/// The window over the listing that takes the keys, `state` in `browser.zig`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum State {
+    Main,
+    /// The confirmation of `--confirm-quit`.
+    Quit,
+}
+
+/// Where the user left a directory, `View` in `browser.zig`.
+#[derive(Debug, Clone, Default)]
+struct View {
+    /// The index of the first row on the screen.
+    top: usize,
+    /// The name of the entry under the cursor, or `None` for the row of the parent directory and
+    /// for an empty listing.
+    cursor: Option<Vec<u8>>,
 }
 
 /// The open directory of the browser, with its entries in the order they are listed.
 #[derive(Debug)]
 pub struct Browser {
     directory: DirectoryId,
-    /// The path of the directory: the names from the root down, joined with `/`.
+    /// The path of the directory: the names from the root down, joined with `/`. Going to the
+    /// parent directory cuts its last component, as ncdu does, so it is kept rather than computed
+    /// from the tree.
     path: Vec<u8>,
     /// The shown entries, sorted. `None` is the row of the parent directory, which is first when
     /// the directory is not the root.
@@ -115,6 +160,10 @@ pub struct Browser {
     max_size: u64,
     /// Whether a shown directory has a shared size, which adds the shared column.
     has_shared: bool,
+    /// The view of each directory that was open, by path, `opened_dir_views` in `browser.zig`.
+    /// Directories with the same path share a view.
+    views: HashMap<Vec<u8>, View>,
+    state: State,
 }
 
 /// Whether ncdu shows `kind` as a directory, with a `/` in front of the name: a directory, also
@@ -258,6 +307,35 @@ fn path_of(tree: &Tree, directory: DirectoryId) -> Vec<u8> {
     path
 }
 
+/// The path `path` without its last component, as Zig's `std.fs.path.dirname`: trailing
+/// separators are ignored, and a path with one component has none.
+fn dirname(path: &[u8]) -> Option<&[u8]> {
+    let end = path.iter().rposition(|&byte| byte != b'/')?;
+    let separator = path[..end].iter().rposition(|&byte| byte == b'/')?;
+    match separator {
+        0 => Some(&path[..1]),
+        _ => Some(&path[..separator]),
+    }
+}
+
+/// Move `index` in a list of `length` rows for a selection key, with `page` rows to a page, as
+/// `keyInputSelection` in `browser.zig`. Other keys do nothing.
+fn select_with_key(key: Key, index: &mut usize, length: usize, page: usize) {
+    match key {
+        Key::Char('j') | Key::Down => {
+            if *index + 1 < length {
+                *index += 1;
+            }
+        }
+        Key::Char('k') | Key::Up => *index = index.saturating_sub(1),
+        Key::Home => *index = 0,
+        Key::End => *index = length.saturating_sub(1),
+        Key::PageUp => *index = index.saturating_sub(page),
+        Key::PageDown => *index = length.saturating_sub(1).min(*index + page),
+        Key::Char(_) | Key::Enter | Key::Backspace | Key::Left | Key::Right => {}
+    }
+}
+
 /// Format the item count `count` of a directory in 6 columns.
 fn format_item_count(count: u32, separator: &str) -> String {
     match count {
@@ -282,13 +360,15 @@ impl Browser {
             max_blocks: 1,
             max_size: 1,
             has_shared: false,
+            views: HashMap::new(),
+            state: State::Main,
         };
         browser.load(tree, options);
         browser
     }
 
-    /// List the entries of the directory that `options` shows, sorted, and put the cursor on the
-    /// first row.
+    /// List the entries of the directory that `options` shows, then sort them, `loadDir` in
+    /// `browser.zig`.
     fn load(&mut self, tree: &Tree, options: &BrowserOptions) {
         self.items.clear();
         self.max_blocks = 1;
@@ -312,6 +392,12 @@ impl Browser {
                 }
             }
         }
+        self.sort(tree, options);
+    }
+
+    /// Sort the listing as `options` says, and restore the view of the directory, `sortDir` in
+    /// `browser.zig`.
+    fn sort(&mut self, tree: &Tree, options: &BrowserOptions) {
         let start = usize::from(self.items.first() == Some(&None));
         // A stable sort, as Zig's `std.mem.sort`, keeps entries that compare equal in the order
         // of the tree.
@@ -327,12 +413,212 @@ impl Browser {
             }
             (None, _) | (_, None) => Ordering::Equal,
         });
-        self.cursor = 0;
+        self.load_view(tree);
     }
 
-    /// Put the cursor on the row `index` of the listing, or on the last row if there are fewer.
-    pub fn select(&mut self, index: usize) {
-        self.cursor = index.min(self.items.len().saturating_sub(1));
+    /// Remember the view of the directory, `View.save` in `browser.zig`.
+    fn save_view(&mut self, tree: &Tree) {
+        let cursor = self
+            .items
+            .get(self.cursor)
+            .copied()
+            .flatten()
+            .map(|id| tree.name(id).to_vec());
+        self.views.insert(
+            self.path.clone(),
+            View {
+                top: self.top,
+                cursor,
+            },
+        );
+    }
+
+    /// Restore the view that was saved for the path of the directory, or start at the top, and
+    /// put the cursor on its entry if that is listed or on the first row, `View.load` in
+    /// `browser.zig`.
+    fn load_view(&mut self, tree: &Tree) {
+        let view = self.views.get(&self.path).cloned().unwrap_or_default();
+        self.top = view.top;
+        self.cursor = self
+            .items
+            .iter()
+            .position(|item| item.map(|id| tree.name(id)) == view.cursor.as_deref())
+            .unwrap_or(0);
+    }
+
+    /// Open the subdirectory `directory`, `enterSub` in `browser.zig`.
+    fn enter_subdirectory(
+        &mut self,
+        tree: &Tree,
+        options: &BrowserOptions,
+        directory: DirectoryId,
+    ) {
+        self.directory = directory;
+        join_path(&mut self.path, tree.name(tree.directory(directory).entry));
+        self.load(tree, options);
+    }
+
+    /// Open the parent directory, if there is one, `enterParent` in `browser.zig`.
+    fn enter_parent(&mut self, tree: &Tree, options: &BrowserOptions) {
+        let Some(parent) = tree.directory(self.directory).parent else {
+            return;
+        };
+        self.directory = parent;
+        // An empty name leaves a path without a separator to cut, for example a root named `foo`
+        // with a subdirectory without a name, which a scan never gives. ncdu reaches `unreachable`
+        // there.
+        self.path = dirname(&self.path).map_or_else(|| path_of(tree, parent), <[u8]>::to_vec);
+        self.load(tree, options);
+    }
+
+    /// Sort by `column`: in `default_order` when it is another column than before, and in the
+    /// other order when it is the same, `sortToggle` in `browser.zig`.
+    fn sort_toggle(
+        &mut self,
+        tree: &Tree,
+        options: &mut BrowserOptions,
+        column: SortColumn,
+        default_order: SortOrder,
+    ) {
+        options.sort_order = if options.sort_column != column {
+            default_order
+        } else {
+            match options.sort_order {
+                SortOrder::Ascending => SortOrder::Descending,
+                SortOrder::Descending => SortOrder::Ascending,
+            }
+        };
+        options.sort_column = column;
+        self.sort(tree, options);
+    }
+
+    /// Handle `key` on a terminal with `height` rows, which sets the size of a page, and change
+    /// `options` as the display and sort keys say, `keyInput` in `browser.zig`. Returns whether
+    /// to quit.
+    pub fn key_input(
+        &mut self,
+        tree: &Tree,
+        options: &mut BrowserOptions,
+        key: Key,
+        height: u16,
+    ) -> bool {
+        let quit = self.handle_key(tree, options, key, height);
+        self.save_view(tree);
+        quit
+    }
+
+    fn handle_key(
+        &mut self,
+        tree: &Tree,
+        options: &mut BrowserOptions,
+        key: Key,
+        height: u16,
+    ) -> bool {
+        match self.state {
+            State::Main => {}
+            State::Quit => {
+                self.state = State::Main;
+                return key == Key::Char('y') || key == Key::Char('Y');
+            }
+        }
+
+        match key {
+            Key::Char('q') => {
+                if !options.confirm_quit {
+                    return true;
+                }
+                self.state = State::Quit;
+            }
+            // The help and info windows, refresh, shell, and delete.
+            Key::Char('?' | 'i' | 'r' | 'b' | 'd') => {}
+
+            Key::Char('n') => {
+                self.sort_toggle(tree, options, SortColumn::Name, SortOrder::Ascending);
+            }
+            Key::Char('s') => {
+                let column = if options.show_blocks {
+                    SortColumn::Blocks
+                } else {
+                    SortColumn::Size
+                };
+                self.sort_toggle(tree, options, column, SortOrder::Descending);
+            }
+            Key::Char('C') => {
+                self.sort_toggle(tree, options, SortColumn::Items, SortOrder::Descending);
+            }
+            Key::Char('M') => {
+                if options.extended {
+                    self.sort_toggle(tree, options, SortColumn::Mtime, SortOrder::Descending);
+                }
+            }
+            Key::Char('e') => {
+                options.show_hidden = !options.show_hidden;
+                self.load(tree, options);
+            }
+            Key::Char('t') => {
+                options.sort_directories_first = !options.sort_directories_first;
+                self.sort(tree, options);
+            }
+            Key::Char('a') => {
+                options.show_blocks = !options.show_blocks;
+                if options.show_blocks && options.sort_column == SortColumn::Size {
+                    options.sort_column = SortColumn::Blocks;
+                    self.sort(tree, options);
+                }
+                if !options.show_blocks && options.sort_column == SortColumn::Blocks {
+                    options.sort_column = SortColumn::Size;
+                    self.sort(tree, options);
+                }
+            }
+
+            Key::Enter | Key::Char('l') | Key::Right => match self.items.get(self.cursor) {
+                Some(Some(id)) => {
+                    if let Some(directory) = directory_of(tree.entry(*id)) {
+                        self.enter_subdirectory(tree, options, directory);
+                    }
+                }
+                Some(None) => self.enter_parent(tree, options),
+                None => {}
+            },
+            Key::Char('h' | '<') | Key::Backspace | Key::Left => self.enter_parent(tree, options),
+
+            Key::Char('c') => options.show_item_count = !options.show_item_count,
+            Key::Char('m') => {
+                if options.extended {
+                    options.show_mtime = !options.show_mtime;
+                }
+            }
+            Key::Char('g') => {
+                (options.show_graph, options.show_percent) =
+                    match (options.show_graph, options.show_percent) {
+                        (false, false) => (true, false),
+                        (true, false) => (false, true),
+                        (false, true) => (true, true),
+                        (true, true) => (false, false),
+                    };
+            }
+            Key::Char('u') => {
+                options.shared_column = match options.shared_column {
+                    SharedColumn::Off => SharedColumn::Shared,
+                    SharedColumn::Shared => SharedColumn::Unique,
+                    SharedColumn::Unique => SharedColumn::Off,
+                };
+            }
+
+            Key::Char(_)
+            | Key::Up
+            | Key::Down
+            | Key::Home
+            | Key::End
+            | Key::PageUp
+            | Key::PageDown => select_with_key(
+                key,
+                &mut self.cursor,
+                self.items.len(),
+                usize::from(height.saturating_sub(3)),
+            ),
+        }
+        false
     }
 
     /// Draw the browser on all of `frame`, which starts at the top left corner of the terminal:
@@ -442,6 +728,18 @@ impl Browser {
             &format_number(directory.items.into(), &options.thousands_separator),
             REVERSE,
         );
+
+        match self.state {
+            State::Main => {}
+            State::Quit => {
+                let window = Window::new(buffer, 4, 22, "Confirm quit");
+                let x = window.text(buffer, 2, 2, "Really quit? (", PLAIN);
+                let x = window.text(buffer, 2, x, "y", BOLD);
+                let x = window.text(buffer, 2, x, "/", PLAIN);
+                let x = window.text(buffer, 2, x, "N", BOLD);
+                window.text(buffer, 2, x, ")", PLAIN);
+            }
+        }
     }
 }
 
@@ -673,7 +971,7 @@ impl Row<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_item_count, join_path};
+    use super::{dirname, format_item_count, join_path};
 
     /// Each range of item counts in its 6 columns. Upstream has no test for `Row.items`.
     #[test]
@@ -719,5 +1017,24 @@ mod tests {
         assert_eq!(joined(b"/home/", b"/user"), "/home/user");
         assert_eq!(joined(b"/home", b""), "/home");
         assert_eq!(joined(b"", b"user"), "user");
+    }
+
+    /// The `dirnamePosix` test of Zig's `std.fs.path`, which ncdu uses to go to the parent
+    /// directory, and a separator that repeats in the middle.
+    #[test]
+    fn dirnames() {
+        let parent = |path: &str| dirname(path.as_bytes()).map(<[u8]>::to_vec);
+        assert_eq!(parent("/a/b/c"), Some(b"/a/b".to_vec()));
+        assert_eq!(parent("/a/b/c///"), Some(b"/a/b".to_vec()));
+        assert_eq!(parent("/a"), Some(b"/".to_vec()));
+        assert_eq!(parent("/"), None);
+        assert_eq!(parent("//"), None);
+        assert_eq!(parent("///"), None);
+        assert_eq!(parent("////"), None);
+        assert_eq!(parent(""), None);
+        assert_eq!(parent("a"), None);
+        assert_eq!(parent("a/"), None);
+        assert_eq!(parent("a//"), None);
+        assert_eq!(parent("a//b"), Some(b"a/".to_vec()));
     }
 }
