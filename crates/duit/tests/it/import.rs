@@ -24,7 +24,8 @@ const EXPORT: &[u8] = b"[1,2,{\"progname\":\"ncdu\",\"progver\":\"2.9.2\",\"time
 {\"name\":\"raw \\u00e9 \xff\xfe\"}]]
 ";
 
-/// A directory with [`EXPORT`], plain and compressed, and the inputs of the error cases.
+/// A directory with [`EXPORT`], plain and compressed, the inputs of the error cases, and the
+/// longest name that an import accepts.
 fn fixture() -> TempDir {
     let directory = TempDir::new().expect("temporary directory is created");
     let write = |name: &str, contents: &[u8]| {
@@ -37,7 +38,7 @@ fn fixture() -> TempDir {
     );
     write("short.json", b"[1,0,{}");
     write("malformed.json", b"[1,0,{},[{\"name\":\"a\",}]]");
-    // A name that is too long for a JSON export.
+    // A name that does not fit in a block of 4 KiB, and that is too long for a JSON export.
     write(
         "long.json",
         &[
@@ -48,6 +49,16 @@ fn fixture() -> TempDir {
         .concat(),
     );
     write("binary.ncdu", b"\xbfncduEX1\x00\x00\x00\x00");
+    // The longest name that an import accepts, as in ncdu.
+    write(
+        "longest.json",
+        &[
+            &b"[1,2,{},[{\"name\":\"/root\"},{\"name\":\""[..],
+            &[b'a'; 32 * 1024 - 5],
+            b"\"}]]",
+        ]
+        .concat(),
+    );
     fs::create_dir(directory.path().join("directory")).expect("directory is created");
     directory
 }
@@ -242,6 +253,16 @@ fn errors() {
         &["-f", "malformed.json", "-c", "-o-"],
         &["-f", "malformed.json", "-o", "export.out"],
         &["-f", "long.json", "-o-"],
+        &["-f", "missing", "-O", "missing.ncdu"],
+        &["-f", "malformed.json", "-O", "malformed.ncdu"],
+        &[
+            "-f",
+            "long.json",
+            "--export-block-size",
+            "4",
+            "-O",
+            "long.ncdu",
+        ],
     ];
     #[cfg(feature = "test-ncdu")]
     for arguments in cases {
@@ -303,12 +324,90 @@ fn errors() {
 
     ----- stderr -----
     ^[[JError writing JSON export: path too long.
+
+    $ duit -f missing -O missing.ncdu
+    exit_code: 1
+    ----- stdout -----
+
+    ----- stderr -----
+    ^[[JError reading file 'missing': No such file or directory.
+
+    $ duit -f malformed.json -O malformed.ncdu
+    exit_code: 1
+    ----- stdout -----
+
+    ----- stderr -----
+    ^[[JError importing file on line 1:23: expected string.
+
+    $ duit -f long.json --export-block-size 4 -O long.ncdu
+    exit_code: 1
+    ----- stdout -----
+
+    ----- stderr -----
+    ^[[JError writing data: path too long.
     ");
-    // As in ncdu, the export file is created before the import is read.
+    // As in ncdu, the export file is created before the import is read. A binary export starts
+    // with its signature, and a block is written only once it is full.
     assert_eq!(
         fs::read(directory.path().join("export.out")).expect("export file is created"),
         b""
     );
+    for name in ["missing.ncdu", "malformed.ncdu", "long.ncdu"] {
+        assert_eq!(
+            fs::read(directory.path().join(name)).expect("export file is created"),
+            b"\xbfncduEX1",
+            "{name}"
+        );
+    }
+}
+
+/// `-O` writes an import as a binary export, which ncdu reads as it reads its own conversion of
+/// the same import.
+#[test]
+fn binary_export() {
+    let directory = fixture();
+    let root = directory.path();
+    let cases: &[&[&str]] = &[
+        &["-f", "export.json", "-O", "duit.ncdu"],
+        &["-f", "export.json", "-O", "duit.ncdu", "-e"],
+        &["-f", "longest.json", "-O", "duit.ncdu"],
+    ];
+    let mut rendered = String::new();
+    for arguments in cases {
+        rendered.push_str(&table(root, &[arguments]));
+        #[cfg(feature = "test-ncdu")]
+        {
+            let ncdu_arguments = [&arguments[..3], &["ncdu.ncdu"], &arguments[4..]].concat();
+            assert!(ncdu(root, &ncdu_arguments).status.success());
+            assert_eq!(
+                render(&ncdu(root, &["-f", "duit.ncdu", "-o-", "-e"])),
+                render(&ncdu(root, &["-f", "ncdu.ncdu", "-o-", "-e"])),
+                "arguments: {arguments:?}"
+            );
+        }
+    }
+    assert_snapshot!(rendered, @"
+    $ duit -f export.json -O duit.ncdu
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    ^[[J
+
+    $ duit -f export.json -O duit.ncdu -e
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    ^[[J
+
+    $ duit -f longest.json -O duit.ncdu
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    ^[[J
+    ");
 }
 
 /// The binary export is not read yet.

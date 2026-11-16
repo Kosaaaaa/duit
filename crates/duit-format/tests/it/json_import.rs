@@ -164,7 +164,7 @@ fn items() {
     let output = reexport(input, true).expect("items are imported");
     #[cfg(feature = "test-ncdu")]
     {
-        let ncdu = ncdu_import(input, &["-e"]);
+        let ncdu = ncdu_import(input, &["-o-", "-e"]);
         assert!(ncdu.status.success());
         let items = |export: &[u8]| -> Vec<u8> {
             let start = export.iter().position(|&byte| byte == b'\n').unwrap_or(0);
@@ -226,7 +226,7 @@ fn result(input: impl Read) -> String {
 /// The result of an import of `input` by ncdu, as [`result`] renders it.
 #[cfg(feature = "test-ncdu")]
 fn ncdu_result(input: &[u8]) -> String {
-    let output = ncdu_import(input, &[]);
+    let output = ncdu_import(input, &["-o-"]);
     if output.status.success() {
         return "ok".to_string();
     }

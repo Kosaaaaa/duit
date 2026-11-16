@@ -7,14 +7,15 @@ use std::process::{Command, Output, Stdio};
 #[cfg(feature = "test-ncdu")]
 use std::thread;
 
+mod bin_export;
 mod json_export;
 mod json_import;
 
-/// Run `ncdu -f- -o-` with `arguments` and `input` on standard input.
+/// Run `ncdu -f-` with `arguments`, which select the export, and `input` on standard input.
 #[cfg(feature = "test-ncdu")]
 fn ncdu_import(input: &[u8], arguments: &[&str]) -> Output {
     let mut child = Command::new("ncdu")
-        .args(["--ignore-config", "-f-", "-o-"])
+        .args(["--ignore-config", "-f-"])
         .args(arguments)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

@@ -20,6 +20,7 @@ test-ncdu = []
 
 [dependencies]
 duit-format = { workspace = true }
+duit-model = { workspace = true }
 duit-scan = { workspace = true }
 libc = { workspace = true }
 

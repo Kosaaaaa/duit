@@ -12,15 +12,16 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use duit::{Arg, Args, Config, OptionError, open_error, read_error, stat_error, write_error};
-use duit_format::{ImportError, JsonExport, JsonExportError, import};
+use duit_format::{
+    BINARY_SIGNATURE, BinaryExport, BinaryExportError, ImportError, JsonExport, JsonExportError,
+    import,
+};
+use duit_model::Sink;
 use duit_scan::{ScanError, ScanOptions, scan};
 
 /// The terminal sequence that clears from the cursor to the end of the screen. ncdu writes it to
 /// standard error before an error message and at the end of a scan, to clear a progress line.
 const CLEAR_TO_END: &[u8] = b"\x1b[J";
-
-/// The first bytes of a binary export.
-const BINARY_SIGNATURE: &[u8; 8] = b"\xbfncduEX1";
 
 const HELP: &str = "\
 duit <options> <directory>
@@ -183,11 +184,8 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<(), Vec<u8>> {
     }
 
     // The modes that are not ported yet.
-    if export_binary.is_some() {
-        return Err(b"The -O flag is not supported yet.\n".to_vec());
-    }
-    let Some(export_path) = export_json else {
-        return Err(b"Only an export with -o is supported yet.\n".to_vec());
+    let Some(export_path) = export_json.or(export_binary) else {
+        return Err(b"Only an export with -o or -O is supported yet.\n".to_vec());
     };
     if import_file.is_none() && config.threads > 1 {
         return Err(b"A scan with more than one thread is not supported yet.\n".to_vec());
@@ -207,19 +205,69 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<(), Vec<u8>> {
             })?,
         )
     };
+    if export_binary.is_some() {
+        // ncdu writes the signature before it reads the import.
+        let export = BinaryExport::new(
+            out,
+            config.extended,
+            config.compress_level,
+            config.export_block_size,
+        )
+        .map_err(|error| writing(&error))?;
+        let import_input = import_file.map(open_import).transpose()?;
+        return fill(export, import_input, scan_directory, &config);
+    }
     // As in ncdu, the export file is created before the import is read.
     let import_input = import_file.map(open_import).transpose()?;
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |time| time.as_secs());
-    let mut export = JsonExport::new(
+    let export = JsonExport::new(
         out,
         timestamp,
         config.extended,
         config.compress.then_some(config.compress_level),
     )
     .map_err(|error| writing(&error))?;
+    fill(export, import_input, scan_directory, &config)
+}
 
+/// An export that an import or a scan writes into.
+trait Export: Sink {
+    /// Write the end of the export and flush it.
+    fn finish(self) -> io::Result<()>;
+
+    /// Drop the export without writing what is still buffered, as ncdu does when it stops on an
+    /// error.
+    fn discard(self);
+}
+
+impl<W: Write> Export for JsonExport<W> {
+    fn finish(self) -> io::Result<()> {
+        Self::finish(self).map(drop)
+    }
+
+    fn discard(self) {
+        Self::discard(self);
+    }
+}
+
+impl<W: Write> Export for BinaryExport<W> {
+    fn finish(self) -> io::Result<()> {
+        Self::finish(self).map(drop)
+    }
+
+    /// The blocks that are full are written already, and the current one is dropped.
+    fn discard(self) {}
+}
+
+/// Write the import of `import_input`, or else the scan of `scan_directory`, into `export`.
+fn fill<E: Export>(
+    mut export: E,
+    import_input: Option<(File, [u8; 8])>,
+    scan_directory: Option<&[u8]>,
+    config: &Config,
+) -> Result<(), Vec<u8>> {
     if let Some((input, head)) = import_input {
         match import(&mut export, input, &head) {
             Ok(()) => {}
@@ -317,12 +365,19 @@ fn opening_directory(description: &str) -> Vec<u8> {
 }
 
 fn writing(error: &io::Error) -> Vec<u8> {
-    match error
-        .get_ref()
-        .and_then(|error| error.downcast_ref::<JsonExportError>())
-    {
-        Some(JsonExportError::PathTooLong) => {
-            b"Error writing JSON export: path too long.\n".to_vec()
+    let inner = error.get_ref();
+    if let Some(error) = inner.and_then(|error| error.downcast_ref::<JsonExportError>()) {
+        return match error {
+            JsonExportError::PathTooLong => b"Error writing JSON export: path too long.\n".to_vec(),
+        };
+    }
+    match inner.and_then(|error| error.downcast_ref::<BinaryExportError>()) {
+        Some(BinaryExportError::PathTooLong) => b"Error writing data: path too long.\n".to_vec(),
+        Some(BinaryExportError::FileTooLarge) => {
+            b"Export data file has grown too large, please report a bug.\n".to_vec()
+        }
+        Some(BinaryExportError::TooManyBlocks) => {
+            b"Too many data blocks, please report a bug.\n".to_vec()
         }
         None => format!("Error writing to file: {}.\n", write_error(error)).into_bytes(),
     }
