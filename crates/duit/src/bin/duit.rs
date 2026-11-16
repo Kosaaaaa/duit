@@ -12,7 +12,7 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use duit::{Arg, Args, Config, OptionError, open_error, read_error, stat_error, write_error};
-use duit_format::{ImportError, JsonExport, import};
+use duit_format::{ImportError, JsonExport, JsonExportError, import};
 use duit_scan::{ScanError, ScanOptions, scan};
 
 /// The terminal sequence that clears from the cursor to the end of the screen. ncdu writes it to
@@ -234,7 +234,12 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<(), Vec<u8>> {
                         .into_bytes(),
                 );
             }
-            Err(ImportError::Sink(error)) => return Err(writing(&error)),
+            Err(ImportError::Sink(error)) => {
+                // As in ncdu, which stops without flushing its buffer, a failed export writes
+                // nothing more.
+                export.discard();
+                return Err(writing(&error));
+            }
         }
         export.finish().map_err(|error| writing(&error))?;
         let _ = io::stderr().write_all(CLEAR_TO_END);
@@ -312,5 +317,13 @@ fn opening_directory(description: &str) -> Vec<u8> {
 }
 
 fn writing(error: &io::Error) -> Vec<u8> {
-    format!("Error writing to file: {}.\n", write_error(error)).into_bytes()
+    match error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<JsonExportError>())
+    {
+        Some(JsonExportError::PathTooLong) => {
+            b"Error writing JSON export: path too long.\n".to_vec()
+        }
+        None => format!("Error writing to file: {}.\n", write_error(error)).into_bytes(),
+    }
 }

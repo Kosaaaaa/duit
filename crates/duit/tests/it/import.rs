@@ -37,6 +37,16 @@ fn fixture() -> TempDir {
     );
     write("short.json", b"[1,0,{}");
     write("malformed.json", b"[1,0,{},[{\"name\":\"a\",}]]");
+    // A name that is too long for a JSON export.
+    write(
+        "long.json",
+        &[
+            &b"[1,2,{},[{\"name\":\"/root\"},{\"name\":\""[..],
+            &[b'a'; 10757],
+            b"\"}]]",
+        ]
+        .concat(),
+    );
     write("binary.ncdu", b"\xbfncduEX1\x00\x00\x00\x00");
     fs::create_dir(directory.path().join("directory")).expect("directory is created");
     directory
@@ -231,6 +241,7 @@ fn errors() {
         &["-f", "malformed.json", "-o-"],
         &["-f", "malformed.json", "-c", "-o-"],
         &["-f", "malformed.json", "-o", "export.out"],
+        &["-f", "long.json", "-o-"],
     ];
     #[cfg(feature = "test-ncdu")]
     for arguments in cases {
@@ -285,6 +296,13 @@ fn errors() {
 
     ----- stderr -----
     ^[[JError importing file on line 1:23: expected string.
+
+    $ duit -f long.json -o-
+    exit_code: 1
+    ----- stdout -----
+
+    ----- stderr -----
+    ^[[JError writing JSON export: path too long.
     ");
     // As in ncdu, the export file is created before the import is read.
     assert_eq!(

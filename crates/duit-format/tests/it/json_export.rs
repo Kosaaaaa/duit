@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-use duit_format::JsonExport;
+use duit_format::{JsonExport, JsonExportError};
 use duit_model::{EntryType, Extended, Sink, Special, Stat};
 use insta::assert_snapshot;
 
@@ -393,4 +393,22 @@ fn flush_error() {
         let error = export.finish().err().expect("the final flush fails");
         assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
     }
+}
+
+/// As in ncdu, a name longer than 10756 bytes ends the export with an error.
+#[test]
+fn path_too_long() {
+    let result = |length: usize| {
+        let mut export = JsonExport::new(Vec::new(), 0, false, None).expect("header is written");
+        let root = export.create_root(&vec![b'a'; length], &directory(1))?;
+        export.finish_directory(root, None)
+    };
+    assert!(result(10756).is_ok());
+    let error = result(10757).expect_err("the root is too long");
+    assert_eq!(
+        error
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<JsonExportError>()),
+        Some(&JsonExportError::PathTooLong)
+    );
 }

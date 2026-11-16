@@ -409,25 +409,14 @@ fn malformed() {
     "#);
 }
 
-/// Inputs that ncdu does not import:
-///
-/// - ncdu crashes on a root that its fields turn into something other than a directory. duit stops
-///   with the error of a root that is not an array.
-/// - ncdu imports a name of up to 32763 bytes, but its JSON export stops on a name longer than
-///   10756 bytes.
+/// Inputs that ncdu does not import. ncdu crashes on a root that its fields turn into something
+/// other than a directory. duit stops with the error of a root that is not an array.
 #[test]
 fn unlike_ncdu() {
-    let longest_name = [
-        &br#"[1,0,{},[{"name":"/r"},{"name":""#[..],
-        &[b'a'; 32 * 1024 - 5],
-        br#""}]]"#,
-    ]
-    .concat();
     let cases: &[&[u8]] = &[
         br#"[1,0,{},[{"name":"/r","excluded":"pattern"}]]"#,
         br#"[1,0,{},[{"name":"/r","notreg":true}]]"#,
         br#"[1,0,{},[{"name":"/r","hlnkc":true}]]"#,
-        &longest_name,
     ];
     let mut rendered = String::new();
     for &input in cases {
@@ -440,8 +429,6 @@ fn unlike_ncdu() {
       1:37: parent item must be a directory
     [1,0,{},[{\"name\":\"/r\",\"hlnkc\":true}]]
       1:36: parent item must be a directory
-    [1,0,{},[{\"name\":\"/r\"},{\"name\":\"aaaaaaaaaaaaaaaaaaaaa...
-      ok
     "#);
 }
 
