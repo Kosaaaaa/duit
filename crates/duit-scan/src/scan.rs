@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::os::fd::{AsFd, BorrowedFd};
 
-use duit_model::{EntryType, Extended, Sink, Special, Stat};
+use duit_model::{BLOCKS_MAX, EntryType, Extended, Sink, Special, Stat};
 use rustix::fs::{AtFlags, CWD, Dir, FileType, Mode, OFlags, openat, statat};
 
 use crate::{DirectoryPatterns, ExcludePatterns, Excluded};
@@ -187,8 +187,6 @@ fn scan_entry<'a, S: Sink>(
     }))
 }
 
-/// The largest block count that ncdu stores, in 60 bits.
-const BLOCKS_MAX: u64 = (1 << 60) - 1;
 /// The largest link count that ncdu stores, in 31 bits.
 const LINK_COUNT_MAX: u32 = (1 << 31) - 1;
 
