@@ -44,9 +44,9 @@ pub fn import<S: Sink>(sink: &mut S, input: impl Read, head: &[u8]) -> Result<()
             byte: 1,
             message: "decompression error",
         })?;
-        Parser::new(decoder, true).export(sink)
+        export(&mut Parser::new(decoder, true), sink)
     } else {
-        Parser::new(input, false).export(sink)
+        export(&mut Parser::new(input, false), sink)
     }
 }
 
@@ -403,206 +403,215 @@ impl<R: Read> Parser<R> {
         let head = self.next_char()?;
         self.skip_content(head)
     }
+}
 
-    /// Read the value of `key` into `item`.
-    fn item_key(&mut self, item: &mut Item, key: &[u8]) -> Result<(), ImportError> {
-        let stat = &mut item.stat;
-        match key {
-            b"asize" => stat.size = self.uint(u64::BITS)?,
-            b"dsize" => stat.blocks = self.uint::<u64>(u64::BITS)? >> 9,
-            b"dev" => stat.device = self.uint(u64::BITS)?,
-            b"excluded" => {
-                let mut value = Vec::new();
-                self.string(&mut value, KEY_CAPACITY)?;
-                // ncdu also writes "frmlnk", which it reads as a pattern.
-                item.kind = ItemType::Special(match value.as_slice() {
-                    b"otherfs" | b"othfs" => Special::OtherFilesystem,
-                    b"kernfs" => Special::KernelFilesystem,
-                    _ => Special::Pattern,
-                });
-            }
-            b"gid" => stat.extended.gid = Some(self.uint(u32::BITS)?),
-            b"hlnkc" => {
-                if self.boolean()? {
-                    item.kind = ItemType::Stat(EntryType::HardLink);
-                }
-            }
-            b"ino" => stat.inode = self.uint(u64::BITS)?,
-            b"mode" => stat.extended.mode = Some(self.uint(u16::BITS)?),
-            b"mtime" => {
-                stat.extended.mtime = Some(self.uint(u64::BITS)?);
-                // The fraction is dropped, because the model holds whole seconds.
-                let mut byte = self.next_byte()?;
-                if byte == b'.' {
-                    byte = self.next_byte()?;
-                    while byte.is_ascii_digit() {
-                        byte = self.next_byte()?;
-                    }
-                }
-                self.undo(byte);
-            }
-            b"name" => {
-                if !item.name.is_empty() {
-                    return self.fail("duplicate key");
-                }
-                self.string(&mut item.name, NAME_CAPACITY)?;
-                if item.name.len() > NAME_CAPACITY - 5 {
-                    return self.fail("too long file name");
-                }
-            }
-            b"nlink" => {
-                stat.link_count = self.uint(31)?;
-                if item.kind != ItemType::Stat(EntryType::Directory) && stat.link_count > 1 {
-                    item.kind = ItemType::Stat(EntryType::HardLink);
-                }
-            }
-            b"notreg" => {
-                if self.boolean()? {
-                    item.kind = ItemType::Stat(EntryType::NonRegular);
-                }
-            }
-            b"read_error" => {
-                if self.boolean()? {
-                    if item.kind == ItemType::Stat(EntryType::Directory) {
-                        item.read_error = true;
-                    } else {
-                        item.kind = ItemType::Special(Special::ReadError);
-                    }
-                }
-            }
-            b"uid" => stat.extended.uid = Some(self.uint(u32::BITS)?),
-            _ => self.skip()?,
+/// Read the value of `key` into `item`.
+fn item_key<R: Read>(
+    parser: &mut Parser<R>,
+    item: &mut Item,
+    key: &[u8],
+) -> Result<(), ImportError> {
+    let stat = &mut item.stat;
+    match key {
+        b"asize" => stat.size = parser.uint(u64::BITS)?,
+        b"dsize" => stat.blocks = parser.uint::<u64>(u64::BITS)? >> 9,
+        b"dev" => stat.device = parser.uint(u64::BITS)?,
+        b"excluded" => {
+            let mut value = Vec::new();
+            parser.string(&mut value, KEY_CAPACITY)?;
+            // ncdu also writes "frmlnk", which it reads as a pattern.
+            item.kind = ItemType::Special(match value.as_slice() {
+                b"otherfs" | b"othfs" => Special::OtherFilesystem,
+                b"kernfs" => Special::KernelFilesystem,
+                _ => Special::Pattern,
+            });
         }
-        Ok(())
+        b"gid" => stat.extended.gid = Some(parser.uint(u32::BITS)?),
+        b"hlnkc" => {
+            if parser.boolean()? {
+                item.kind = ItemType::Stat(EntryType::HardLink);
+            }
+        }
+        b"ino" => stat.inode = parser.uint(u64::BITS)?,
+        b"mode" => stat.extended.mode = Some(parser.uint(u16::BITS)?),
+        b"mtime" => {
+            stat.extended.mtime = Some(parser.uint(u64::BITS)?);
+            // The fraction is dropped, because the model holds whole seconds.
+            let mut byte = parser.next_byte()?;
+            if byte == b'.' {
+                byte = parser.next_byte()?;
+                while byte.is_ascii_digit() {
+                    byte = parser.next_byte()?;
+                }
+            }
+            parser.undo(byte);
+        }
+        b"name" => {
+            if !item.name.is_empty() {
+                return parser.fail("duplicate key");
+            }
+            parser.string(&mut item.name, NAME_CAPACITY)?;
+            if item.name.len() > NAME_CAPACITY - 5 {
+                return parser.fail("too long file name");
+            }
+        }
+        b"nlink" => {
+            stat.link_count = parser.uint(31)?;
+            if item.kind != ItemType::Stat(EntryType::Directory) && stat.link_count > 1 {
+                item.kind = ItemType::Stat(EntryType::HardLink);
+            }
+        }
+        b"notreg" => {
+            if parser.boolean()? {
+                item.kind = ItemType::Stat(EntryType::NonRegular);
+            }
+        }
+        b"read_error" => {
+            if parser.boolean()? {
+                if item.kind == ItemType::Stat(EntryType::Directory) {
+                    item.read_error = true;
+                } else {
+                    item.kind = ItemType::Special(Special::ReadError);
+                }
+            }
+        }
+        b"uid" => stat.extended.uid = Some(parser.uint(u32::BITS)?),
+        _ => parser.skip()?,
     }
+    Ok(())
+}
 
-    /// Read the next item into `item`, with `device` as the device of its parent, and return
-    /// whether it is written as an array, as directories are. The root must be one.
-    fn item(&mut self, item: &mut Item, device: u64, is_root: bool) -> Result<bool, ImportError> {
-        let is_array = match self.next_char()? {
-            b'[' => {
-                self.object()?;
-                true
+/// Read the next item into `item`, with `device` as the device of its parent, and return
+/// whether it is written as an array, as directories are. The root must be one.
+fn read_item<R: Read>(
+    parser: &mut Parser<R>,
+    item: &mut Item,
+    device: u64,
+    is_root: bool,
+) -> Result<bool, ImportError> {
+    let is_array = match parser.next_char()? {
+        b'[' => {
+            parser.object()?;
+            true
+        }
+        b'{' => false,
+        _ => return parser.fail("expected object or array"),
+    };
+    if is_root && !is_array {
+        return parser.fail("parent item must be a directory");
+    }
+    item.kind = ItemType::Stat(if is_array {
+        EntryType::Directory
+    } else {
+        EntryType::Regular
+    });
+    item.stat = Stat {
+        device,
+        ..Stat::default()
+    };
+    item.read_error = false;
+    item.name.clear();
+    let mut key = Vec::new();
+    let mut first = true;
+    while parser.key(first, &mut key, KEY_CAPACITY)? {
+        first = false;
+        item_key(parser, item, &key)?;
+    }
+    if item.name.is_empty() {
+        return parser.fail("missing \"name\" field");
+    }
+    Ok(is_array)
+}
+
+/// Read the whole export into `sink`.
+fn export<R: Read, S: Sink>(parser: &mut Parser<R>, sink: &mut S) -> Result<(), ImportError> {
+    parser.array()?;
+    if parser.uint::<u16>(u16::BITS)? != 1 {
+        return parser.fail("incompatible major format version");
+    }
+    if !parser.element(false)? {
+        return parser.fail("expected array element");
+    }
+    // The minor version is ignored, as in ncdu.
+    parser.uint::<u16>(u16::BITS)?;
+    if !parser.element(false)? {
+        return parser.fail("expected array element");
+    }
+    parser.object()?;
+    parser.skip_content(b'{')?;
+    if !parser.element(false)? {
+        return parser.fail("expected array element");
+    }
+    items(parser, sink)?;
+    while parser.element(false)? {
+        parser.skip()?;
+    }
+    if parser.next_char()? != 0 {
+        return parser.fail("trailing garbage");
+    }
+    Ok(())
+}
+
+/// Read the root and everything below it into `sink`, with a stack of the open directories
+/// instead of recursion, so that deep nesting cannot overflow the call stack.
+fn items<R: Read, S: Sink>(parser: &mut Parser<R>, sink: &mut S) -> Result<(), ImportError> {
+    let mut item = Item {
+        kind: ItemType::Stat(EntryType::Directory),
+        stat: Stat::default(),
+        read_error: false,
+        name: Vec::new(),
+    };
+    read_item(parser, &mut item, 0, true)?;
+    // ncdu crashes on a root whose fields make it something other than a directory.
+    if item.kind != ItemType::Stat(EntryType::Directory) {
+        return parser.fail("parent item must be a directory");
+    }
+    item.stat.entry_type = EntryType::Directory;
+    let mut root = sink
+        .create_root(&item.name, &item.stat)
+        .map_err(ImportError::Sink)?;
+    if item.read_error {
+        sink.set_read_error(&mut root).map_err(ImportError::Sink)?;
+    }
+    let mut directories = vec![(root, item.stat.device)];
+    while let Some((directory, device)) = directories.last_mut() {
+        if !parser.element(false)? {
+            if let Some((directory, _)) = directories.pop() {
+                let parent = directories.last_mut().map(|(parent, _)| parent);
+                sink.finish_directory(directory, parent)
+                    .map_err(ImportError::Sink)?;
             }
-            b'{' => false,
-            _ => return self.fail("expected object or array"),
-        };
-        if is_root && !is_array {
-            return self.fail("parent item must be a directory");
+            continue;
         }
-        item.kind = ItemType::Stat(if is_array {
-            EntryType::Directory
-        } else {
-            EntryType::Regular
-        });
-        item.stat = Stat {
-            device,
-            ..Stat::default()
-        };
-        item.read_error = false;
-        item.name.clear();
-        let mut key = Vec::new();
-        let mut first = true;
-        while self.key(first, &mut key, KEY_CAPACITY)? {
-            first = false;
-            self.item_key(item, &key)?;
-        }
-        if item.name.is_empty() {
-            return self.fail("missing \"name\" field");
-        }
-        Ok(is_array)
-    }
-
-    /// Read the whole export into `sink`.
-    fn export<S: Sink>(&mut self, sink: &mut S) -> Result<(), ImportError> {
-        self.array()?;
-        if self.uint::<u16>(u16::BITS)? != 1 {
-            return self.fail("incompatible major format version");
-        }
-        if !self.element(false)? {
-            return self.fail("expected array element");
-        }
-        // The minor version is ignored, as in ncdu.
-        self.uint::<u16>(u16::BITS)?;
-        if !self.element(false)? {
-            return self.fail("expected array element");
-        }
-        self.object()?;
-        self.skip_content(b'{')?;
-        if !self.element(false)? {
-            return self.fail("expected array element");
-        }
-        self.items(sink)?;
-        while self.element(false)? {
-            self.skip()?;
-        }
-        if self.next_char()? != 0 {
-            return self.fail("trailing garbage");
-        }
-        Ok(())
-    }
-
-    /// Read the root and everything below it into `sink`, with a stack of the open directories
-    /// instead of recursion, so that deep nesting cannot overflow the call stack.
-    fn items<S: Sink>(&mut self, sink: &mut S) -> Result<(), ImportError> {
-        let mut item = Item {
-            kind: ItemType::Stat(EntryType::Directory),
-            stat: Stat::default(),
-            read_error: false,
-            name: Vec::new(),
-        };
-        self.item(&mut item, 0, true)?;
-        // ncdu crashes on a root whose fields make it something other than a directory.
-        if item.kind != ItemType::Stat(EntryType::Directory) {
-            return self.fail("parent item must be a directory");
-        }
-        item.stat.entry_type = EntryType::Directory;
-        let mut root = sink
-            .create_root(&item.name, &item.stat)
-            .map_err(ImportError::Sink)?;
-        if item.read_error {
-            sink.set_read_error(&mut root).map_err(ImportError::Sink)?;
-        }
-        let mut directories = vec![(root, item.stat.device)];
-        while let Some((directory, device)) = directories.last_mut() {
-            if !self.element(false)? {
-                if let Some((directory, _)) = directories.pop() {
-                    let parent = directories.last_mut().map(|(parent, _)| parent);
-                    sink.finish_directory(directory, parent)
-                        .map_err(ImportError::Sink)?;
+        let is_array = read_item(parser, &mut item, *device, false)?;
+        match item.kind {
+            ItemType::Stat(EntryType::Directory) => {
+                item.stat.entry_type = EntryType::Directory;
+                let mut child = sink
+                    .add_directory(directory, &item.name, &item.stat)
+                    .map_err(ImportError::Sink)?;
+                if item.read_error {
+                    sink.set_read_error(&mut child).map_err(ImportError::Sink)?;
                 }
+                directories.push((child, item.stat.device));
                 continue;
             }
-            let is_array = self.item(&mut item, *device, false)?;
-            match item.kind {
-                ItemType::Stat(EntryType::Directory) => {
-                    item.stat.entry_type = EntryType::Directory;
-                    let mut child = sink
-                        .add_directory(directory, &item.name, &item.stat)
-                        .map_err(ImportError::Sink)?;
-                    if item.read_error {
-                        sink.set_read_error(&mut child).map_err(ImportError::Sink)?;
-                    }
-                    directories.push((child, item.stat.device));
-                    continue;
-                }
-                ItemType::Stat(
-                    entry_type @ (EntryType::Regular | EntryType::NonRegular | EntryType::HardLink),
-                ) => {
-                    item.stat.entry_type = entry_type;
-                    sink.add_stat(directory, &item.name, &item.stat)
-                        .map_err(ImportError::Sink)?;
-                }
-                ItemType::Special(special) => sink
-                    .add_special(directory, &item.name, special)
-                    .map_err(ImportError::Sink)?,
+            ItemType::Stat(
+                entry_type @ (EntryType::Regular | EntryType::NonRegular | EntryType::HardLink),
+            ) => {
+                item.stat.entry_type = entry_type;
+                sink.add_stat(directory, &item.name, &item.stat)
+                    .map_err(ImportError::Sink)?;
             }
-            if is_array && self.element(false)? {
-                return self.fail("unexpected contents in an excluded directory");
-            }
+            ItemType::Special(special) => sink
+                .add_special(directory, &item.name, special)
+                .map_err(ImportError::Sink)?,
         }
-        Ok(())
+        if is_array && parser.element(false)? {
+            return parser.fail("unexpected contents in an excluded directory");
+        }
     }
+    Ok(())
 }
 
 #[cfg(test)]
