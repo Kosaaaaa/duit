@@ -20,6 +20,7 @@ test-ncdu = []
 
 [dependencies]
 duit-model = { workspace = true }
+zstd = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }

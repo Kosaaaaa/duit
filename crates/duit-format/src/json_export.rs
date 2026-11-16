@@ -1,6 +1,7 @@
 use std::io::{self, BufWriter, IntoInnerError, Write};
 
 use duit_model::{EntryType, Sink, Special, Stat};
+use zstd::stream::write::Encoder;
 
 /// The name written as `progname` in the metadata block.
 const PROGRAM_NAME: &str = "duit";
@@ -11,12 +12,44 @@ const PROGRAM_NAME: &str = "duit";
 /// as raw bytes, except for the bytes that JSON requires to be escaped, so an export of a name that
 /// is not UTF-8 is not valid JSON. ncdu writes the same bytes and reads them back.
 pub struct JsonExport<W: Write> {
-    out: BufWriter<W>,
+    out: BufWriter<Output<W>>,
     extended: bool,
     /// Whether the object of the last directory still lacks its closing `}`, so that a read error
     /// can be added to it. A read error after the first entry of a directory has no place in the
     /// format and is dropped.
     directory_open: bool,
+}
+
+/// The writer under the buffer of a [`JsonExport`].
+enum Output<W: Write> {
+    Plain(W),
+    /// One zstd frame, which [`Output::finish`] ends.
+    Zstd(Encoder<'static, W>),
+}
+
+impl<W: Write> Output<W> {
+    fn finish(self) -> io::Result<W> {
+        match self {
+            Self::Plain(out) => Ok(out),
+            Self::Zstd(encoder) => encoder.finish(),
+        }
+    }
+}
+
+impl<W: Write> Write for Output<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Plain(out) => out.write(buf),
+            Self::Zstd(encoder) => encoder.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Self::Plain(out) => out.flush(),
+            Self::Zstd(encoder) => encoder.flush(),
+        }
+    }
 }
 
 /// The handle of a directory in a [`JsonExport`].
@@ -27,8 +60,18 @@ pub struct JsonDirectory {
 impl<W: Write> JsonExport<W> {
     /// Start an export to `out` and write the metadata block. `timestamp` is the time of the export
     /// in seconds since the Unix epoch. With `extended`, the fields of
-    /// [`duit_model::Extended`] are written too.
-    pub fn new(out: W, timestamp: u64, extended: bool) -> io::Result<Self> {
+    /// [`duit_model::Extended`] are written too. With `compress_level`, the export is compressed
+    /// with zstd at that level.
+    pub fn new(
+        out: W,
+        timestamp: u64,
+        extended: bool,
+        compress_level: Option<u8>,
+    ) -> io::Result<Self> {
+        let out = match compress_level {
+            Some(level) => Output::Zstd(Encoder::new(out, i32::from(level))?),
+            None => Output::Plain(out),
+        };
         let mut out = BufWriter::with_capacity(64 * 1024, out);
         write!(
             out,
@@ -45,7 +88,15 @@ impl<W: Write> JsonExport<W> {
     /// End the export after the root is finished, flush it, and return the writer.
     pub fn finish(mut self) -> io::Result<W> {
         self.out.write_all(b"]\n")?;
-        self.out.into_inner().map_err(IntoInnerError::into_error)
+        let mut out = self
+            .out
+            .into_inner()
+            .map_err(IntoInnerError::into_error)?
+            .finish()?;
+        // A writer such as standard output buffers too, and the end of a compressed export need not
+        // hold the newline that flushes it. Flushed later, at exit, a write error would be lost.
+        out.flush()?;
+        Ok(out)
     }
 
     fn close_directory_entry(&mut self, read_error: bool) -> io::Result<()> {

@@ -601,7 +601,6 @@ fn unsupported() {
     assert_snapshot!(table(directory.path(), &[
         &["-f", "export.json"],
         &["-O", "export.ncdu", "."],
-        &["-c", "-o", "export.json.zst", "."],
         &["-t", "2", "-o-", "."],
         &["--quit-after-scan", "."],
     ]), @r#"
@@ -618,13 +617,6 @@ fn unsupported() {
 
         ----- stderr -----
         ^[[JThe -O flag is not supported yet.
-
-        $ duit -c -o export.json.zst .
-        exit_code: 1
-        ----- stdout -----
-
-        ----- stderr -----
-        ^[[JThe -c flag is not supported yet.
 
         $ duit -t 2 -o- .
         exit_code: 1

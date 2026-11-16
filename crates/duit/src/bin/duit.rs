@@ -188,9 +188,6 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<(), Vec<u8>> {
     let Some(export_path) = export_json else {
         return Err(b"Only an export with -o is supported yet.\n".to_vec());
     };
-    if config.compress {
-        return Err(b"The -c flag is not supported yet.\n".to_vec());
-    }
     if config.threads > 1 {
         return Err(b"A scan with more than one thread is not supported yet.\n".to_vec());
     }
@@ -212,8 +209,13 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<(), Vec<u8>> {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |time| time.as_secs());
-    let mut export =
-        JsonExport::new(out, timestamp, config.extended).map_err(|error| writing(&error))?;
+    let mut export = JsonExport::new(
+        out,
+        timestamp,
+        config.extended,
+        config.compress.then_some(config.compress_level),
+    )
+    .map_err(|error| writing(&error))?;
 
     // ncdu scans the absolute path if it can resolve one.
     let directory = scan_directory.unwrap_or(b".");

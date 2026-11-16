@@ -9,7 +9,7 @@ use insta::assert_snapshot;
 use tempfile::TempDir;
 
 #[cfg(feature = "test-ncdu")]
-use crate::assert_ncdu;
+use crate::{assert_ncdu, ncdu};
 use crate::{duit, redact, render, text};
 
 /// The start of a valid `CACHEDIR.TAG`.
@@ -190,26 +190,104 @@ fn file() {
     );
 }
 
+/// `-c` writes the export as a zstd frame that decompresses to the export without `-c`. A scan
+/// that fails at the root still ends the frame.
+#[test]
+fn compress() {
+    let directory = fixture();
+    let cases: &[&[&str]] = &[
+        &["-c", "-o", "export.json.zst", "plain"],
+        &[
+            "--compress",
+            "--compress-level",
+            "20",
+            "-o",
+            "export.json.zst",
+            "plain",
+        ],
+        &["-c", "-o", "export.json.zst", "missing"],
+    ];
+    let mut rendered = String::new();
+    for arguments in cases {
+        #[cfg(feature = "test-ncdu")]
+        assert_ncdu(directory.path(), arguments);
+        let output = duit(directory.path(), arguments);
+        let _ = writeln!(
+            rendered,
+            "$ duit {}\n{}\n",
+            arguments.join(" "),
+            render(&output).trim_end()
+        );
+        let compressed =
+            fs::read(directory.path().join("export.json.zst")).expect("export is written");
+        let export = zstd::decode_all(compressed.as_slice()).expect("export is a zstd frame");
+        let scanned = arguments.last().expect("a directory is given");
+        let plain = duit(directory.path(), &["-o-", scanned]);
+        assert_eq!(text(&export), text(&plain.stdout));
+    }
+    assert_snapshot!(rendered, @r"
+    $ duit -c -o export.json.zst plain
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    ^[[J
+
+    $ duit --compress --compress-level 20 -o export.json.zst plain
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    ^[[J
+
+    $ duit -c -o export.json.zst missing
+    exit_code: 1
+    ----- stdout -----
+
+    ----- stderr -----
+    ^[[JError opening directory: No such file or directory.
+    ");
+}
+
+/// ncdu imports an export that duit compressed.
+#[cfg(feature = "test-ncdu")]
+#[test]
+fn compress_import() {
+    let directory = fixture();
+    let output = duit(directory.path(), &["-c", "-o", "export.json.zst", "plain"]);
+    assert!(output.status.success());
+    assert_eq!(
+        render(&ncdu(directory.path(), &["-f", "export.json.zst", "-o-"])),
+        render(&ncdu(directory.path(), &["-o-", "plain"]))
+    );
+}
+
 /// A write to a closed pipe fails, and the export ends with the error. Both programs ignore
 /// `SIGPIPE`.
 #[test]
 fn write_error() {
     let directory = fixture();
-    let run = |program: &OsStr| {
+    let run = |program: &OsStr, arguments: &[&str]| {
         let (reader, writer) = io::pipe().expect("pipe is created");
         drop(reader);
         let output = Command::new(program)
             .current_dir(directory.path())
-            .args(["--ignore-config", "-o-", "plain"])
+            .arg("--ignore-config")
+            .args(arguments)
             .stdout(writer)
             .stderr(Stdio::piped())
             .output()
             .expect("program runs");
         render(&output)
     };
-    let output = run(OsStr::new(env!("CARGO_BIN_EXE_duit")));
+    let executable = OsStr::new(env!("CARGO_BIN_EXE_duit"));
+    let output = run(executable, &["-o-", "plain"]);
     #[cfg(feature = "test-ncdu")]
-    assert_eq!(run(OsStr::new("ncdu")), output);
+    assert_eq!(run(OsStr::new("ncdu"), &["-o-", "plain"]), output);
+    // The compressed export fails with the same error.
+    assert_eq!(run(executable, &["-c", "-o-", "plain"]), output);
+    #[cfg(feature = "test-ncdu")]
+    assert_eq!(run(OsStr::new("ncdu"), &["-c", "-o-", "plain"]), output);
     assert_snapshot!(output, @r#"
         exit_code: 1
         ----- stdout -----
