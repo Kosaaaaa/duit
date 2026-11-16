@@ -117,7 +117,9 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
   whose fields make it an excluded, special, or hard-linked entry, such as
   `[{"name":"/","excluded":"pattern"}]`. duit stops with `parent item must be a directory`, the
   message for a root that is not an array. ncdu reads nested directories and values by recursion, so
-  a deep enough nesting overflows its stack. duit keeps a stack of its own.
+  a deep enough nesting overflows its stack. duit keeps a stack of its own, on the heap and with no
+  limit either, so memory grows with the depth: a 6 KB `.json.zst` of 200 million `[` takes about
+  400 MB. A limit would be an error that ncdu does not have.
 - **Panics: the terminal is restored from the panic hook.** The release profile uses
   `panic = "abort"`, so `Drop` guards do not run.
 - **`unsafe`: `#[expect(unsafe_code)]` plus a `SAFETY` comment.** The workspace lint warns on
