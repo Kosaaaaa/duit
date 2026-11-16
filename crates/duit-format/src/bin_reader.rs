@@ -4,6 +4,7 @@ use std::io::{self, Read, Seek, SeekFrom};
 use duit_model::{EntryType, Sink, Special, Stat};
 use zstd::zstd_safe;
 
+use crate::bin_format::{INDEX_BLOCK, ItemKey, Major, SIMPLE_TRUE};
 use crate::item::{ItemType, add_entry};
 
 /// The number of decompressed data blocks that a [`BinaryReader`] keeps.
@@ -95,7 +96,7 @@ impl<R: Read + Seek> BinaryReader<R> {
         let mut header = [0; 4];
         read_at(&mut input, &mut header, size - 4).map_err(BinaryOpenError::Read)?;
         let header = u32::from_be_bytes(header);
-        if header >> 28 != 1 || header & 7 != 0 {
+        if header >> 28 != INDEX_BLOCK || header & 7 != 0 {
             return Err(BinaryOpenError::Corrupt);
         }
         // The length without the header and the footer. ncdu reads past the end of an index that
@@ -342,7 +343,7 @@ fn parse_item(data: &[u8], itemref: u64, device: u64, item: &mut Item) -> Option
                 key
             }
         };
-        if key.major != Major::Positive || key.argument > 31 {
+        if key.major != Major::Positive {
             cbor.skip(key)?;
             let value = cbor.next()?;
             cbor.skip(value)?;
@@ -351,29 +352,38 @@ fn parse_item(data: &[u8], itemref: u64, device: u64, item: &mut Item) -> Option
         let value = cbor.next()?;
         let stat = &mut item.stat;
         let extended = &mut stat.extended;
-        match key.argument {
-            0 => {
+        match ItemKey::from_u64(key.argument) {
+            Some(ItemKey::Type) => {
                 item.kind = item_type(i32::try_from(value.integer()?).ok()?);
                 has_type = true;
             }
-            1 => {
+            Some(ItemKey::Name) => {
                 let name = cbor.bytes(value)?;
                 item.name.clear();
                 item.name.extend_from_slice(name);
             }
-            2 => item.previous = Some(value.itemref(itemref)?),
-            3 => stat.size = value.unsigned()?,
-            4 => stat.blocks = value.unsigned::<u64>()? / 512,
-            5 => stat.device = value.unsigned()?,
-            6 => item.read_error = value.is_true(),
-            12 => item.last_entry = Some(value.itemref(itemref)?),
-            13 => stat.inode = value.unsigned()?,
-            14 => stat.link_count = value.unsigned::<u32>().filter(|&count| count < 1 << 31)?,
-            15 => extended.uid = Some(value.unsigned()?),
-            16 => extended.gid = Some(value.unsigned()?),
-            17 => extended.mode = Some(value.unsigned()?),
-            18 => extended.mtime = Some(value.unsigned()?),
-            7..=11 | 19.. => cbor.skip(value)?,
+            Some(ItemKey::Prev) => item.previous = Some(value.itemref(itemref)?),
+            Some(ItemKey::Asize) => stat.size = value.unsigned()?,
+            Some(ItemKey::Dsize) => stat.blocks = value.unsigned::<u64>()? / 512,
+            Some(ItemKey::Dev) => stat.device = value.unsigned()?,
+            Some(ItemKey::Rderr) => item.read_error = value.is_true(),
+            Some(ItemKey::Sub) => item.last_entry = Some(value.itemref(itemref)?),
+            Some(ItemKey::Ino) => stat.inode = value.unsigned()?,
+            Some(ItemKey::Nlink) => {
+                stat.link_count = value.unsigned::<u32>().filter(|&count| count < 1 << 31)?;
+            }
+            Some(ItemKey::Uid) => extended.uid = Some(value.unsigned()?),
+            Some(ItemKey::Gid) => extended.gid = Some(value.unsigned()?),
+            Some(ItemKey::Mode) => extended.mode = Some(value.unsigned()?),
+            Some(ItemKey::Mtime) => extended.mtime = Some(value.unsigned()?),
+            Some(
+                ItemKey::Cumasize
+                | ItemKey::Cumdsize
+                | ItemKey::Shrasize
+                | ItemKey::Shrdsize
+                | ItemKey::Items,
+            )
+            | None => cbor.skip(value)?,
         }
     }
     (has_type && !item.name.is_empty()).then_some(())
@@ -394,19 +404,6 @@ fn item_type(value: i32) -> ItemType {
     }
 }
 
-/// The major type of a CBOR data item.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Major {
-    Positive,
-    Negative,
-    Bytes,
-    Text,
-    Array,
-    Map,
-    Tag,
-    Simple,
-}
-
 /// The head of a CBOR data item.
 #[derive(Debug, Clone, Copy)]
 struct Value {
@@ -423,7 +420,7 @@ impl Value {
     }
 
     fn is_true(self) -> bool {
-        self.major == Major::Simple && self.argument == 21
+        self.major == Major::Simple && self.argument == SIMPLE_TRUE
     }
 
     /// The value of an integer.
