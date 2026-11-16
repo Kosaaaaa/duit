@@ -134,7 +134,9 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
   costs memory in proportion to the number of items, and stops with `Error reading item X from file`
   at the second visit. ncdu reads nested directories and skips nested CBOR values by recursion, and
   it crashes on an index block too short to hold the root reference. duit keeps stacks of its own,
-  and stops with `Error reading from file` on that index.
+  and stops with `Error reading from file` on that index. Those stacks are on the heap and have no
+  limit either, so memory grows with the depth, as the set grows with the number of items. A limit
+  would be an error that ncdu does not have.
 - **Panics: the terminal is restored from the panic hook.** The release profile uses
   `panic = "abort"`, so `Drop` guards do not run.
 - **`unsafe`: `#[expect(unsafe_code)]` plus a `SAFETY` comment.** The workspace lint warns on
