@@ -4,11 +4,11 @@ use std::io;
 
 use duit_format::import;
 use duit_model::{
-    DirectoryId, EntryId, EntryKind, Extended, MemorySink, Sink, Special, Stat, Tree,
+    DirectoryId, EntryId, EntryKind, EntryType, Extended, MemorySink, Sink, Special, Stat, Tree,
 };
 use insta::assert_snapshot;
 
-use crate::bin_export::{Item, items, reference};
+use crate::bin_export::{Item, TREE, export, items, reference};
 use crate::json_export::{directory, file};
 
 /// The JSON export that `crates/duit/tests/fixtures/generate.sh` converts with ncdu.
@@ -95,6 +95,10 @@ fn render_entry(tree: &Tree, id: EntryId, depth: usize, rendered: &mut String) {
             let directory = tree.directory(directory);
             fields.push(format!("items: {}", directory.items));
             fields.push(format!("dev: {}", tree.device(directory.device)));
+            if directory.shared_size > 0 || directory.shared_blocks > 0 {
+                fields.push(format!("shared_asize: {}", directory.shared_size));
+                fields.push(format!("shared_blocks: {}", directory.shared_blocks));
+            }
             if directory.read_error {
                 fields.push("read_error".to_string());
             }
@@ -143,31 +147,37 @@ fn render_entry(tree: &Tree, id: EntryId, depth: usize, rendered: &mut String) {
     }
 }
 
-/// The totals of each directory of `tree` by name: the item count, and the cumulative sizes when
-/// no hard link is below it.
+/// The totals of each directory of `tree` by name: the item count, the cumulative sizes, and the
+/// shared sizes when they are above zero, as ncdu writes them to a binary export.
 fn totals(tree: &Tree) -> BTreeMap<String, String> {
-    fn walk(tree: &Tree, directory: DirectoryId, totals: &mut BTreeMap<String, String>) -> bool {
-        let mut has_link = false;
+    fn walk(tree: &Tree, directory: DirectoryId, totals: &mut BTreeMap<String, String>) {
         for child in tree.entries(directory) {
-            has_link |= match tree.entry(child).kind {
-                EntryKind::Directory(directory) => walk(tree, directory, totals),
-                EntryKind::HardLink(_) => true,
-                EntryKind::Regular | EntryKind::NonRegular | EntryKind::Special(_) => false,
-            };
+            if let EntryKind::Directory(directory) = tree.entry(child).kind {
+                walk(tree, directory, totals);
+            }
         }
-        let id = tree.directory(directory).entry;
-        let entry = tree.entry(id);
-        let mut rendered = format!("items: {}", tree.directory(directory).items);
-        if !has_link {
+        let data = tree.directory(directory);
+        let entry = tree.entry(data.entry);
+        let mut rendered = format!(
+            "items: {}, cumasize: {}, cumdsize: {}",
+            data.items,
+            entry.size,
+            entry.blocks.saturating_mul(512)
+        );
+        if data.shared_size > 0 {
+            let _ = write!(rendered, ", shrasize: {}", data.shared_size);
+        }
+        if data.shared_blocks > 0 {
             let _ = write!(
                 rendered,
-                ", cumasize: {}, cumdsize: {}",
-                entry.size,
-                entry.blocks.saturating_mul(512)
+                ", shrdsize: {}",
+                data.shared_blocks.saturating_mul(512)
             );
         }
-        totals.insert(format!("\"{}\"", tree.name(id).escape_ascii()), rendered);
-        has_link
+        totals.insert(
+            format!("\"{}\"", tree.name(data.entry).escape_ascii()),
+            rendered,
+        );
     }
     let mut totals = BTreeMap::new();
     walk(tree, root(tree), &mut totals);
@@ -176,33 +186,27 @@ fn totals(tree: &Tree) -> BTreeMap<String, String> {
 
 /// The totals that ncdu wrote for each directory of the binary export `export`, as in [`totals`].
 fn ncdu_totals(export: &[u8]) -> BTreeMap<String, String> {
-    fn walk(
-        items: &HashMap<String, &Item>,
-        item: &Item,
-        totals: &mut BTreeMap<String, String>,
-    ) -> bool {
+    fn walk(items: &HashMap<String, &Item>, item: &Item, totals: &mut BTreeMap<String, String>) {
         let field = |key| item.field(key).expect("directory has the field");
-        let mut has_link = false;
         let mut next = item.field("sub");
         while let Some(child) = next.map(|reference| items[reference]) {
-            has_link |= match child.field("type") {
-                Some("0") => walk(items, child, totals),
-                Some("3") => true,
-                _ => false,
-            };
+            if child.field("type") == Some("0") {
+                walk(items, child, totals);
+            }
             next = child.field("prev");
         }
-        let mut rendered = format!("items: {}", field("items"));
-        if !has_link {
-            let _ = write!(
-                rendered,
-                ", cumasize: {}, cumdsize: {}",
-                field("cumasize"),
-                field("cumdsize")
-            );
+        let mut rendered = format!(
+            "items: {}, cumasize: {}, cumdsize: {}",
+            field("items"),
+            field("cumasize"),
+            field("cumdsize")
+        );
+        for key in ["shrasize", "shrdsize"] {
+            if let Some(value) = item.field(key) {
+                let _ = write!(rendered, ", {key}: {value}");
+            }
         }
         totals.insert(field("name").to_string(), rendered);
-        has_link
     }
     let (items, root) = items(export);
     let by_reference: HashMap<String, &Item> = items
@@ -215,16 +219,15 @@ fn ncdu_totals(export: &[u8]) -> BTreeMap<String, String> {
 }
 
 /// The tree of the golden source has every kind of entry. The entries of a directory are in
-/// reverse order, and a directory holds the totals of its entries except for hard links, whose
-/// sizes are left to the hard link accounting. A hard link still counts as an item and gives its
-/// mtime to the directory. Each directory has the item count that ncdu wrote, and the cumulative
-/// sizes when no hard link is below it.
+/// reverse order, and a directory holds the totals of its entries, with the two links to one inode
+/// counted once. The directory that holds only one of them shares its size. Each directory has the
+/// totals that ncdu wrote.
 #[test]
 fn golden() {
     let tree = tree_of(SOURCE, true);
     assert_eq!(totals(&tree), ncdu_totals(SOURCE_BINARY));
     assert_snapshot!(render(&tree), @r#"
-    "/home/user/project" directory {asize: 1071197, blocks: 56, items: 15, dev: 2049, sub_error, uid: 1000, gid: 1000, mode: 16877, mtime: 1700000000, latest_mtime: 1700000800}
+    "/home/user/project" directory {asize: 1071497, blocks: 64, items: 15, dev: 2049, sub_error, uid: 1000, gid: 1000, mode: 16877, mtime: 1700000000, latest_mtime: 1700000800}
       "raw \xff\xfe" regular {asize: 2, blocks: 0}
       "quote \" backslash \\ tab \t control \x01 \xc3\xa9" regular {asize: 1, blocks: 0}
       "sparse" regular {asize: 1048576, blocks: 0, mtime: 1700000800, latest_mtime: 1700000800}
@@ -236,7 +239,7 @@ fn golden() {
       "also-linked" hard link {asize: 300, blocks: 8, ino: 104, nlink: 2, uid: 1000, gid: 1000, mode: 33188, mtime: 1700000400, latest_mtime: 1700000400}
       "unreadable" directory {asize: 4096, blocks: 8, items: 0, dev: 2049, read_error, uid: 0, gid: 0, mode: 16832, mtime: 1700000600, latest_mtime: 1700000600}
       "empty" directory {asize: 4096, blocks: 8, items: 0, dev: 2049, uid: 1000, gid: 1000, mode: 16877, mtime: 1700000500, latest_mtime: 1700000500}
-      "src" directory {asize: 9096, blocks: 24, items: 2, dev: 2049, uid: 1000, gid: 1000, mode: 16877, mtime: 1700000200, latest_mtime: 1700000400}
+      "src" directory {asize: 9396, blocks: 32, items: 2, dev: 2049, shared_asize: 300, shared_blocks: 8, uid: 1000, gid: 1000, mode: 16877, mtime: 1700000200, latest_mtime: 1700000400}
         "linked" hard link {asize: 300, blocks: 8, ino: 104, nlink: 2, uid: 1000, gid: 1000, mode: 33188, mtime: 1700000400, latest_mtime: 1700000400}
         "main.rs" regular {asize: 5000, blocks: 16, uid: 1000, gid: 1000, mode: 33188, mtime: 1700000300, latest_mtime: 1700000300}
       "README.md" regular {asize: 1234, blocks: 8, uid: 1000, gid: 1000, mode: 33188, mtime: 1700000100, latest_mtime: 1700000100}
@@ -250,6 +253,49 @@ fn golden_blocks() {
     let totals = totals(&tree);
     assert_eq!(totals.len(), 8);
     assert_eq!(totals, ncdu_totals(BLOCKS_BINARY));
+}
+
+/// The hard links of [`TREE`]: links in one directory, links in two directories, links that are
+/// not all found, a link without a link count, and a link on another device. Each directory has
+/// the totals that ncdu wrote to its binary export, except for the shared sizes of the root. The
+/// binary export never counts a link below another device as shared above that device, and the
+/// in-memory tree of ncdu does: only one of the two links of `f` on device 7 is in the tree, so
+/// the root shares its size too.
+#[test]
+fn hard_links() {
+    let tree = tree_of(TREE, false);
+    let mut expected = ncdu_totals(&export(TREE, false, None));
+    let root = expected.get_mut("\"/root\"").expect("root has totals");
+    *root = root.replace(
+        "shrasize: 30, shrdsize: 4096",
+        "shrasize: 40, shrdsize: 8192",
+    );
+    assert_eq!(totals(&tree), expected);
+}
+
+/// Links to one inode with different link counts count as many links as the tree holds, so the
+/// directory that holds both of them shares nothing.
+#[test]
+fn inconsistent_link_count() {
+    let tree = build(false, |sink| {
+        let mut root = sink.create_root(b"/root", &directory(1))?;
+        let mut sub = sink.add_directory(&mut root, b"sub", &directory(1))?;
+        for (name, link_count) in [(&b"two"[..], 2), (b"three", 3)] {
+            let stat = Stat {
+                link_count,
+                ..link(1, 10)
+            };
+            sink.add_stat(&mut sub, name, &stat)?;
+        }
+        sink.finish_directory(sub, Some(&mut root))?;
+        sink.finish_directory(root, None)
+    });
+    assert_snapshot!(render(&tree), @r#"
+    "/root" directory {asize: 8202, blocks: 17, items: 3, dev: 1}
+      "sub" directory {asize: 4106, blocks: 9, items: 2, dev: 1}
+        "three" hard link {asize: 10, blocks: 1, ino: 1, nlink: 3}
+        "two" hard link {asize: 10, blocks: 1, ino: 1, nlink: 2}
+    "#);
 }
 
 /// Entries on several devices, with read errors below the root and extended fields on only some
@@ -372,4 +418,63 @@ fn zero_stats() {
     "#);
     tree.update_sub_error(root);
     assert!(!tree.directory(root).sub_error);
+}
+
+/// A hard link of `inode` with a link count of 2.
+fn link(inode: u64, size: u64) -> Stat {
+    Stat {
+        entry_type: EntryType::HardLink,
+        inode,
+        link_count: 2,
+        ..file(size, 1)
+    }
+}
+
+/// Zeroing a directory takes the hard links below it out of the accounting, and
+/// [`Tree::add_all_stats`] counts the links that remain elsewhere again, now as shared. Zeroing a
+/// hard link takes its size from the directories above it twice, as ncdu does: once with the
+/// accounting of its inode, and once as the size of the entry.
+#[test]
+fn zero_stats_links() {
+    let mut tree = build(false, |sink| {
+        let mut root = sink.create_root(b"/root", &directory(1))?;
+        sink.add_stat(&mut root, b"a", &link(1, 10))?;
+        let mut links = sink.add_directory(&mut root, b"links", &directory(1))?;
+        sink.add_stat(&mut links, b"b", &link(1, 10))?;
+        sink.add_stat(&mut links, b"c", &link(2, 20))?;
+        sink.add_stat(&mut links, b"d", &link(2, 20))?;
+        sink.finish_directory(links, Some(&mut root))?;
+        sink.finish_directory(root, None)
+    });
+    let root = root(&tree);
+    assert_snapshot!(render(&tree), @r#"
+    "/root" directory {asize: 8222, blocks: 18, items: 5, dev: 1}
+      "links" directory {asize: 4126, blocks: 10, items: 3, dev: 1, shared_asize: 10, shared_blocks: 1}
+        "d" hard link {asize: 20, blocks: 1, ino: 2, nlink: 2}
+        "c" hard link {asize: 20, blocks: 1, ino: 2, nlink: 2}
+        "b" hard link {asize: 10, blocks: 1, ino: 1, nlink: 2}
+      "a" hard link {asize: 10, blocks: 1, ino: 1, nlink: 2}
+    "#);
+    let links = find(&tree, root, b"links");
+    tree.zero_stats(links, Some(root));
+    tree.add_all_stats();
+    assert_snapshot!(render(&tree), @r#"
+    "/root" directory {asize: 4106, blocks: 9, items: 1, dev: 1, shared_asize: 10, shared_blocks: 1}
+      "links" directory {asize: 0, blocks: 0, items: 0, dev: 1}
+        "d" hard link {asize: 0, blocks: 0, ino: 2, nlink: 2}
+        "c" hard link {asize: 0, blocks: 0, ino: 2, nlink: 2}
+        "b" hard link {asize: 0, blocks: 0, ino: 1, nlink: 2}
+      "a" hard link {asize: 10, blocks: 1, ino: 1, nlink: 2}
+    "#);
+    let a = find(&tree, root, b"a");
+    tree.zero_stats(a, Some(root));
+    tree.add_all_stats();
+    assert_snapshot!(render(&tree), @r#"
+    "/root" directory {asize: 4086, blocks: 7, items: 0, dev: 1}
+      "links" directory {asize: 0, blocks: 0, items: 0, dev: 1}
+        "d" hard link {asize: 0, blocks: 0, ino: 2, nlink: 2}
+        "c" hard link {asize: 0, blocks: 0, ino: 2, nlink: 2}
+        "b" hard link {asize: 0, blocks: 0, ino: 1, nlink: 2}
+      "a" hard link {asize: 0, blocks: 0, ino: 1, nlink: 2}
+    "#);
 }
