@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use duit_scan::ExcludePatterns;
-use duit_tui::{BrowserOptions, GraphStyle, SharedColumn, SortColumn, SortOrder};
+use duit_tui::{BrowserOptions, ColorScheme, GraphStyle, SharedColumn, SortColumn, SortOrder};
 
 use crate::util::{LineReader, expand_user, until_nul};
 use crate::{Arg, Args, open_error};
@@ -18,14 +18,6 @@ pub enum ScanUi {
     Off,
     Line,
     Full,
-}
-
-/// The color scheme, `--color`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Color {
-    Off,
-    Dark,
-    DarkBackground,
 }
 
 /// Why [`Config::apply`] rejected an option.
@@ -59,14 +51,13 @@ pub struct Config {
     /// The block size of a binary export in bytes.
     pub export_block_size: Option<usize>,
     pub scan_ui: Option<ScanUi>,
-    /// The options of the browser, of which the config sets the listing, the columns, and
-    /// `--confirm-quit`.
+    /// The options of the browser, of which the config sets the listing, the columns,
+    /// `--confirm-quit`, and `--color`.
     ///
     /// `imported`, `can_delete`, `thousands_separator`, and `extended` describe the session, not
     /// the config. They keep their defaults here until `run` sets them, from `can_delete` and
     /// `extended` above among others.
     pub browser: BrowserOptions,
-    pub color: Color,
     pub can_delete: Option<bool>,
     pub can_shell: Option<bool>,
     pub can_refresh: Option<bool>,
@@ -90,7 +81,6 @@ impl Default for Config {
             export_block_size: None,
             scan_ui: None,
             browser: BrowserOptions::default(),
-            color: Color::Off,
             can_delete: None,
             can_shell: None,
             can_refresh: None,
@@ -243,10 +233,10 @@ impl Config {
             Arg::Long(b"no-confirm-delete") => self.confirm_delete = false,
             Arg::Long(b"delete-command") => self.delete_command = args.value()?.to_vec(),
             Arg::Long(b"color") => {
-                self.color = match args.value()? {
-                    b"off" => Color::Off,
-                    b"dark" => Color::Dark,
-                    b"dark-bg" => Color::DarkBackground,
+                self.browser.color = match args.value()? {
+                    b"off" => ColorScheme::Off,
+                    b"dark" => ColorScheme::Dark,
+                    b"dark-bg" => ColorScheme::DarkBackground,
                     value => return Err(unknown_value(b"--color", value)),
                 };
             }
