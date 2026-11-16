@@ -7,6 +7,7 @@ use std::process::{Command, Output};
 
 mod config;
 mod export;
+mod import;
 mod options;
 
 /// Run duit with `arguments` in `directory`. Standard input is not a terminal.

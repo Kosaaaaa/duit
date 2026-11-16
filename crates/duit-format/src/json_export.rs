@@ -1,3 +1,5 @@
+use std::error::Error;
+use std::fmt;
 use std::io::{self, BufWriter, IntoInnerError, Write};
 
 use duit_model::{EntryType, Sink, Special, Stat};
@@ -5,6 +7,34 @@ use zstd::stream::write::Encoder;
 
 /// The name written as `progname` in the metadata block.
 const PROGRAM_NAME: &str = "duit";
+
+/// The longest name that the export writes. ncdu reserves 6 bytes per byte of a name, plus 1000,
+/// in its buffer of 64 KiB, and stops when that does not fit.
+const MAX_NAME_LENGTH: usize = (64 * 1024 - 1000) / 6;
+
+/// Why a [`JsonExport`] failed, other than an error of its writer. It reaches the caller as the
+/// inner error of an [`io::Error`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsonExportError {
+    /// A name is longer than ncdu's JSON export writes.
+    PathTooLong,
+}
+
+impl fmt::Display for JsonExportError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::PathTooLong => "path too long",
+        })
+    }
+}
+
+impl Error for JsonExportError {}
+
+impl From<JsonExportError> for io::Error {
+    fn from(error: JsonExportError) -> Self {
+        Self::other(error)
+    }
+}
 
 /// A [`Sink`] that writes the ncdu JSON export format.
 ///
@@ -99,6 +129,12 @@ impl<W: Write> JsonExport<W> {
         Ok(out)
     }
 
+    /// Drop the export without writing what is still buffered, as ncdu does when it stops on an
+    /// error.
+    pub fn discard(self) {
+        drop(self.out.into_parts());
+    }
+
     fn close_directory_entry(&mut self, read_error: bool) -> io::Result<()> {
         if self.directory_open {
             self.directory_open = false;
@@ -113,6 +149,9 @@ impl<W: Write> JsonExport<W> {
     /// Start the object of an entry and write its name. A directory is wrapped in an array that
     /// holds the object followed by its entries.
     fn write_entry_name(&mut self, is_directory: bool, name: &[u8]) -> io::Result<()> {
+        if name.len() > MAX_NAME_LENGTH {
+            return Err(JsonExportError::PathTooLong.into());
+        }
         self.out.write_all(if is_directory {
             b",\n[{\"name\":\""
         } else {

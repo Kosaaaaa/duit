@@ -66,3 +66,20 @@ pub fn write_error(error: &io::Error) -> &'static str {
         _ => "Unexpected",
     }
 }
+
+/// The description of an error of `read` (`std.posix.read`).
+pub fn read_error(error: &io::Error) -> &'static str {
+    match error.raw_os_error() {
+        Some(libc::ESRCH) => "ProcessNotFound",
+        Some(libc::EAGAIN) => "WouldBlock",
+        Some(libc::ECANCELED) => "Canceled",
+        Some(libc::EBADF) => "NotOpenForReading",
+        Some(libc::EIO) => "I/O error",
+        Some(libc::EISDIR) => "Is a directory",
+        Some(libc::ENOBUFS | libc::ENOMEM) => "Out of memory",
+        Some(libc::ENOTCONN) => "SocketNotConnected",
+        Some(libc::ECONNRESET) => "ConnectionResetByPeer",
+        Some(libc::ETIMEDOUT) => "ConnectionTimedOut",
+        _ => "Unexpected",
+    }
+}
