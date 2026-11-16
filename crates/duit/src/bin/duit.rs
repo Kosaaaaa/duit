@@ -366,10 +366,10 @@ fn opening_directory(description: &str) -> Vec<u8> {
 
 fn writing(error: &io::Error) -> Vec<u8> {
     let inner = error.get_ref();
-    if let Some(JsonExportError::PathTooLong) =
-        inner.and_then(|error| error.downcast_ref::<JsonExportError>())
-    {
-        return b"Error writing JSON export: path too long.\n".to_vec();
+    if let Some(error) = inner.and_then(|error| error.downcast_ref::<JsonExportError>()) {
+        return match error {
+            JsonExportError::PathTooLong => b"Error writing JSON export: path too long.\n".to_vec(),
+        };
     }
     match inner.and_then(|error| error.downcast_ref::<BinaryExportError>()) {
         Some(BinaryExportError::PathTooLong) => b"Error writing data: path too long.\n".to_vec(),
