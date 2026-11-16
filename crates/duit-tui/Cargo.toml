@@ -15,6 +15,7 @@ doctest = false
 workspace = true
 
 [dependencies]
+crossterm = { workspace = true }
 duit-model = { workspace = true }
 libc = { workspace = true }
 ratatui = { workspace = true }

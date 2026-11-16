@@ -91,3 +91,15 @@ pub fn read_error(error: &io::Error) -> &'static str {
         _ => "Unexpected",
     }
 }
+
+/// The description of an error that ncdu prints with libc's `strerror`: the message of the
+/// [`io::Error`], without the error number that Rust appends to it.
+pub fn strerror(error: &io::Error) -> String {
+    let message = error.to_string();
+    if let Some(code) = error.raw_os_error()
+        && let Some(description) = message.strip_suffix(&format!(" (os error {code})"))
+    {
+        return description.to_string();
+    }
+    message
+}

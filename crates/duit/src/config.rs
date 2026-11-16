@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use duit_scan::ExcludePatterns;
-use duit_tui::{GraphStyle, SharedColumn, SortColumn, SortOrder};
+use duit_tui::{BrowserOptions, GraphStyle, SharedColumn, SortColumn, SortOrder};
 
 use crate::util::{LineReader, expand_user, until_nul};
 use crate::{Arg, Args, open_error};
@@ -59,24 +59,13 @@ pub struct Config {
     /// The block size of a binary export in bytes.
     pub export_block_size: Option<usize>,
     pub scan_ui: Option<ScanUi>,
-    pub si: bool,
+    /// The options of the browser, of which the config sets the listing, the columns, and
+    /// `--confirm-quit`.
+    pub browser: BrowserOptions,
     pub color: Color,
-    pub show_hidden: bool,
-    pub show_blocks: bool,
-    pub shared_column: SharedColumn,
-    pub show_item_count: bool,
-    pub show_mtime: bool,
-    pub show_graph: bool,
-    pub show_percent: bool,
-    pub graph_style: GraphStyle,
-    pub sort_column: SortColumn,
-    pub sort_order: SortOrder,
-    pub sort_directories_first: bool,
-    pub sort_natural: bool,
     pub can_delete: Option<bool>,
     pub can_shell: Option<bool>,
     pub can_refresh: Option<bool>,
-    pub confirm_quit: bool,
     pub confirm_delete: bool,
     pub delete_command: Vec<u8>,
 }
@@ -96,24 +85,11 @@ impl Default for Config {
             compress_level: 4,
             export_block_size: None,
             scan_ui: None,
-            si: false,
+            browser: BrowserOptions::default(),
             color: Color::Off,
-            show_hidden: true,
-            show_blocks: true,
-            shared_column: SharedColumn::Shared,
-            show_item_count: false,
-            show_mtime: false,
-            show_graph: true,
-            show_percent: false,
-            graph_style: GraphStyle::Hash,
-            sort_column: SortColumn::Blocks,
-            sort_order: SortOrder::Descending,
-            sort_directories_first: false,
-            sort_natural: true,
             can_delete: None,
             can_shell: None,
             can_refresh: None,
-            confirm_quit: false,
             confirm_delete: true,
             delete_command: Vec::new(),
         }
@@ -148,22 +124,22 @@ impl Config {
             Arg::Long(b"disable-delete") => self.can_delete = Some(false),
             Arg::Long(b"enable-refresh") => self.can_refresh = Some(true),
             Arg::Long(b"disable-refresh") => self.can_refresh = Some(false),
-            Arg::Long(b"show-hidden") => self.show_hidden = true,
-            Arg::Long(b"hide-hidden") => self.show_hidden = false,
-            Arg::Long(b"show-itemcount") => self.show_item_count = true,
-            Arg::Long(b"hide-itemcount") => self.show_item_count = false,
-            Arg::Long(b"show-mtime") => self.show_mtime = true,
-            Arg::Long(b"hide-mtime") => self.show_mtime = false,
-            Arg::Long(b"show-graph") => self.show_graph = true,
-            Arg::Long(b"hide-graph") => self.show_graph = false,
-            Arg::Long(b"show-percent") => self.show_percent = true,
-            Arg::Long(b"hide-percent") => self.show_percent = false,
-            Arg::Long(b"group-directories-first") => self.sort_directories_first = true,
-            Arg::Long(b"no-group-directories-first") => self.sort_directories_first = false,
-            Arg::Long(b"enable-natsort") => self.sort_natural = true,
-            Arg::Long(b"disable-natsort") => self.sort_natural = false,
+            Arg::Long(b"show-hidden") => self.browser.show_hidden = true,
+            Arg::Long(b"hide-hidden") => self.browser.show_hidden = false,
+            Arg::Long(b"show-itemcount") => self.browser.show_item_count = true,
+            Arg::Long(b"hide-itemcount") => self.browser.show_item_count = false,
+            Arg::Long(b"show-mtime") => self.browser.show_mtime = true,
+            Arg::Long(b"hide-mtime") => self.browser.show_mtime = false,
+            Arg::Long(b"show-graph") => self.browser.show_graph = true,
+            Arg::Long(b"hide-graph") => self.browser.show_graph = false,
+            Arg::Long(b"show-percent") => self.browser.show_percent = true,
+            Arg::Long(b"hide-percent") => self.browser.show_percent = false,
+            Arg::Long(b"group-directories-first") => self.browser.sort_directories_first = true,
+            Arg::Long(b"no-group-directories-first") => self.browser.sort_directories_first = false,
+            Arg::Long(b"enable-natsort") => self.browser.sort_natural = true,
+            Arg::Long(b"disable-natsort") => self.browser.sort_natural = false,
             Arg::Long(b"graph-style") => {
-                self.graph_style = match args.value()? {
+                self.browser.graph_style = match args.value()? {
                     b"hash" => GraphStyle::Hash,
                     b"half-block" => GraphStyle::HalfBlock,
                     // ncdu also accepts the misspelling.
@@ -188,24 +164,24 @@ impl Config {
                     b"mtime" => (SortColumn::Mtime, SortOrder::Ascending),
                     column => return Err(unknown_value(b"--sort", column)),
                 };
-                self.sort_column = column;
-                self.sort_order = order.unwrap_or(default_order);
+                self.browser.sort_column = column;
+                self.browser.sort_order = order.unwrap_or(default_order);
             }
             Arg::Long(b"shared-column") => {
-                self.shared_column = match args.value()? {
+                self.browser.shared_column = match args.value()? {
                     b"off" => SharedColumn::Off,
                     b"shared" => SharedColumn::Shared,
                     b"unique" => SharedColumn::Unique,
                     value => return Err(unknown_value(b"--shared-column", value)),
                 };
             }
-            Arg::Long(b"apparent-size") => self.show_blocks = false,
-            Arg::Long(b"disk-usage") => self.show_blocks = true,
+            Arg::Long(b"apparent-size") => self.browser.show_blocks = false,
+            Arg::Long(b"disk-usage") => self.browser.show_blocks = true,
             Arg::Short(b'0') => self.scan_ui = Some(ScanUi::Off),
             Arg::Short(b'1') => self.scan_ui = Some(ScanUi::Line),
             Arg::Short(b'2') => self.scan_ui = Some(ScanUi::Full),
-            Arg::Long(b"si") => self.si = true,
-            Arg::Long(b"no-si") => self.si = false,
+            Arg::Long(b"si") => self.browser.si = true,
+            Arg::Long(b"no-si") => self.browser.si = false,
             Arg::Short(b'L') | Arg::Long(b"follow-symlinks") => self.follow_symlinks = true,
             Arg::Long(b"no-follow-symlinks") => self.follow_symlinks = false,
             Arg::Long(b"exclude") => {
@@ -257,8 +233,8 @@ impl Config {
                     .ok_or_else(|| invalid_number(b"for --export-block-size", value))?;
                 self.export_block_size = Some(kibibytes * 1024);
             }
-            Arg::Long(b"confirm-quit") => self.confirm_quit = true,
-            Arg::Long(b"no-confirm-quit") => self.confirm_quit = false,
+            Arg::Long(b"confirm-quit") => self.browser.confirm_quit = true,
+            Arg::Long(b"no-confirm-quit") => self.browser.confirm_quit = false,
             Arg::Long(b"confirm-delete") => self.confirm_delete = true,
             Arg::Long(b"no-confirm-delete") => self.confirm_delete = false,
             Arg::Long(b"delete-command") => self.delete_command = args.value()?.to_vec(),

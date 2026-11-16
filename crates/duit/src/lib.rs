@@ -2,7 +2,7 @@
 
 pub use args::{Arg, Args};
 pub use config::{Color, Config, OptionError, ScanUi};
-pub use errors::{open_error, read_error, seek_error, stat_error, write_error};
+pub use errors::{open_error, read_error, seek_error, stat_error, strerror, write_error};
 
 mod args;
 mod config;

@@ -119,6 +119,9 @@ pub enum Key {
     End,
     PageUp,
     PageDown,
+    /// A key that has no binding, such as a function key. It still closes a window that any key
+    /// closes.
+    Other,
 }
 
 /// The window over the listing that takes the keys, `state` in `browser.zig`.
@@ -332,7 +335,7 @@ fn select_with_key(key: Key, index: &mut usize, length: usize, page: usize) {
         Key::End => *index = length.saturating_sub(1),
         Key::PageUp => *index = index.saturating_sub(page),
         Key::PageDown => *index = length.saturating_sub(1).min(*index + page),
-        Key::Char(_) | Key::Enter | Key::Backspace | Key::Left | Key::Right => {}
+        Key::Char(_) | Key::Enter | Key::Backspace | Key::Left | Key::Right | Key::Other => {}
     }
 }
 
@@ -611,7 +614,8 @@ impl Browser {
             | Key::Home
             | Key::End
             | Key::PageUp
-            | Key::PageDown => select_with_key(
+            | Key::PageDown
+            | Key::Other => select_with_key(
                 key,
                 &mut self.cursor,
                 self.items.len(),

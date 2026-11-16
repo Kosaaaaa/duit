@@ -12,11 +12,16 @@ multiple-versions = "allow"
 allow-build-scripts = [
   "getrandom",
   "libc",
+  "parking_lot_core",
   "proc-macro2",
   "quote",
   "rustix",
   "rustversion",
+  "signal-hook",
   "thiserror",
+  "winapi",
+  "winapi-i686-pc-windows-gnu",
+  "winapi-x86_64-pc-windows-gnu",
   "zstd-safe",
   "zstd-sys",
 ]

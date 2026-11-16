@@ -599,17 +599,9 @@ fn exclude_kernfs() {
 fn unsupported() {
     let directory = TempDir::new().expect("temporary directory is created");
     assert_snapshot!(table(directory.path(), &[
-        &["-f", "export.json"],
         &["-t", "2", "-o-", "."],
-        &["--quit-after-scan", "."],
+        &["-t", "2", "--quit-after-scan", "."],
     ]), @"
-    $ duit -f export.json
-    exit_code: 1
-    ----- stdout -----
-
-    ----- stderr -----
-    ^[[JOnly an export with -o or -O is supported yet.
-
     $ duit -t 2 -o- .
     exit_code: 1
     ----- stdout -----
@@ -617,12 +609,12 @@ fn unsupported() {
     ----- stderr -----
     ^[[JA scan with more than one thread is not supported yet.
 
-    $ duit --quit-after-scan .
+    $ duit -t 2 --quit-after-scan .
     exit_code: 1
     ----- stdout -----
 
     ----- stderr -----
-    ^[[JOnly an export with -o or -O is supported yet.
+    ^[[JA scan with more than one thread is not supported yet.
     ");
     assert_eq!(
         fs::read_dir(directory.path())

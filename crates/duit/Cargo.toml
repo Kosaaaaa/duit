@@ -27,5 +27,6 @@ libc = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }
+rustix = { workspace = true, features = ["process", "pty", "stdio", "termios"] }
 tempfile = { workspace = true }
 zstd = { workspace = true }
