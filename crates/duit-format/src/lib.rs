@@ -7,5 +7,6 @@ pub use json_import::{ImportError, import};
 
 mod bin_export;
 mod bin_reader;
+mod item;
 mod json_export;
 mod json_import;

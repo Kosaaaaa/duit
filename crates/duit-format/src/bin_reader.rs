@@ -4,6 +4,8 @@ use std::io::{self, Read, Seek, SeekFrom};
 use duit_model::{EntryType, Sink, Special, Stat};
 use zstd::zstd_safe;
 
+use crate::item::{ItemType, add_entry};
+
 /// The number of decompressed data blocks that a [`BinaryReader`] keeps.
 const CACHED_BLOCKS: usize = 8;
 
@@ -59,13 +61,6 @@ struct Block {
     number: u32,
     last_use: u64,
     data: Vec<u8>,
-}
-
-/// The type of an item. An item of type 0 is a directory, `Stat(EntryType::Directory)`.
-#[derive(Clone, Copy)]
-enum ItemType {
-    Stat(EntryType),
-    Special(Special),
 }
 
 /// The fields of the item that is being read.
@@ -172,32 +167,21 @@ impl<R: Read + Seek> BinaryReader<R> {
             }
             self.read_item(itemref, open.device, &mut item)?;
             open.next = item.previous;
-            match item.kind {
-                ItemType::Stat(EntryType::Directory) => {
-                    item.stat.entry_type = EntryType::Directory;
-                    let mut child = sink
-                        .add_directory(&mut open.directory, &item.name, &item.stat)
-                        .map_err(BinaryImportError::Sink)?;
-                    if item.read_error {
-                        sink.set_read_error(&mut child)
-                            .map_err(BinaryImportError::Sink)?;
-                    }
-                    directories.push(OpenDirectory {
-                        directory: child,
-                        next: item.last_entry,
-                        device: item.stat.device,
-                    });
-                }
-                ItemType::Stat(
-                    entry_type @ (EntryType::Regular | EntryType::NonRegular | EntryType::HardLink),
-                ) => {
-                    item.stat.entry_type = entry_type;
-                    sink.add_stat(&mut open.directory, &item.name, &item.stat)
-                        .map_err(BinaryImportError::Sink)?;
-                }
-                ItemType::Special(special) => sink
-                    .add_special(&mut open.directory, &item.name, special)
-                    .map_err(BinaryImportError::Sink)?,
+            let child = add_entry(
+                sink,
+                &mut open.directory,
+                item.kind,
+                &item.name,
+                &mut item.stat,
+                item.read_error,
+            )
+            .map_err(BinaryImportError::Sink)?;
+            if let Some(child) = child {
+                directories.push(OpenDirectory {
+                    directory: child,
+                    next: item.last_entry,
+                    device: item.stat.device,
+                });
             }
         }
         Ok(())
