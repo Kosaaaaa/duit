@@ -24,7 +24,8 @@ const EXPORT: &[u8] = b"[1,2,{\"progname\":\"ncdu\",\"progver\":\"2.9.2\",\"time
 {\"name\":\"raw \\u00e9 \xff\xfe\"}]]
 ";
 
-/// A directory with [`EXPORT`], plain and compressed, and the inputs of the error cases.
+/// A directory with [`EXPORT`], plain and compressed, the inputs of the error cases, and the
+/// longest name that an import accepts.
 fn fixture() -> TempDir {
     let directory = TempDir::new().expect("temporary directory is created");
     let write = |name: &str, contents: &[u8]| {
@@ -48,6 +49,16 @@ fn fixture() -> TempDir {
         .concat(),
     );
     write("binary.ncdu", b"\xbfncduEX1\x00\x00\x00\x00");
+    // The longest name that an import accepts, as in ncdu.
+    write(
+        "longest.json",
+        &[
+            &b"[1,2,{},[{\"name\":\"/root\"},{\"name\":\""[..],
+            &[b'a'; 32 * 1024 - 5],
+            b"\"}]]",
+        ]
+        .concat(),
+    );
     fs::create_dir(directory.path().join("directory")).expect("directory is created");
     directory
 }
@@ -359,6 +370,7 @@ fn binary_export() {
     let cases: &[&[&str]] = &[
         &["-f", "export.json", "-O", "duit.ncdu"],
         &["-f", "export.json", "-O", "duit.ncdu", "-e"],
+        &["-f", "longest.json", "-O", "duit.ncdu"],
     ];
     let mut rendered = String::new();
     for arguments in cases {
@@ -383,6 +395,13 @@ fn binary_export() {
     ^[[J
 
     $ duit -f export.json -O duit.ncdu -e
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    ^[[J
+
+    $ duit -f longest.json -O duit.ncdu
     exit_code: 0
     ----- stdout -----
 
