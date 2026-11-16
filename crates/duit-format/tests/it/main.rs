@@ -8,6 +8,7 @@ use std::process::{Command, Output, Stdio};
 use std::thread;
 
 mod bin_export;
+mod bin_reader;
 mod json_export;
 mod json_import;
 

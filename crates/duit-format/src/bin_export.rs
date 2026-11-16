@@ -7,57 +7,17 @@ use std::io::{self, Write};
 use duit_model::{EntryType, Sink, Special, Stat};
 use zstd::bulk::Compressor;
 
+use crate::bin_format::{
+    BLOCK_LENGTH_BITS, DATA_BLOCK, FOOTER_LENGTH, HEADER_LENGTH, INDEX_BLOCK, ITEM_KEY_COUNT,
+    ItemKey, MAX_BLOCK_LENGTH, Major, NUMBER_LENGTH, SIMPLE_FALSE, SIMPLE_TRUE,
+};
+
 /// The first bytes of a binary export.
 pub const BINARY_SIGNATURE: &[u8; 8] = b"\xbfncduEX1";
-
-/// The keys of the fields of an item.
-#[derive(Clone, Copy)]
-enum ItemKey {
-    Type = 0,
-    Name = 1,
-    Prev = 2,
-    Asize = 3,
-    Dsize = 4,
-    Dev = 5,
-    Rderr = 6,
-    Cumasize = 7,
-    Cumdsize = 8,
-    Shrasize = 9,
-    Shrdsize = 10,
-    Items = 11,
-    Sub = 12,
-    Ino = 13,
-    Nlink = 14,
-    Uid = 15,
-    Gid = 16,
-    Mode = 17,
-    Mtime = 18,
-}
-
-/// The number of item keys.
-const ITEM_KEY_COUNT: usize = 19;
 
 /// An upper bound on the encoded size of an item without its name: 2 bytes for the start and the
 /// end of the map, and 11 bytes per field, 2 for the key and 9 for a full `u64`.
 const MAX_ITEM_LEN: usize = 2 + 11 * ITEM_KEY_COUNT;
-
-/// The CBOR major types that the format uses.
-const CBOR_POSITIVE: u8 = 0;
-const CBOR_NEGATIVE: u8 = 1;
-const CBOR_BYTES: u8 = 2;
-const CBOR_MAP: u8 = 5;
-const CBOR_SIMPLE: u8 = 7;
-
-/// The CBOR simple values `false` and `true`.
-const CBOR_FALSE: u64 = 20;
-const CBOR_TRUE: u64 = 21;
-
-/// The block ids of a block header.
-const DATA_BLOCK: u32 = 0;
-const INDEX_BLOCK: u32 = 1;
-
-/// The largest length of a block, which its header holds in 28 bits.
-const MAX_BLOCK_LENGTH: u32 = (1 << 28) - 1;
 
 /// Why a [`BinaryExport`] failed, other than an error of its writer. It reaches the caller as the
 /// inner error of an [`io::Error`].
@@ -110,7 +70,7 @@ fn block_header(id: u32, length: usize) -> io::Result<[u8; 4]> {
         .ok()
         .filter(|&length| length <= MAX_BLOCK_LENGTH)
         .ok_or(BinaryExportError::FileTooLarge)?;
-    Ok(((id << 28) | length).to_be_bytes())
+    Ok(((id << BLOCK_LENGTH_BITS) | length).to_be_bytes())
 }
 
 /// A [`Sink`] that writes the ncdu binary export format.
@@ -256,7 +216,7 @@ impl<W: Write> BinaryExport<W> {
         while self.index.last() == Some(&0) {
             self.index.pop();
         }
-        let length = 4 + 8 * self.index.len() + 8 + 4;
+        let length = HEADER_LENGTH + 8 * self.index.len() + 8 + FOOTER_LENGTH;
         let header = block_header(INDEX_BLOCK, length)?;
         let mut block = Vec::with_capacity(length);
         block.extend_from_slice(&header);
@@ -280,7 +240,7 @@ impl<W: Write> BinaryExport<W> {
             && !self.buffer.is_empty()
         {
             let compressed = self.compressor.compress(&self.buffer)?;
-            let length = 12 + compressed.len();
+            let length = HEADER_LENGTH + NUMBER_LENGTH + compressed.len() + FOOTER_LENGTH;
             let header = block_header(DATA_BLOCK, length)?;
             let mut block = Vec::with_capacity(length);
             block.extend_from_slice(&header);
@@ -305,7 +265,7 @@ impl<W: Write> BinaryExport<W> {
             u32::try_from(self.index.len()).map_err(|_| BinaryExportError::TooManyBlocks)?;
         self.block_number = Some(number);
         self.index.push(0);
-        if 4 + 8 * self.index.len() + 12 >= 1 << 28 {
+        if HEADER_LENGTH + 8 * self.index.len() + 8 + FOOTER_LENGTH >= 1 << BLOCK_LENGTH_BITS {
             return Err(BinaryExportError::TooManyBlocks.into());
         }
         self.buffer_size = block_size(self.configured_block_size, number);
@@ -316,8 +276,8 @@ impl<W: Write> BinaryExport<W> {
     /// Write the head of a CBOR data item of `major` type with `argument`. An argument above 23
     /// follows the head in 1, 2, 4, or 8 bytes, which the additional information `0x18` to `0x1b`
     /// selects.
-    fn cbor_head(&mut self, major: u8, argument: u64) {
-        let major = major << 5;
+    fn cbor_head(&mut self, major: Major, argument: u64) {
+        let major = (major as u8) << 5;
         if let Ok(argument) = u8::try_from(argument) {
             if argument <= 23 {
                 self.buffer.push(major | argument);
@@ -337,8 +297,8 @@ impl<W: Write> BinaryExport<W> {
     }
 
     fn field(&mut self, key: ItemKey, value: u64) {
-        self.cbor_head(CBOR_POSITIVE, key as u64);
-        self.cbor_head(CBOR_POSITIVE, value);
+        self.cbor_head(Major::Positive, key as u64);
+        self.cbor_head(Major::Positive, value);
     }
 
     /// Write a reference to the item at `itemref`, if any. A reference into the current block is
@@ -347,11 +307,11 @@ impl<W: Write> BinaryExport<W> {
         let Some(itemref) = itemref else {
             return;
         };
-        self.cbor_head(CBOR_POSITIVE, key as u64);
+        self.cbor_head(Major::Positive, key as u64);
         if self.block_number.map(u64::from) == Some(itemref >> 24) {
-            self.cbor_head(CBOR_NEGATIVE, self.itemref - itemref - 1);
+            self.cbor_head(Major::Negative, self.itemref - itemref - 1);
         } else {
-            self.cbor_head(CBOR_POSITIVE, itemref);
+            self.cbor_head(Major::Positive, itemref);
         }
     }
 
@@ -365,14 +325,14 @@ impl<W: Write> BinaryExport<W> {
         let block_number = self.block_number.map_or(0, u64::from);
         self.itemref = (block_number << 24) | self.buffer.len() as u64;
         // An indefinite map, which `item_end` ends.
-        self.buffer.push((CBOR_MAP << 5) | 31);
-        self.cbor_head(CBOR_POSITIVE, ItemKey::Type as u64);
+        self.buffer.push(((Major::Map as u8) << 5) | 31);
+        self.cbor_head(Major::Positive, ItemKey::Type as u64);
         match u64::try_from(item_type) {
-            Ok(item_type) => self.cbor_head(CBOR_POSITIVE, item_type),
-            Err(_) => self.cbor_head(CBOR_NEGATIVE, u64::from((-1 - item_type).unsigned_abs())),
+            Ok(item_type) => self.cbor_head(Major::Positive, item_type),
+            Err(_) => self.cbor_head(Major::Negative, u64::from((-1 - item_type).unsigned_abs())),
         }
-        self.cbor_head(CBOR_POSITIVE, ItemKey::Name as u64);
-        self.cbor_head(CBOR_BYTES, name.len() as u64);
+        self.cbor_head(Major::Positive, ItemKey::Name as u64);
+        self.cbor_head(Major::Bytes, name.len() as u64);
         self.buffer.extend_from_slice(name);
         self.reference_field(ItemKey::Prev, previous);
         Ok(self.itemref)
@@ -399,7 +359,7 @@ impl<W: Write> BinaryExport<W> {
 
     /// End the map of an item with the CBOR break.
     fn item_end(&mut self) {
-        self.buffer.push((CBOR_SIMPLE << 5) | 31);
+        self.buffer.push(((Major::Simple as u8) << 5) | 31);
     }
 }
 
@@ -531,13 +491,13 @@ impl<W: Write> Sink for BinaryExport<W> {
             self.field(ItemKey::Dev, stat.device);
         }
         if directory.read_error || directory.sub_error {
-            self.cbor_head(CBOR_POSITIVE, ItemKey::Rderr as u64);
+            self.cbor_head(Major::Positive, ItemKey::Rderr as u64);
             self.cbor_head(
-                CBOR_SIMPLE,
+                Major::Simple,
                 if directory.read_error {
-                    CBOR_TRUE
+                    SIMPLE_TRUE
                 } else {
-                    CBOR_FALSE
+                    SIMPLE_FALSE
                 },
             );
         }

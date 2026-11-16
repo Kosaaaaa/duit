@@ -287,12 +287,19 @@ fn write_error() {
     let output = run(executable, &["-o-", "plain"]);
     #[cfg(feature = "test-ncdu")]
     assert_eq!(run(OsStr::new("ncdu"), &["-o-", "plain"]), output);
-    // The compressed and the binary export fail with the same error. The binary export writes its
-    // signature before the import is read, so the write fails first.
+    // The compressed and the binary export fail with the same error, and so does the export of a
+    // binary import. The binary export writes its signature before the import is read, so the
+    // write fails first.
+    assert!(
+        duit(directory.path(), &["-O", "export.ncdu", "plain"])
+            .status
+            .success()
+    );
     for arguments in [
         &["-c", "-o-", "plain"][..],
         &["-O-", "plain"],
         &["-f", "missing", "-O-"],
+        &["-f", "export.ncdu", "-o-"],
     ] {
         assert_eq!(
             run(executable, arguments),

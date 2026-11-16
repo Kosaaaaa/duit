@@ -11,10 +11,12 @@ use std::process::ExitCode;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use duit::{Arg, Args, Config, OptionError, open_error, read_error, stat_error, write_error};
+use duit::{
+    Arg, Args, Config, OptionError, open_error, read_error, seek_error, stat_error, write_error,
+};
 use duit_format::{
-    BINARY_SIGNATURE, BinaryExport, BinaryExportError, ImportError, JsonExport, JsonExportError,
-    import,
+    BINARY_SIGNATURE, BinaryExport, BinaryExportError, BinaryImportError, BinaryOpenError,
+    BinaryReader, ImportError, JsonExport, JsonExportError, import,
 };
 use duit_model::Sink;
 use duit_scan::{ScanError, ScanOptions, scan};
@@ -261,33 +263,60 @@ impl<W: Write> Export for BinaryExport<W> {
     fn discard(self) {}
 }
 
+/// An import file, opened by [`open_import`].
+enum ImportInput {
+    /// A JSON export, whose first 8 bytes are read.
+    Json(File, [u8; 8]),
+    /// A binary export, whose index block is read.
+    Binary(BinaryReader<File>),
+}
+
 /// Write the import of `import_input`, or else the scan of `scan_directory`, into `export`.
 fn fill<E: Export>(
     mut export: E,
-    import_input: Option<(File, [u8; 8])>,
+    import_input: Option<ImportInput>,
     scan_directory: Option<&[u8]>,
     config: &Config,
 ) -> Result<(), Vec<u8>> {
-    if let Some((input, head)) = import_input {
-        match import(&mut export, input, &head) {
-            Ok(()) => {}
-            Err(ImportError::Input {
-                line,
-                byte,
-                message,
-            }) => {
-                export.discard();
-                return Err(
+    if let Some(import_input) = import_input {
+        let failure = match import_input {
+            ImportInput::Json(input, head) => match import(&mut export, input, &head) {
+                Ok(()) => None,
+                Err(ImportError::Input {
+                    line,
+                    byte,
+                    message,
+                }) => Some(
                     format!("Error importing file on line {line}:{byte}: {message}.\n")
                         .into_bytes(),
-                );
-            }
-            Err(ImportError::Sink(error)) => {
-                // As in ncdu, which stops without flushing its buffer, a failed export writes
-                // nothing more.
-                export.discard();
-                return Err(writing(&error));
-            }
+                ),
+                Err(ImportError::Sink(error)) => Some(writing(&error)),
+            },
+            ImportInput::Binary(mut reader) => match reader.import(&mut export) {
+                Ok(()) => None,
+                Err(BinaryImportError::Corrupt { itemref }) => {
+                    Some(format!("Error reading item {itemref:x} from file\n").into_bytes())
+                }
+                Err(BinaryImportError::Decompress {
+                    block,
+                    expected,
+                    result,
+                }) => Some(
+                    format!(
+                        "Error decompressing block {block} (expected {expected} got {result})\n"
+                    )
+                    .into_bytes(),
+                ),
+                Err(BinaryImportError::Read(error)) => {
+                    Some(format!("Error reading from file: {}\n", read_error(&error)).into_bytes())
+                }
+                Err(BinaryImportError::Sink(error)) => Some(writing(&error)),
+            },
+        };
+        // As in ncdu, which stops without flushing its buffer, a failed export writes nothing more.
+        if let Some(message) = failure {
+            export.discard();
+            return Err(message);
         }
         export.finish().map_err(|error| writing(&error))?;
         let _ = io::stderr().write_all(CLEAR_TO_END);
@@ -324,8 +353,9 @@ fn fill<E: Export>(
 }
 
 /// Open the import file at `path`, or standard input for `-`, and read its first 8 bytes, which
-/// tell the formats apart.
-fn open_import(path: &[u8]) -> Result<(File, [u8; 8]), Vec<u8>> {
+/// tell the formats apart. A binary export is read with random access, from its index block at the
+/// end, so it must be a file that can seek.
+fn open_import(path: &[u8]) -> Result<ImportInput, Vec<u8>> {
     let reading = |description: &str| {
         [
             b"Error reading file '",
@@ -346,18 +376,26 @@ fn open_import(path: &[u8]) -> Result<(File, [u8; 8]), Vec<u8>> {
     } else {
         File::open(OsStr::from_bytes(path)).map_err(|error| reading(open_error(&error)))?
     };
-    let mut head = [0; 8];
-    file.read_exact(&mut head).map_err(|error| {
+    let read_failed = |error: &io::Error| {
         if error.kind() == io::ErrorKind::UnexpectedEof {
             reading("Unexpected end of file")
         } else {
-            reading(read_error(&error))
+            reading(read_error(error))
         }
-    })?;
-    if &head == BINARY_SIGNATURE {
-        return Err(b"Importing a binary export is not supported yet.\n".to_vec());
+    };
+    let mut head = [0; 8];
+    file.read_exact(&mut head)
+        .map_err(|error| read_failed(&error))?;
+    if &head != BINARY_SIGNATURE {
+        return Ok(ImportInput::Json(file, head));
     }
-    Ok((file, head))
+    BinaryReader::open(file)
+        .map(ImportInput::Binary)
+        .map_err(|error| match error {
+            BinaryOpenError::Seek(error) => reading(seek_error(&error)),
+            BinaryOpenError::Read(error) => read_failed(&error),
+            BinaryOpenError::Corrupt => b"Error reading from file\n".to_vec(),
+        })
 }
 
 fn opening_directory(description: &str) -> Vec<u8> {

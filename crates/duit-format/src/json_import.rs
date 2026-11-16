@@ -4,6 +4,8 @@ use std::mem;
 use duit_model::{EntryType, Sink, Special, Stat};
 use zstd::stream::read::Decoder;
 
+use crate::item::{ItemType, add_entry};
+
 /// The first bytes of a zstd frame.
 const ZSTD_MAGIC: &[u8] = b"\x28\xb5\x2f\xfd";
 
@@ -50,14 +52,7 @@ pub fn import<S: Sink>(sink: &mut S, input: impl Read, head: &[u8]) -> Result<()
     }
 }
 
-/// The type of an item as its fields set it. A later field overrides an earlier one, as in ncdu.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ItemType {
-    Stat(EntryType),
-    Special(Special),
-}
-
-/// The fields of the item that is being read.
+/// The fields of the item that is being read. A later field overrides an earlier one, as in ncdu.
 struct Item {
     kind: ItemType,
     stat: Stat,
@@ -584,28 +579,18 @@ fn items<R: Read, S: Sink>(parser: &mut Parser<R>, sink: &mut S) -> Result<(), I
             continue;
         }
         let is_array = read_item(parser, &mut item, *device, false)?;
-        match item.kind {
-            ItemType::Stat(EntryType::Directory) => {
-                item.stat.entry_type = EntryType::Directory;
-                let mut child = sink
-                    .add_directory(directory, &item.name, &item.stat)
-                    .map_err(ImportError::Sink)?;
-                if item.read_error {
-                    sink.set_read_error(&mut child).map_err(ImportError::Sink)?;
-                }
-                directories.push((child, item.stat.device));
-                continue;
-            }
-            ItemType::Stat(
-                entry_type @ (EntryType::Regular | EntryType::NonRegular | EntryType::HardLink),
-            ) => {
-                item.stat.entry_type = entry_type;
-                sink.add_stat(directory, &item.name, &item.stat)
-                    .map_err(ImportError::Sink)?;
-            }
-            ItemType::Special(special) => sink
-                .add_special(directory, &item.name, special)
-                .map_err(ImportError::Sink)?,
+        let child = add_entry(
+            sink,
+            directory,
+            item.kind,
+            &item.name,
+            &mut item.stat,
+            item.read_error,
+        )
+        .map_err(ImportError::Sink)?;
+        if let Some(child) = child {
+            directories.push((child, item.stat.device));
+            continue;
         }
         if is_array && parser.element(false)? {
             return parser.fail("unexpected contents in an excluded directory");
