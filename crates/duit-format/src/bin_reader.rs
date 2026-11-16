@@ -468,6 +468,10 @@ impl Value {
     }
 }
 
+/// The entry of [`Cbor::skip`]'s stack for a container of indefinite length. A count of data items
+/// never reaches it, because a block is smaller than 16 MiB.
+const INDEFINITE: u32 = u32::MAX;
+
 /// A reader of the CBOR data items in a decompressed block. Every method returns `None` for data
 /// that is not valid.
 struct Cbor<'a> {
@@ -553,15 +557,18 @@ impl<'a> Cbor<'a> {
     /// cannot overflow the call stack. As in ncdu, an array or a map of more than 2^24 entries is
     /// not valid, and the chunks of an indefinite string are skipped as any data items.
     fn skip(&mut self, value: Value) -> Option<()> {
-        // The data items left to skip in each container, or `None` for a container of indefinite
-        // length, which ends at a break. Containers of definite length inside one another share
-        // a count, so that only containers of indefinite length deepen the stack.
-        let mut containers: Vec<Option<u64>> = Vec::new();
+        // The data items left to skip in each container, or `INDEFINITE` for a container of
+        // indefinite length, which ends at a break. Containers of definite length inside one
+        // another share a count, so that only containers of indefinite length deepen the stack.
+        // Each data item takes at least one byte, so a count larger than the bytes that are left
+        // cannot be skipped, and failing on it early keeps every count below the size of a block.
+        // A count then fits in a `u32`, which keeps the stack at 4 bytes per level.
+        let mut containers: Vec<u32> = Vec::new();
         let mut value = value;
         loop {
             match value.major {
                 Major::Bytes | Major::Text | Major::Array | Major::Map if value.indefinite => {
-                    containers.push(None);
+                    containers.push(INDEFINITE);
                 }
                 Major::Bytes | Major::Text => {
                     self.take(value.argument)?;
@@ -575,29 +582,37 @@ impl<'a> Cbor<'a> {
                     } else {
                         value.argument
                     };
-                    match containers.last_mut() {
-                        Some(Some(left)) => *left += count,
-                        Some(None) | None => containers.push(Some(count)),
+                    let left = containers
+                        .pop_if(|left| *left != INDEFINITE)
+                        .map_or(0, u64::from)
+                        + count;
+                    if left > u64::try_from(self.buffer.len()).ok()? {
+                        return None;
                     }
+                    containers.push(
+                        u32::try_from(left)
+                            .ok()
+                            .filter(|&left| left != INDEFINITE)?,
+                    );
                 }
                 Major::Positive | Major::Negative | Major::Tag | Major::Simple => {}
             }
             value = loop {
                 match containers.last_mut() {
                     None => return Some(()),
-                    Some(Some(0)) => {
-                        containers.pop();
-                    }
-                    Some(Some(left)) => {
-                        *left -= 1;
-                        break self.next()?;
-                    }
-                    Some(None) => {
+                    Some(&mut INDEFINITE) => {
                         let next = self.next()?;
                         if !next.is_break() {
                             break next;
                         }
                         containers.pop();
+                    }
+                    Some(0) => {
+                        containers.pop();
+                    }
+                    Some(left) => {
+                        *left -= 1;
+                        break self.next()?;
                     }
                 }
             };
@@ -682,6 +697,7 @@ mod tests {
             b"\x9f\xff",
             b"\x9f\x9f\xff\xff",
             b"\x9f\x9f\x81\x00\xff\xff",
+            b"\x9f\x82\x9f\x80\x00\xff\x00\xff",
             b"\xa0",
             b"\xa1\x00\x01",
             b"\xbf\xff",
@@ -693,6 +709,25 @@ mod tests {
             let value = cbor.next().expect("head is read");
             assert_eq!(cbor.skip(value), Some(()), "{input:?}");
             assert_eq!(cbor.buffer, b"garbage", "{input:?}");
+        }
+    }
+
+    /// A container that holds more data items than there are bytes left cannot be skipped, also
+    /// when the items are spread over nested containers.
+    #[test]
+    fn cbor_skip_count_beyond_buffer() {
+        let cases: &[(&[u8], Option<()>)] = &[
+            (b"\x83\x00\x00\x00", Some(())),
+            (b"\x83\x00\x00", None),
+            (b"\x82\x00\x82\x00\x00", Some(())),
+            (b"\x82\x00\x82\x00", None),
+            (b"\x9a\x00\x01\x00\x00\x00\x00", None),
+            (b"\xb9\x00\x02\x00\x00\x00", None),
+        ];
+        for &(input, expected) in cases {
+            let mut cbor = Cbor { buffer: input };
+            let value = cbor.next().expect("head is read");
+            assert_eq!(cbor.skip(value), expected, "{input:?}");
         }
     }
 }
