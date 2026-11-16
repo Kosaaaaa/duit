@@ -142,16 +142,21 @@ fn import() {
         EXPORT,
     ));
     assert_eq!(stdin, plain);
+    let compressed_export = zstd::encode_all(EXPORT, 3).expect("export is compressed");
+    let compressed_stdin = render(&with_input(
+        executable,
+        directory.path(),
+        &["-f", "-", "-o-"],
+        &compressed_export,
+    ));
+    assert_eq!(compressed_stdin, plain);
     #[cfg(feature = "test-ncdu")]
     {
         assert_ncdu(directory.path(), &["-f", "export.json.zst", "-o-"]);
-        let ncdu = with_input(
-            OsStr::new("ncdu"),
-            directory.path(),
-            &["-f-", "-o-"],
-            EXPORT,
-        );
-        assert_eq!(render_as_duit(&ncdu), stdin);
+        for input in [EXPORT, &compressed_export] {
+            let ncdu = with_input(OsStr::new("ncdu"), directory.path(), &["-f-", "-o-"], input);
+            assert_eq!(render_as_duit(&ncdu), stdin);
+        }
     }
 }
 

@@ -48,6 +48,13 @@ Tests that run the real ncdu are behind the `test-ncdu` feature. They need ncdu 
 cargo nextest run --features test-ncdu
 ```
 
+The golden files in `crates/duit/tests/fixtures/` are exports that ncdu 2.9.2 wrote. The tests read
+them without ncdu. To write them again, with ncdu 2.9.2 on `PATH`:
+
+```shell
+crates/duit/tests/fixtures/generate.sh
+```
+
 ## 🎨 Formatting
 
 ```shell

@@ -8,12 +8,9 @@ use std::process::{Command, Stdio};
 use insta::assert_snapshot;
 use tempfile::TempDir;
 
+use crate::{BINARY_SIGNATURE, duit, redact, render, table, text};
 #[cfg(feature = "test-ncdu")]
 use crate::{assert_ncdu, ncdu};
-use crate::{duit, redact, render, table, text};
-
-/// The first bytes of a binary export.
-const BINARY_SIGNATURE: &[u8] = b"\xbfncduEX1";
 
 /// The start of a valid `CACHEDIR.TAG`.
 const CACHEDIR_TAG: &[u8] = b"Signature: 8a477f597d28d172789f06886806bc55";
