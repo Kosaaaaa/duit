@@ -76,3 +76,15 @@ pub(crate) const SIMPLE_TRUE: u64 = 21;
 /// The block ids of a block header.
 pub(crate) const DATA_BLOCK: u32 = 0;
 pub(crate) const INDEX_BLOCK: u32 = 1;
+
+/// The number of low bits of a block header that hold the length of the block. The 4 bits above
+/// them hold its id.
+pub(crate) const BLOCK_LENGTH_BITS: u32 = 28;
+/// The largest length of a block, which its header holds in [`BLOCK_LENGTH_BITS`] bits.
+pub(crate) const MAX_BLOCK_LENGTH: u32 = (1 << BLOCK_LENGTH_BITS) - 1;
+/// The length of the header that starts a block.
+pub(crate) const HEADER_LENGTH: usize = 4;
+/// The length of the number of a data block, which follows its header.
+pub(crate) const NUMBER_LENGTH: usize = 4;
+/// The length of the footer that ends a block, a copy of its header.
+pub(crate) const FOOTER_LENGTH: usize = 4;

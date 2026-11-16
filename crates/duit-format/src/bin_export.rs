@@ -8,7 +8,8 @@ use duit_model::{EntryType, Sink, Special, Stat};
 use zstd::bulk::Compressor;
 
 use crate::bin_format::{
-    DATA_BLOCK, INDEX_BLOCK, ITEM_KEY_COUNT, ItemKey, Major, SIMPLE_FALSE, SIMPLE_TRUE,
+    BLOCK_LENGTH_BITS, DATA_BLOCK, FOOTER_LENGTH, HEADER_LENGTH, INDEX_BLOCK, ITEM_KEY_COUNT,
+    ItemKey, MAX_BLOCK_LENGTH, Major, NUMBER_LENGTH, SIMPLE_FALSE, SIMPLE_TRUE,
 };
 
 /// The first bytes of a binary export.
@@ -17,9 +18,6 @@ pub const BINARY_SIGNATURE: &[u8; 8] = b"\xbfncduEX1";
 /// An upper bound on the encoded size of an item without its name: 2 bytes for the start and the
 /// end of the map, and 11 bytes per field, 2 for the key and 9 for a full `u64`.
 const MAX_ITEM_LEN: usize = 2 + 11 * ITEM_KEY_COUNT;
-
-/// The largest length of a block, which its header holds in 28 bits.
-const MAX_BLOCK_LENGTH: u32 = (1 << 28) - 1;
 
 /// Why a [`BinaryExport`] failed, other than an error of its writer. It reaches the caller as the
 /// inner error of an [`io::Error`].
@@ -72,7 +70,7 @@ fn block_header(id: u32, length: usize) -> io::Result<[u8; 4]> {
         .ok()
         .filter(|&length| length <= MAX_BLOCK_LENGTH)
         .ok_or(BinaryExportError::FileTooLarge)?;
-    Ok(((id << 28) | length).to_be_bytes())
+    Ok(((id << BLOCK_LENGTH_BITS) | length).to_be_bytes())
 }
 
 /// A [`Sink`] that writes the ncdu binary export format.
@@ -218,7 +216,7 @@ impl<W: Write> BinaryExport<W> {
         while self.index.last() == Some(&0) {
             self.index.pop();
         }
-        let length = 4 + 8 * self.index.len() + 8 + 4;
+        let length = HEADER_LENGTH + 8 * self.index.len() + 8 + FOOTER_LENGTH;
         let header = block_header(INDEX_BLOCK, length)?;
         let mut block = Vec::with_capacity(length);
         block.extend_from_slice(&header);
@@ -242,7 +240,7 @@ impl<W: Write> BinaryExport<W> {
             && !self.buffer.is_empty()
         {
             let compressed = self.compressor.compress(&self.buffer)?;
-            let length = 12 + compressed.len();
+            let length = HEADER_LENGTH + NUMBER_LENGTH + compressed.len() + FOOTER_LENGTH;
             let header = block_header(DATA_BLOCK, length)?;
             let mut block = Vec::with_capacity(length);
             block.extend_from_slice(&header);
@@ -267,7 +265,7 @@ impl<W: Write> BinaryExport<W> {
             u32::try_from(self.index.len()).map_err(|_| BinaryExportError::TooManyBlocks)?;
         self.block_number = Some(number);
         self.index.push(0);
-        if 4 + 8 * self.index.len() + 12 >= 1 << 28 {
+        if HEADER_LENGTH + 8 * self.index.len() + 8 + FOOTER_LENGTH >= 1 << BLOCK_LENGTH_BITS {
             return Err(BinaryExportError::TooManyBlocks.into());
         }
         self.buffer_size = block_size(self.configured_block_size, number);

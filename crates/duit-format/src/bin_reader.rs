@@ -4,7 +4,10 @@ use std::io::{self, Read, Seek, SeekFrom};
 use duit_model::{EntryType, Sink, Special, Stat};
 use zstd::zstd_safe;
 
-use crate::bin_format::{INDEX_BLOCK, ItemKey, Major, SIMPLE_TRUE};
+use crate::bin_format::{
+    BLOCK_LENGTH_BITS, FOOTER_LENGTH, HEADER_LENGTH, INDEX_BLOCK, ItemKey, MAX_BLOCK_LENGTH, Major,
+    NUMBER_LENGTH, SIMPLE_TRUE,
+};
 use crate::item::{ItemType, add_entry};
 
 /// The number of decompressed data blocks that a [`BinaryReader`] keeps.
@@ -94,23 +97,25 @@ impl<R: Read + Seek> BinaryReader<R> {
             return Err(BinaryOpenError::Read(io::ErrorKind::UnexpectedEof.into()));
         }
         let mut header = [0; 4];
-        read_at(&mut input, &mut header, size - 4).map_err(BinaryOpenError::Read)?;
+        read_at(&mut input, &mut header, size - FOOTER_LENGTH as u64)
+            .map_err(BinaryOpenError::Read)?;
         let header = u32::from_be_bytes(header);
-        if header >> 28 != INDEX_BLOCK || header & 7 != 0 {
+        if header >> BLOCK_LENGTH_BITS != INDEX_BLOCK || header & 7 != 0 {
             return Err(BinaryOpenError::Corrupt);
         }
         // The length without the header and the footer. ncdu reads past the end of an index that
         // is too short to hold the root reference.
-        let length = (header & 0x0fff_ffff)
-            .checked_sub(8)
-            .filter(|&length| length >= 8 && u64::from(length) < size)
+        let length = usize::try_from(header & MAX_BLOCK_LENGTH)
+            .ok()
+            .and_then(|length| length.checked_sub(HEADER_LENGTH + FOOTER_LENGTH))
+            .filter(|&length| length >= 8 && (length as u64) < size)
             .ok_or(BinaryOpenError::Corrupt)?;
         // An index that would start before the file is read by ncdu at a negative offset, which
         // fails as an invalid argument.
         let start = size
-            .checked_sub(u64::from(length) + 4)
+            .checked_sub((length + FOOTER_LENGTH) as u64)
             .ok_or_else(|| BinaryOpenError::Read(io::ErrorKind::InvalidInput.into()))?;
-        let mut index = vec![0; usize::try_from(length).map_err(|_| BinaryOpenError::Corrupt)?];
+        let mut index = vec![0; length];
         read_at(&mut input, &mut index, start).map_err(BinaryOpenError::Read)?;
         Ok(Self {
             input,
@@ -262,13 +267,13 @@ impl<R: Read + Seek> BinaryReader<R> {
             .map(|position| u64::from_be_bytes(*position))
             .ok_or_else(corrupt)?;
         let offset = position >> 24;
-        let length = position & 0xff_ffff;
-        if length <= 12 {
+        let length = usize::try_from(position & 0xff_ffff).map_err(|_| corrupt())?;
+        if length <= HEADER_LENGTH + NUMBER_LENGTH + FOOTER_LENGTH {
             return Err(corrupt());
         }
         // The number of the block, then its zstd frame.
-        let mut block = vec![0; usize::try_from(length - 8).map_err(|_| corrupt())?];
-        read_at(&mut self.input, &mut block, offset + 4).map_err(|error| {
+        let mut block = vec![0; length - HEADER_LENGTH - FOOTER_LENGTH];
+        read_at(&mut self.input, &mut block, offset + HEADER_LENGTH as u64).map_err(|error| {
             if error.kind() == io::ErrorKind::UnexpectedEof {
                 corrupt()
             } else {
