@@ -180,19 +180,20 @@ impl Reader<'_> {
         byte
     }
 
-    /// Read the head of a data item and return its major type and argument.
-    fn head(&mut self) -> (u8, u64) {
+    /// Read the head of a data item and return its major type and argument, or `None` for an
+    /// additional information that the writer does not use.
+    fn head(&mut self) -> Option<(u8, u64)> {
         let byte = self.byte();
         let length = match byte & 0x1f {
-            argument @ 0..24 => return (byte >> 5, u64::from(argument)),
+            argument @ 0..24 => return Some((byte >> 5, u64::from(argument))),
             24 => 1,
             25 => 2,
             26 => 4,
             27 => 8,
-            argument => panic!("unexpected argument {argument}"),
+            28.. => return None,
         };
         let argument = (0..length).fold(0, |value, _| (value << 8) | u64::from(self.byte()));
-        (byte >> 5, argument)
+        Some((byte >> 5, argument))
     }
 
     /// Read the item at `itemref`, which starts at the current offset.
@@ -200,25 +201,26 @@ impl Reader<'_> {
         assert_eq!(self.byte(), 0xbf, "item is an indefinite map");
         let mut fields = Vec::new();
         while self.data[self.offset] != 0xff {
-            let (major, key) = self.head();
+            let (major, key) = self.head().expect("argument is 0 to 27");
             assert_eq!(major, 0, "key is an unsigned integer");
             let key = KEYS[usize::try_from(key).expect("key fits")];
-            let (major, argument) = self.head();
+            let (major, argument) = self.head().expect("argument is 0 to 27");
             let value = match (major, key) {
-                (0, "prev" | "sub") => reference(argument),
-                (0, _) => argument.to_string(),
-                (1, "type") => format!("-{}", argument + 1),
-                (1, "prev" | "sub") => reference(itemref - argument - 1),
+                (0, "prev" | "sub") => Some(reference(argument)),
+                (0, _) => Some(argument.to_string()),
+                (1, "type") => Some(format!("-{}", argument + 1)),
+                (1, "prev" | "sub") => Some(reference(itemref - argument - 1)),
                 (2, _) => {
                     let length = usize::try_from(argument).expect("length fits");
                     let name = &self.data[self.offset..self.offset + length];
                     self.offset += length;
-                    format!("\"{}\"", name.escape_ascii())
+                    Some(format!("\"{}\"", name.escape_ascii()))
                 }
-                (7, _) if argument == 20 => "false".to_string(),
-                (7, _) if argument == 21 => "true".to_string(),
-                (major, key) => panic!("unexpected major type {major} for {key}"),
-            };
+                (7, _) if argument == 20 => Some("false".to_string()),
+                (7, _) if argument == 21 => Some("true".to_string()),
+                _ => None,
+            }
+            .expect("known major type");
             fields.push((key, value));
         }
         self.offset += 1;
