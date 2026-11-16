@@ -244,7 +244,8 @@ impl<R: Read + Seek> BinaryReader<R> {
     /// Read the directory at `itemref` and its entries into a [`Listing`], as the browser opens a
     /// directory: `get` in `bin_reader.zig` on the directory, then on each of its entries as
     /// `loadDir` in `browser.zig` follows them, from the last one. `None` if the item is not a
-    /// directory. With `extended`, an entry keeps its extended information, as with `-e`.
+    /// directory. With `extended`, an entry keeps its extended information, as with `-e`. After
+    /// each entry, `progress` gets the name of the directory and the number of entries read so far.
     ///
     /// An entry that is reached a second time in the same directory is an error, so that
     /// references in a cycle end.
@@ -252,6 +253,7 @@ impl<R: Read + Seek> BinaryReader<R> {
         &mut self,
         itemref: u64,
         extended: bool,
+        progress: &mut dyn FnMut(&[u8], u64),
     ) -> Result<Option<Listing>, BinaryImportError> {
         let directory = self.read_listed(itemref)?;
         if directory.kind != ItemType::Stat(EntryType::Directory) {
@@ -267,6 +269,10 @@ impl<R: Read + Seek> BinaryReader<R> {
             let item = self.read_listed(entry)?;
             next = item.previous;
             entries.push((entry, item));
+            progress(
+                &directory.name,
+                u64::try_from(entries.len()).unwrap_or(u64::MAX),
+            );
         }
 
         let mut tree = Tree::default();

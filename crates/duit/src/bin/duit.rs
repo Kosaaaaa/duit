@@ -9,7 +9,7 @@ use std::os::fd::AsFd;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::process::ExitCode;
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use duit::{
     Arg, Args, Config, OptionError, open_error, read_error, seek_error, stat_error, strerror,
@@ -21,7 +21,7 @@ use duit_format::{
 };
 use duit_model::{MemorySink, Sink, Tree, TreeError};
 use duit_scan::{ScanError, ScanOptions, scan};
-use duit_tui::{Browser, BrowserOptions, InitError, Input, Ui};
+use duit_tui::{Browser, BrowserOptions, InitError, Input, Loading, Ui};
 
 /// The terminal sequence that clears from the cursor to the end of the screen. ncdu writes it to
 /// standard error before an error message and at the end of a scan, to clear a progress line.
@@ -225,7 +225,9 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
             if quit_after_scan {
                 return Ok(ExitCode::SUCCESS);
             }
-            return browse(options, |options| Browser::open(reader, options));
+            return browse(options, config.update_delay, |options, loading| {
+                Browser::open(reader, options, loading)
+            });
         }
         let memory = MemorySink::new(config.extended);
         // `fill` ends with the clear that ncdu writes when it returns after the scan, or when
@@ -238,8 +240,8 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
         let Some(root) = tree.root() else {
             return Ok(ExitCode::SUCCESS);
         };
-        return browse(options, |options| {
-            Ok(Some((Browser::new(&tree, root, options), tree)))
+        return browse(options, config.update_delay, |options, loading| {
+            Ok(Some((Browser::new(&tree, root, options, loading), tree)))
         });
     };
 
@@ -288,10 +290,15 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
 /// the end of `main` in `main.zig` with `handleEvent`. Like ncdu, it handles every key that is
 /// waiting before it draws again. As in ncdu, the browser is opened once the terminal is, so that
 /// the root of a binary export is read then, and `open` gives `None` for a root that is not a
-/// directory.
+/// directory. While the browser lists a directory, [`Load`] draws the loading screen after
+/// `update_delay`.
 fn browse(
     mut options: BrowserOptions,
-    open: impl FnOnce(&BrowserOptions) -> Result<Option<(Browser, Tree)>, BinaryImportError>,
+    update_delay: Duration,
+    open: impl FnOnce(
+        &BrowserOptions,
+        &mut dyn FnMut(&Loading<'_>),
+    ) -> Result<Option<(Browser, Tree)>, BinaryImportError>,
 ) -> Result<ExitCode, Vec<u8>> {
     let mut ui = Ui::init(!io::stdin().is_terminal()).map_err(|error| match error {
         InitError::OpenTty(error) => {
@@ -299,7 +306,13 @@ fn browse(
         }
         InitError::Terminal(_) => b"Error initializing the terminal.\n".to_vec(),
     })?;
-    let (mut browser, mut tree) = match open(&options) {
+    let mut load = Load::new(&mut ui, update_delay);
+    let opened = open(&options, &mut |loading| load.report(loading));
+    if let Some(exit) = load.finish() {
+        ui.deinit();
+        return exit;
+    }
+    let (mut browser, mut tree) = match opened {
         Ok(Some(opened)) => opened,
         Ok(None) => {
             ui.deinit();
@@ -323,7 +336,16 @@ fn browse(
         }
         match ui.getch(block) {
             Ok(Some(Input::Key(key))) => {
-                match browser.key_input(&mut tree, &mut options, key, height) {
+                let mut load = Load::new(&mut ui, update_delay);
+                let quit =
+                    browser.key_input(&mut tree, &mut options, key, height, &mut |loading| {
+                        load.report(loading);
+                    });
+                if let Some(exit) = load.finish() {
+                    ui.deinit();
+                    return exit;
+                }
+                match quit {
                     Ok(true) => {
                         ui.deinit();
                         return Ok(ExitCode::SUCCESS);
@@ -346,14 +368,79 @@ fn browse(
             }
             Err(error) => {
                 ui.deinit();
-                return Err(format!(
-                    "Error reading keyboard input, assuming TTY has been lost.\n\
-                     (Potentially nonsensical error message: {})\n",
-                    strerror(&error)
-                )
-                .into_bytes());
+                return Err(input_error(&error));
             }
         }
+    }
+}
+
+/// The message that ncdu exits with when it cannot read the keys.
+fn input_error(error: &io::Error) -> Vec<u8> {
+    format!(
+        "Error reading keyboard input, assuming TTY has been lost.\n\
+         (Potentially nonsensical error message: {})\n",
+        strerror(error)
+    )
+    .into_bytes()
+}
+
+/// A directory that the browser lists, as `loadDir` in `browser.zig` calls `handleEvent` in
+/// `main.zig` while it lists one: once `update_delay` has passed since the listing started or
+/// since the loading screen was drawn, the loading screen is drawn again, and the keys that wait
+/// are dropped, as the browser ignores keys while it lists.
+struct Load<'a> {
+    ui: &'a mut Ui,
+    update_delay: Duration,
+    drawn: Instant,
+    /// Whether the browser reported a directory that it lists, which it does once it has listed 2
+    /// entries.
+    listed: bool,
+    /// How duit ends once the listing is done, after Ctrl-C or an error reading the keys.
+    exit: Option<Result<ExitCode, Vec<u8>>>,
+}
+
+impl<'a> Load<'a> {
+    fn new(ui: &'a mut Ui, update_delay: Duration) -> Self {
+        Self {
+            ui,
+            update_delay,
+            drawn: Instant::now(),
+            listed: false,
+            exit: None,
+        }
+    }
+
+    /// Handle the screen `loading` that the browser reports.
+    fn report(&mut self, loading: &Loading<'_>) {
+        self.listed = true;
+        if self.drawn.elapsed() > self.update_delay {
+            self.ui.draw(|frame| loading.draw(frame));
+            self.drawn = Instant::now();
+            self.drop_keys();
+        }
+    }
+
+    /// Read the input that waits and drop it. Unlike ncurses, which raises `SIGINT` at once,
+    /// Ctrl-C ends duit when the listing is done. A resize needs no redraw, because the next frame
+    /// is drawn at the new size.
+    fn drop_keys(&mut self) {
+        while self.exit.is_none() {
+            match self.ui.getch(false) {
+                Ok(Some(Input::Key(_) | Input::Resize)) => {}
+                Ok(Some(Input::Interrupt)) => self.exit = Some(Ok(ExitCode::FAILURE)),
+                Ok(None) => break,
+                Err(error) => self.exit = Some(Err(input_error(&error))),
+            }
+        }
+    }
+
+    /// End the listing, dropping the keys that wait if a directory was listed, and return how
+    /// duit ends, if it does.
+    fn finish(mut self) -> Option<Result<ExitCode, Vec<u8>>> {
+        if self.listed {
+            self.drop_keys();
+        }
+        self.exit
     }
 }
 

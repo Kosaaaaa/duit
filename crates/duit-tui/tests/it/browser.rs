@@ -144,7 +144,7 @@ fn screen(
     keys: &[Key],
     size: (u16, u16),
 ) -> String {
-    let browser = Browser::new(tree, directory, options);
+    let browser = Browser::new(tree, directory, options, &mut |_| {});
     run(browser, tree.clone(), options, keys, size)
 }
 
@@ -156,7 +156,7 @@ fn file_screen(fixture: &str, options: &BrowserOptions, keys: &[Key], size: (u16
         .join(fixture);
     let file = File::open(path).expect("export is opened");
     let reader = BinaryReader::open(file).expect("index is read");
-    let (browser, tree) = Browser::open(reader, options)
+    let (browser, tree) = Browser::open(reader, options, &mut |_| {})
         .expect("root is read")
         .expect("root is a directory");
     run(browser, tree, options, keys, size)
@@ -178,13 +178,19 @@ fn run(
         .expect("browser draws");
     for &key in keys {
         browser
-            .key_input(&mut tree, &mut options, key, height)
+            .key_input(&mut tree, &mut options, key, height, &mut |_| {})
             .expect("key is handled");
         terminal
             .draw(|frame| browser.draw(frame, &tree, &options))
             .expect("browser draws");
     }
+    render(&terminal)
+}
+
+/// The text and the attributes of the screen of `terminal`, as [`screen`] describes.
+fn render(terminal: &Terminal<TestBackend>) -> String {
     let buffer = terminal.backend().buffer();
+    let (width, height) = (buffer.area.width, buffer.area.height);
     let mut screen = terminal.backend().to_string();
     for row in 0..height {
         for column in 0..width {
@@ -1399,11 +1405,11 @@ fn quit_keys() {
     let quits = |options: &BrowserOptions, keys: &[Key]| {
         let mut options = options.clone();
         let mut tree = tree.clone();
-        let mut browser = Browser::new(&tree, root(&tree), &options);
+        let mut browser = Browser::new(&tree, root(&tree), &options, &mut |_| {});
         keys.iter()
             .map(|&key| {
                 browser
-                    .key_input(&mut tree, &mut options, key, 24)
+                    .key_input(&mut tree, &mut options, key, 24, &mut |_| {})
                     .expect("key is handled")
             })
             .collect::<Vec<_>>()
@@ -1797,10 +1803,10 @@ fn info_keys() {
     assert_eq!(screen_of(root, &[i, Key::Char('q')]), screen_of(root, &[]));
     let mut options = imported();
     let mut tree = tree.clone();
-    let mut browser = Browser::new(&tree, root, &options);
+    let mut browser = Browser::new(&tree, root, &options, &mut |_| {});
     let mut key_input = |key| {
         browser
-            .key_input(&mut tree, &mut options, key, 18)
+            .key_input(&mut tree, &mut options, key, 18, &mut |_| {})
             .expect("key is handled")
     };
     key_input(i);
@@ -2069,10 +2075,10 @@ fn help_keys() {
     // `q` does not quit, and does not ask to.
     let mut options = imported();
     let mut tree = tree.clone();
-    let mut browser = Browser::new(&tree, root(&tree), &options);
+    let mut browser = Browser::new(&tree, root(&tree), &options, &mut |_| {});
     let mut key_input = |key| {
         browser
-            .key_input(&mut tree, &mut options, key, 18)
+            .key_input(&mut tree, &mut options, key, 18, &mut |_| {})
             .expect("key is handled")
     };
     key_input(help);
@@ -2951,6 +2957,124 @@ fn from_file_enter_parent() {
     RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
     ................................................................................
     R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// While a directory is read from the file, the screen has the header, the path of the directory,
+/// no listing, and the number of entries read so far in the footer, also for the parent
+/// directory.
+#[test]
+fn from_file_loading() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../duit/tests/fixtures/tree.ncdu");
+    let file = File::open(path).expect("export is opened");
+    let reader = BinaryReader::open(file).expect("index is read");
+    let mut options = imported();
+    let (mut browser, mut tree) = Browser::open(reader, &options, &mut |_| {})
+        .expect("root is read")
+        .expect("root is a directory");
+    let mut terminal = Terminal::new(TestBackend::new(80, 6)).expect("terminal opens");
+    browser
+        .key_input(&mut tree, &mut options, Key::Enter, 6, &mut |loading| {
+            terminal
+                .draw(|frame| loading.draw(frame))
+                .expect("loading draws");
+        })
+        .expect("key is handled");
+    assert_snapshot!(render(&terminal), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help        [from file]"
+    "--- /home/user/project/src -----------------------------------------------------"
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    " Loading... 2                                                                   "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+    // Going back reads the parent directory, under its path.
+    browser
+        .key_input(&mut tree, &mut options, Key::Left, 6, &mut |loading| {
+            terminal
+                .draw(|frame| loading.draw(frame))
+                .expect("loading draws");
+        })
+        .expect("key is handled");
+    let screen = terminal.backend().to_string();
+    assert_eq!(
+        screen.lines().nth(1),
+        Some(
+            r#""--- /home/user/project ---------------------------------------------------------""#
+        )
+    );
+}
+
+/// The footer counts the entries that the browser has listed, and it is drawn at each count
+/// without the bits of 1 and 64, as `loadDir` calls `handleEvent`.
+#[test]
+fn loading_counts() {
+    let tree = tree_of(item_counts(&[("many", 140)]).as_bytes(), false);
+    let mut terminal = Terminal::new(TestBackend::new(20, 3)).expect("terminal opens");
+    let mut footers = Vec::new();
+    Browser::new(
+        &tree,
+        subdirectory(&tree, b"many"),
+        &imported(),
+        &mut |loading| {
+            terminal
+                .draw(|frame| loading.draw(frame))
+                .expect("loading draws");
+            footers.extend(
+                terminal
+                    .backend()
+                    .to_string()
+                    .lines()
+                    .nth(2)
+                    .map(str::to_owned),
+            );
+        },
+    );
+    assert_snapshot!(footers.join("\n"), @r#"
+    " Loading... 2       "
+    " Loading... 4       "
+    " Loading... 6       "
+    " Loading... 8       "
+    " Loading... 10      "
+    " Loading... 12      "
+    " Loading... 14      "
+    " Loading... 16      "
+    " Loading... 18      "
+    " Loading... 20      "
+    " Loading... 22      "
+    " Loading... 24      "
+    " Loading... 26      "
+    " Loading... 28      "
+    " Loading... 30      "
+    " Loading... 32      "
+    " Loading... 34      "
+    " Loading... 36      "
+    " Loading... 38      "
+    " Loading... 40      "
+    " Loading... 42      "
+    " Loading... 44      "
+    " Loading... 46      "
+    " Loading... 48      "
+    " Loading... 50      "
+    " Loading... 52      "
+    " Loading... 54      "
+    " Loading... 56      "
+    " Loading... 58      "
+    " Loading... 60      "
+    " Loading... 62      "
+    " Loading... 128     "
+    " Loading... 130     "
+    " Loading... 132     "
+    " Loading... 134     "
+    " Loading... 136     "
+    " Loading... 138     "
+    " Loading... 140     "
     "#);
 }
 

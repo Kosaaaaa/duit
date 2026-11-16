@@ -20,7 +20,7 @@ use tempfile::TempDir;
 
 #[cfg(feature = "test-ncdu")]
 use crate::assert_ncdu;
-use crate::{binary_file, binary_frames, block_start, item, reference, render, table, text};
+use crate::{binary_file, binary_frames, block_start, duit, item, reference, render, table, text};
 
 /// How long a test waits for duit to draw or to exit.
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -309,6 +309,48 @@ fn escape_then_key() {
         b"q\x1by\x03",
     );
     assert_eq!(status.code(), Some(1));
+}
+
+/// Keys that are typed while a directory is listed are dropped, as ncdu drops them once `loadDir`
+/// has listed 2 entries: the `q` after Enter on `/src` does not quit.
+#[test]
+fn keys_dropped_while_loading() {
+    let directory = fixture();
+    for export in ["tree.json", "tree.ncdu"] {
+        let pty = pty();
+        let receiver = read_output(&pty);
+        let mut child = spawn_on(&pty, directory.path(), &["-f", export]);
+        let mut output = Vec::new();
+        wait_for(&receiver, &mut output, FOOTER);
+        (&pty.master).write_all(b"\rq").expect("keys are typed");
+        // The row of the parent directory of `/src`.
+        wait_for(&receiver, &mut output, b"/..");
+        (&pty.master).write_all(b"q").expect("keys are typed");
+        assert_eq!(wait_exit(&mut child).code(), Some(0), "{export}");
+    }
+}
+
+/// While a large directory is read from a binary export, the footer counts the entries that are
+/// read, until the listing is drawn.
+#[test]
+fn loading_footer() {
+    let directory = TempDir::new().expect("temporary directory is created");
+    let mut export = String::from(r#"[1,2,{},[{"name":"/large"}"#);
+    for index in 0..200_000 {
+        let _ = write!(export, r#",{{"name":"{index}"}}"#);
+    }
+    export.push_str("]]");
+    fs::write(directory.path().join("large.json"), export).expect("export is written");
+    let converted = duit(directory.path(), &["-f", "large.json", "-O", "large.ncdu"]);
+    assert!(converted.status.success(), "{}", render(&converted));
+    let pty = pty();
+    let receiver = read_output(&pty);
+    let mut child = spawn_on(&pty, directory.path(), &["-f", "large.ncdu"]);
+    let mut output = Vec::new();
+    wait_for(&receiver, &mut output, b" Loading... ");
+    wait_for(&receiver, &mut output, FOOTER);
+    (&pty.master).write_all(b"q").expect("keys are typed");
+    assert_eq!(wait_exit(&mut child).code(), Some(0));
 }
 
 /// With an import from standard input, duit draws on and reads keys from `/dev/tty`, its
