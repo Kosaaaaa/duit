@@ -801,6 +801,9 @@ fn binary_malformed() {
         deep_directories.extend_from_slice(b"\xbf\x00\x00\x01\x41d\x0c\x28\xff");
     }
     let deep_root = u64::try_from(deep_directories.len() - 9).expect("offset fits");
+    let mut renumbered = binary_file(&[&directory_item(b"")], 0);
+    // The number in the header of block 0, after the signature and the length of the block.
+    renumbered[12..16].copy_from_slice(&1_u32.to_be_bytes());
     let deep_value = directory_item(
         &[
             &b"\x18\x1f"[..],
@@ -905,6 +908,11 @@ fn binary_malformed() {
             "a truncated zstd frame",
             binary_frames(&[&frame[..frame.len() - 1]], 0),
             true,
+        ),
+        (
+            "a block whose header holds another number",
+            renumbered,
+            false,
         ),
         (
             "an item past the end of its block",
@@ -1082,6 +1090,8 @@ fn binary_malformed() {
       1: Error reading item 0 from file
     a truncated zstd frame
       1: Error decompressing block 0 (expected 7 got 18446744073709551544)
+    a block whose header holds another number (unlike ncdu)
+      1: Error reading item 0 from file
     an item past the end of its block
       1: Error reading item 7 from file
     an item that is not a map

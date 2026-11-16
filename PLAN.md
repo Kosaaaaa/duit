@@ -137,6 +137,16 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
   and stops with `Error reading from file` on that index. Those stacks are on the heap and have no
   limit either, so memory grows with the depth, as the set grows with the number of items. A limit
   would be an error that ncdu does not have.
+- **Binary import: a block whose header holds another number is an error, unlike ncdu.** ncdu writes
+  the number of each data block after its header, the same number as its entry in the index
+  (`bin_export.zig:117-118,136`), but does not read it back (`bin_reader.zig:97`). Several entries
+  of the index can then point at one block, and each of them costs a decompression of the same
+  frame. duit stops with `Error reading item X from file` at such a block, which ncdu never writes.
+- **Binary import: the block cache has ncdu's size, and there is no limit on the work.** As in ncdu
+  (`bin_reader.zig:44,72-112`), duit keeps the 8 data blocks that it decompressed last. Items whose
+  references rotate through more blocks than that decompress a block at each read, and a block can
+  decompress to almost 16 MiB: a 12 KB export of 9 blocks and 9000 items takes about 50 s on a debug
+  build, and 6 s in ncdu. A limit on that work would be an error that ncdu does not have.
 - **Panics: the terminal is restored from the panic hook.** The release profile uses
   `panic = "abort"`, so `Drop` guards do not run.
 - **`unsafe`: `#[expect(unsafe_code)]` plus a `SAFETY` comment.** The workspace lint warns on

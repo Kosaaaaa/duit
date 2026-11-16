@@ -264,7 +264,8 @@ impl<R: Read + Seek> BinaryReader<R> {
     }
 
     /// Read and decompress the data block `number`, which holds the item at `itemref`. As in
-    /// ncdu, the header, the number, and the footer of the block are not checked.
+    /// ncdu, the header and the footer of the block are not checked, but unlike ncdu its number
+    /// is.
     fn load(&mut self, number: u32, itemref: u64) -> Result<Vec<u8>, BinaryImportError> {
         let corrupt = || BinaryImportError::Corrupt { itemref };
         // As in ncdu, the root reference at the end of the index reads as the position of the
@@ -280,20 +281,27 @@ impl<R: Read + Seek> BinaryReader<R> {
         if length <= 12 {
             return Err(corrupt());
         }
-        let mut frame = vec![0; usize::try_from(length - 12).map_err(|_| corrupt())?];
-        read_at(&mut self.input, &mut frame, offset + 8).map_err(|error| {
+        // The number of the block, then its zstd frame.
+        let mut block = vec![0; usize::try_from(length - 8).map_err(|_| corrupt())?];
+        read_at(&mut self.input, &mut block, offset + 4).map_err(|error| {
             if error.kind() == io::ErrorKind::UnexpectedEof {
                 corrupt()
             } else {
                 BinaryImportError::Read(error)
             }
         })?;
-        let expected = match zstd_safe::get_frame_content_size(&frame) {
+        // ncdu writes the number of each block but does not read it, so several entries of the
+        // index can point at one block, and each of them costs a decompression of the same frame.
+        let (stored, frame) = block.split_first_chunk::<4>().ok_or_else(corrupt)?;
+        if *stored != number.to_be_bytes() {
+            return Err(corrupt());
+        }
+        let expected = match zstd_safe::get_frame_content_size(frame) {
             Ok(Some(size)) if size > 0 && size < 1 << 24 => size,
             Ok(Some(_) | None) | Err(_) => return Err(corrupt()),
         };
         let mut data = vec![0; usize::try_from(expected).map_err(|_| corrupt())?];
-        let result = zstd_safe::decompress(data.as_mut_slice(), &frame).unwrap_or_else(|code| code);
+        let result = zstd_safe::decompress(data.as_mut_slice(), frame).unwrap_or_else(|code| code);
         if result != data.len() {
             return Err(BinaryImportError::Decompress {
                 block: number,
