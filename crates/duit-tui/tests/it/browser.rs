@@ -62,6 +62,22 @@ const NAMES: &str = r#"[1,2,{"progname":"ncdu","progver":"2.9.2"},
 {"name":"zfs","excluded":"otherfs"},
 {"name":"apattern","excluded":"pattern"}]]"#;
 
+/// Eleven hard links to one inode, three of them in a subdirectory, one with a long name.
+const LINKS: &str = r#"[1,2,{"progname":"ncdu","progver":"2.9.2"},
+[{"name":"/links","asize":4096,"dsize":4096},
+{"name":"a","asize":100,"dsize":4096,"ino":9,"hlnkc":true,"nlink":11},
+{"name":"b","asize":100,"dsize":4096,"ino":9,"hlnkc":true,"nlink":11},
+{"name":"c","asize":100,"dsize":4096,"ino":9,"hlnkc":true,"nlink":11},
+{"name":"d","asize":100,"dsize":4096,"ino":9,"hlnkc":true,"nlink":11},
+{"name":"e","asize":100,"dsize":4096,"ino":9,"hlnkc":true,"nlink":11},
+{"name":"f","asize":100,"dsize":4096,"ino":9,"hlnkc":true,"nlink":11},
+{"name":"g","asize":100,"dsize":4096,"ino":9,"hlnkc":true,"nlink":11},
+{"name":"h","asize":100,"dsize":4096,"ino":9,"hlnkc":true,"nlink":11},
+[{"name":"sub","asize":4096,"dsize":4096},
+{"name":"y","asize":100,"dsize":4096,"ino":9,"hlnkc":true,"nlink":11},
+{"name":"a-file-name-that-is-long-enough-to-be-shortened-in-the-window","asize":100,"dsize":4096,"ino":9,"hlnkc":true,"nlink":11},
+{"name":"x","asize":100,"dsize":4096,"ino":9,"hlnkc":true,"nlink":11}]]]"#;
+
 /// Import the JSON export `input` and return the tree.
 fn tree_of(input: &[u8], extended: bool) -> Tree {
     let mut sink = MemorySink::new(extended);
@@ -1341,5 +1357,423 @@ fn quit_keys() {
             (80, 10)
         ),
         screen(&tree, root(&tree), &options, &[], (80, 10))
+    );
+}
+
+/// `i` shows the name, the type, and the sizes of a file.
+#[test]
+fn info_file() {
+    let tree = tree_of(SOURCE, false);
+    let keys = [Key::Down, Key::Down, Key::Down, Key::Char('i')];
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 14)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "   16.0 KiB S   4.0 KiB [###########] /src                                      "
+    "!   4.0 Ki┌── Item info ─────────────────────────────────────────────┐          "
+    "e   4.0 Ki│                                                          │          "
+    "    4.0 Ki│  Name: README.md                                         │          "
+    "H   4.0 Ki│  Type: File                                              │          "
+    "    0.0   │     Disk usage:   4.0 KiB (4,096)                        │          "
+    "    0.0   │  Apparent size:   1.2 KiB (1,234)                        │          "
+    "    0.0   │                                                          │rol \x01 é"
+    "@   0.0   │                             Press i to close this window │          "
+    "^   0.0   └──────────────────────────────────────────────────────────┘          "
+    "<   0.0   B             [           ]  node_modules                             "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    .............BBBBBBBBBBB........................................................
+    ................................................................................
+    RRRRRRRRRR...BBBBBB...................................................RRRRRRRRRR
+    .............BBBBBB.............................................................
+    .............BBBBBBBBBBBBBBB....................................................
+    .............BBBBBBBBBBBBBBB....................................................
+    ................................................................................
+    ..............................................B.................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// The info of a directory adds the shared and unique parts of its sizes, which hard links with
+/// links outside of it give, and its number of items.
+#[test]
+fn info_directory() {
+    let tree = tree_of(SOURCE, false);
+    let keys = [Key::Char('i')];
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 18)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "   16.0 Ki┌── Item info ─────────────────────────────────────────────┐          "
+    "!   4.0 Ki│                                                          │          "
+    "e   4.0 Ki│  Name: src                                               │          "
+    "    4.0 Ki│  Type: Directory                                         │          "
+    "H   4.0 Ki│     Disk usage:  16.0 KiB (16,384)                       │          "
+    "    0.0   │       > shared:   4.0 KiB (4,096)                        │          "
+    "    0.0   │       > unique:  12.0 KiB (12,288)                       │          "
+    "    0.0   │  Apparent size:   9.2 KiB (9,396)                        │rol \x01 é"
+    "@   0.0   │       > shared: 300.0   B (300)                          │          "
+    "^   0.0   │       > unique:   8.9 KiB (9,096)                        │          "
+    "<   0.0   │      Sub items: 2                                        │          "
+    ">   0.0   │                                                          │          "
+    "    0.0   │                             Press i to close this window │          "
+    "          └──────────────────────────────────────────────────────────┘          "
+    "                                                                                "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRR...BBBBBBBBBBB..............................................RRRRRRRRRR
+    ................................................................................
+    .............BBBBBB.............................................................
+    .............BBBBBB.............................................................
+    .............BBBBBBBBBBBBBBB....................................................
+    ................................................................................
+    ................................................................................
+    .............BBBBBBBBBBBBBBB....................................................
+    ................................................................................
+    ................................................................................
+    .............BBBBBBBBBBBBBBB....................................................
+    ................................................................................
+    ..............................................B.................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// With `-e`, the mode, the owner, and the latest mtime replace the type, and a hard link has
+/// tabs, its link count, and its inode. `--si` sizes count in powers of 1000.
+#[test]
+fn info_extended_hard_link() {
+    let tree = tree_of(SOURCE, true);
+    let options = BrowserOptions {
+        si: true,
+        extended: true,
+        ..imported()
+    };
+    let keys = [Key::Down, Key::Down, Key::Down, Key::Down, Key::Char('i')];
+    assert_snapshot!(redact_times(&screen(&tree, root(&tree), &options, &keys, (80, 16))), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "   16.4 kB S   4.1 kB [###########] /src                                        "
+    "!   4.1 kB┌── Item info ───────────────────────────1:Info───2:Links──┐          "
+    "e   4.1 kB│                                                          │          "
+    "    4.1 kB│  Name: also-linked                                       │          "
+    "H   4.1 kB│  Mode: -rw-r--r--  UID: 1000   GID: 1000                 │          "
+    "    0.0  B│  Last modified: 2023-11-14 HH:MM:SS +ZZZZ                │          "
+    "    0.0  B│     Disk usage:   4.1 kB (4,096)                         │          "
+    "    0.0  B│  Apparent size: 300.0  B (300)                           │rol \x01 é"
+    "@   0.0  B│     Link count: 2      Inode: 104                        │          "
+    "^   0.0  B│                                                          │          "
+    "<   0.0  B│                             Press i to close this window │          "
+    ">   0.0  B└──────────────────────────────────────────────────────────┘          "
+    "    0.0  B            [           ]  broken                                     "
+    "*Total disk usage:  32.8 kB   Apparent size:   1.1 MB   Items: 15               "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    .............BBBBBBBBBBB...........................#RRRRR...B...................
+    ................................................................................
+    .............BBBBBB.............................................................
+    RRRRRRRRRR...BBBBBB..........BBBBBBB......BBBBBB......................RRRRRRRRRR
+    .............BBBBBBBBBBBBBBB....................................................
+    .............BBBBBBBBBBBBBBB....................................................
+    .............BBBBBBBBBBBBBBB....................................................
+    .............BBBBBBBBBBBBBBB.....BBBBBBBBB......................................
+    ................................................................................
+    ..............................................B.................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// Extended information without a mode or an mtime leaves out its fields, and the row that the
+/// mtime would take stays empty.
+#[test]
+fn info_extended_without_mtime() {
+    let tree = tree_of(MTIME.as_bytes(), true);
+    let options = BrowserOptions {
+        extended: true,
+        ..imported()
+    };
+    let keys = [Key::End, Key::Up, Key::Up, Key::Char('i')];
+    assert_snapshot!(screen(&tree, root(&tree), &options, &keys, (80, 14)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /mtime ---------------------------------------------------------------------"
+    "    8.0 Ki┌── Item info ─────────────────────────────────────────────┐          "
+    "    4.0 Ki│                                                          │          "
+    "    4.0 Ki│  Name: nomtime                                           │          "
+    "    4.0 Ki│    UID: 1000                                             │          "
+    "    4.0 Ki│     Disk usage:   4.0 KiB (4,096)                        │          "
+    "          │  Apparent size: 100.0   B (100)                          │          "
+    "          │                                                          │          "
+    "          │                                                          │          "
+    "          │                             Press i to close this window │          "
+    "          └──────────────────────────────────────────────────────────┘          "
+    "                                                                                "
+    "*Total disk usage:  28.0 KiB   Apparent size:   8.5 KiB   Items: 6              "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    .............BBBBBBBBBBB........................................................
+    ................................................................................
+    RRRRRRRRRR...BBBBBB...................................................RRRRRRRRRR
+    .............BBBBBBB............................................................
+    .............BBBBBBBBBBBBBBB....................................................
+    .............BBBBBBBBBBBBBBB....................................................
+    ................................................................................
+    ................................................................................
+    ..............................................B.................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// An entry that could not be read has no sizes, and counts as excluded.
+#[test]
+fn info_read_error() {
+    let tree = tree_of(SOURCE, false);
+    let keys = [Key::End, Key::Char('i')];
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 14)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "e   4.0 KiB             [####       ] /empty                                    "
+    "    4.0 Ki┌── Item info ─────────────────────────────────────────────┐          "
+    "H   4.0 Ki│                                                          │          "
+    "    0.0   │  Name: broken                                            │          "
+    "    0.0   │  Type: Excluded                                          │          "
+    "    0.0   │     Disk usage:   0.0   B (0)                            │rol \x01 é"
+    "@   0.0   │  Apparent size:   0.0   B (0)                            │          "
+    "^   0.0   │                                                          │          "
+    "<   0.0   │                             Press i to close this window │          "
+    ">   0.0   └──────────────────────────────────────────────────────────┘          "
+    "    0.0   B             [           ]  broken                                   "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    .............BBBBBBBBBBB........................................................
+    ................................................................................
+    .............BBBBBB.............................................................
+    .............BBBBBB.............................................................
+    .............BBBBBBBBBBBBBBB....................................................
+    .............BBBBBBBBBBBBBBB....................................................
+    ................................................................................
+    ..............................................B.................................
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// The links tab lists the paths of the links to the inode below the root, sorted, and marks the
+/// selected entry. The cursor of the list moves on its own.
+#[test]
+fn info_links() {
+    let tree = tree_of(SOURCE, false);
+    let keys = [
+        Key::Down,
+        Key::Down,
+        Key::Down,
+        Key::Down,
+        Key::Char('i'),
+        Key::Char('2'),
+        Key::Down,
+    ];
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 16)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "   16.0 Ki┌── Item info ───────────────────────────1:Info───2:Links──┐          "
+    "!   4.0 Ki│                                                          │          "
+    "e   4.0 Ki│ */also-linked                                            │          "
+    "    4.0 Ki│  src/linked                                              │          "
+    "H   4.0 Ki│                                                          │          "
+    "    0.0   │                                                          │          "
+    "    0.0   │                                                          │          "
+    "    0.0   │                                                          │rol \x01 é"
+    "@   0.0   │                                                          │          "
+    "^   0.0   │                                                          │          "
+    "<   0.0   │                                                          │          "
+    ">   0.0   │     2/2                     Press i to close this window │          "
+    "    0.0   └──────────────────────────────────────────────────────────┘          "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    .............BBBBBBBBBBB...........................B........#RRRRRR.............
+    ................................................................................
+    ................................................................................
+    ............RRRRRRRRRRR.........................................................
+    RRRRRRRRRR............................................................RRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ..............................................B.................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// The links tab scrolls to keep its cursor on the screen, and pages by 5 links. Long paths are
+/// shortened.
+#[test]
+fn info_links_scroll() {
+    let tree = tree_of(LINKS.as_bytes(), false);
+    let keys = [
+        Key::Down,
+        Key::Char('i'),
+        Key::Char('2'),
+        Key::PageDown,
+        Key::PageUp,
+    ];
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 16)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /links ---------------------------------------------------------------------"
+    "    8.0 Ki┌── Item info ───────────────────────────1:Info───2:Links──┐          "
+    "H   4.0 Ki│                                                          │          "
+    "H   4.0 Ki│  /c                                                      │          "
+    "H   4.0 Ki│  /d                                                      │          "
+    "H   4.0 Ki│  /e                                                      │          "
+    "H   4.0 Ki│  /f                                                      │          "
+    "H   4.0 Ki│  /g                                                      │          "
+    "H   4.0 Ki│ */h                                                      │          "
+    "H   4.0 Ki│  sub/a-file-name-that-is-lo...be-shortened-in-the-window │          "
+    "          │  sub/x                                                   │          "
+    "          │  sub/y                                                   │          "
+    "          │     6/11                    Press i to close this window │          "
+    "          └──────────────────────────────────────────────────────────┘          "
+    "*Total disk usage:  12.0 KiB   Apparent size:   8.1 KiB   Items: 12             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    .............BBBBBBBBBBB...........................B........#RRRRRR.............
+    RRRRRRRRRR............................................................RRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ............RRR.................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ..............................................B.................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// Enter in the links tab opens the directory of the selected link with the cursor on it, but
+/// keeps the path, the scroll position, and the parent directories of the directory that was open:
+/// there is no row of the parent directory, and going to the parent does nothing.
+#[test]
+fn info_links_enter() {
+    let tree = tree_of(SOURCE, false);
+    let keys = [
+        Key::Down,
+        Key::Down,
+        Key::Down,
+        Key::Down,
+        Key::Char('i'),
+        Key::Char('2'),
+        Key::Down,
+        Key::Enter,
+        Key::Char('h'),
+    ];
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 6)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "H   4.0 KiB [########   ]  linked                                               "
+    "                                                                                "
+    "                                                                                "
+    "*Total disk usage:  16.0 KiB   Apparent size:   9.2 KiB   Items: 2              "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// The keys of the info window, and the keys of the listing that close it.
+#[test]
+fn info_keys() {
+    let tree = tree_of(SOURCE, false);
+    let src = subdirectory(&tree, b"src");
+    let screen_of = |directory: DirectoryId, keys: &[Key]| {
+        screen(&tree, directory, &imported(), keys, (80, 18))
+    };
+    let root = root(&tree);
+    let (i, j, k) = (Key::Char('i'), Key::Down, Key::Up);
+    let link = [j, j, j, j];
+
+    // `i` and `q` close the window, and `q` does not quit.
+    assert_ne!(screen_of(root, &[i]), screen_of(root, &[]));
+    assert_eq!(screen_of(root, &[i, i]), screen_of(root, &[]));
+    assert_eq!(screen_of(root, &[i, Key::Char('q')]), screen_of(root, &[]));
+    let mut options = imported();
+    let mut browser = Browser::new(&tree, root, &options);
+    browser.key_input(&tree, &mut options, i, 18);
+    assert!(!browser.key_input(&tree, &mut options, Key::Char('q'), 18));
+    // The cursor keys move the cursor of the listing, and the window shows the entry under it.
+    assert_eq!(screen_of(root, &[i, j, j]), screen_of(root, &[j, j, i]));
+    assert_eq!(
+        screen_of(root, &[i, Key::End]),
+        screen_of(root, &[Key::End, i])
+    );
+    // On the row of the parent directory, the window closes, and `i` does not open it.
+    assert_eq!(screen_of(src, &[j, i, k]), screen_of(src, &[j, k]));
+    assert_eq!(screen_of(src, &[i]), screen_of(src, &[]));
+    // Sort and display keys keep the window open on the same entry.
+    assert_eq!(
+        screen_of(root, &[j, i, Key::Char('n'), Key::Char('g')]),
+        screen_of(root, &[j, Key::Char('n'), Key::Char('g'), i])
+    );
+    // Opening a directory, going to the parent, and `e` close the window. Without a parent
+    // directory, `h` does nothing and the window stays.
+    assert_eq!(
+        screen_of(root, &[i, Key::Enter]),
+        screen_of(root, &[Key::Enter])
+    );
+    assert_eq!(
+        screen_of(src, &[j, i, Key::Char('<')]),
+        screen_of(src, &[j, Key::Char('<')])
+    );
+    assert_eq!(
+        screen_of(root, &[i, Key::Char('e')]),
+        screen_of(root, &[Key::Char('e')])
+    );
+    assert_eq!(screen_of(root, &[i, Key::Char('h')]), screen_of(root, &[i]));
+    // The tabs are only for hard links, and switch with `1`, `h`, or left and `2`, `l`, or right.
+    assert_eq!(screen_of(root, &[i, Key::Char('2')]), screen_of(root, &[i]));
+    let tab = |keys: &[Key]| screen_of(root, &[&link[..], &[i], keys].concat());
+    assert_eq!(tab(&[Key::Char('l')]), tab(&[Key::Char('2')]));
+    assert_eq!(tab(&[Key::Right]), tab(&[Key::Char('2')]));
+    assert_eq!(tab(&[Key::Char('2'), Key::Char('1')]), tab(&[]));
+    assert_eq!(tab(&[Key::Char('2'), Key::Char('h')]), tab(&[]));
+    assert_eq!(tab(&[Key::Char('2'), Key::Left]), tab(&[]));
+    // In the links tab, the cursor keys move the cursor of the list, not that of the listing.
+    assert_eq!(tab(&[Key::Char('2'), j, Key::Char('1')]), tab(&[]));
+    assert_eq!(
+        tab(&[Key::Char('2'), Key::End]),
+        tab(&[Key::Char('2'), j, j])
+    );
+    // The window keeps the cursor of the list until it shows another entry, also after `e`
+    // closed it.
+    assert_eq!(
+        tab(&[Key::Char('2'), j, Key::Char('e'), i, Key::Char('2')]),
+        screen_of(
+            root,
+            &[&link[..], &[Key::Char('e'), i, Key::Char('2'), j]].concat()
+        )
+    );
+    assert_eq!(
+        tab(&[Key::Char('2'), j, Key::Char('1'), k, j, Key::Char('2')]),
+        tab(&[Key::Char('2')])
     );
 }
