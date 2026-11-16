@@ -1,6 +1,8 @@
 use std::fmt::Write as _;
+use std::fs::File;
+use std::path::Path;
 
-use duit_format::import;
+use duit_format::{BinaryReader, import};
 use duit_model::{DirectoryId, EntryKind, MemorySink, Tree};
 use duit_tui::{
     Browser, BrowserOptions, ColorScheme, GraphStyle, Key, SharedColumn, SortColumn, SortOrder,
@@ -140,18 +142,46 @@ fn screen(
     directory: DirectoryId,
     options: &BrowserOptions,
     keys: &[Key],
+    size: (u16, u16),
+) -> String {
+    let browser = Browser::new(tree, directory, options);
+    run(browser, tree.clone(), options, keys, size)
+}
+
+/// Open the binary export `fixture` of `crates/duit/tests/fixtures` as [`screen`] opens a tree,
+/// reading it from the file one directory at a time.
+fn file_screen(fixture: &str, options: &BrowserOptions, keys: &[Key], size: (u16, u16)) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../duit/tests/fixtures")
+        .join(fixture);
+    let file = File::open(path).expect("export is opened");
+    let reader = BinaryReader::open(file).expect("index is read");
+    let (browser, tree) = Browser::open(reader, options)
+        .expect("root is read")
+        .expect("root is a directory");
+    run(browser, tree, options, keys, size)
+}
+
+/// Draw `browser` on a terminal of `width` by `height`, and again after each of `keys`, and render
+/// the last screen as [`screen`] describes.
+fn run(
+    mut browser: Browser,
+    mut tree: Tree,
+    options: &BrowserOptions,
+    keys: &[Key],
     (width, height): (u16, u16),
 ) -> String {
     let mut options = options.clone();
-    let mut browser = Browser::new(tree, directory, &options);
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal opens");
     terminal
-        .draw(|frame| browser.draw(frame, tree, &options))
+        .draw(|frame| browser.draw(frame, &tree, &options))
         .expect("browser draws");
     for &key in keys {
-        browser.key_input(tree, &mut options, key, height);
+        browser
+            .key_input(&mut tree, &mut options, key, height)
+            .expect("key is handled");
         terminal
-            .draw(|frame| browser.draw(frame, tree, &options))
+            .draw(|frame| browser.draw(frame, &tree, &options))
             .expect("browser draws");
     }
     let buffer = terminal.backend().buffer();
@@ -1368,9 +1398,14 @@ fn quit_keys() {
     let tree = tree_of(SOURCE, false);
     let quits = |options: &BrowserOptions, keys: &[Key]| {
         let mut options = options.clone();
+        let mut tree = tree.clone();
         let mut browser = Browser::new(&tree, root(&tree), &options);
         keys.iter()
-            .map(|&key| browser.key_input(&tree, &mut options, key, 24))
+            .map(|&key| {
+                browser
+                    .key_input(&mut tree, &mut options, key, 24)
+                    .expect("key is handled")
+            })
             .collect::<Vec<_>>()
     };
     assert_eq!(quits(&imported(), &[Key::Char('q')]), [true]);
@@ -1761,9 +1796,15 @@ fn info_keys() {
     assert_eq!(screen_of(root, &[i, i]), screen_of(root, &[]));
     assert_eq!(screen_of(root, &[i, Key::Char('q')]), screen_of(root, &[]));
     let mut options = imported();
+    let mut tree = tree.clone();
     let mut browser = Browser::new(&tree, root, &options);
-    browser.key_input(&tree, &mut options, i, 18);
-    assert!(!browser.key_input(&tree, &mut options, Key::Char('q'), 18));
+    let mut key_input = |key| {
+        browser
+            .key_input(&mut tree, &mut options, key, 18)
+            .expect("key is handled")
+    };
+    key_input(i);
+    assert!(!key_input(Key::Char('q')));
     // The cursor keys move the cursor of the listing, and the window shows the entry under it.
     assert_eq!(screen_of(root, &[i, j, j]), screen_of(root, &[j, j, i]));
     assert_eq!(
@@ -2027,9 +2068,15 @@ fn help_keys() {
     }
     // `q` does not quit, and does not ask to.
     let mut options = imported();
+    let mut tree = tree.clone();
     let mut browser = Browser::new(&tree, root(&tree), &options);
-    browser.key_input(&tree, &mut options, help, 18);
-    assert!(!browser.key_input(&tree, &mut options, Key::Char('q'), 18));
+    let mut key_input = |key| {
+        browser
+            .key_input(&mut tree, &mut options, key, 18)
+            .expect("key is handled")
+    };
+    key_input(help);
+    assert!(!key_input(Key::Char('q')));
     let confirm = BrowserOptions {
         confirm_quit: true,
         ..imported()
@@ -2820,5 +2867,355 @@ fn color_dark_help_about() {
     ................................................................................
     ................................................................................
     cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+    "#);
+}
+
+/// A binary export is read from the file, and the header marks it instead of the import. The
+/// listing is that of the same tree imported from JSON, in [`default_columns`].
+#[test]
+fn from_file() {
+    assert_snapshot!(file_screen("tree.ncdu", &imported(), &[], (80, 18)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help        [from file]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "   16.0 KiB S   4.0 KiB [###########] /src                                      "
+    "!   4.0 KiB             [####       ] /unreadable                               "
+    "e   4.0 KiB             [####       ] /empty                                    "
+    "    4.0 KiB             [####       ]  README.md                                "
+    "H   4.0 KiB             [####       ]  also-linked                              "
+    "    0.0   B             [           ]  sparse                                   "
+    "    0.0   B             [           ]  raw \xFF\xFE                             "
+    "    0.0   B             [           ]  quote " backslash \...\x09 control \x01 é"
+    "@   0.0   B             [           ]  socket                                   "
+    "^   0.0   B             [           ] /proc                                     "
+    "<   0.0   B             [           ]  node_modules                             "
+    ">   0.0   B             [           ] /mnt                                      "
+    "    0.0   B             [           ]  broken                                   "
+    "                                                                                "
+    "                                                                                "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// A subdirectory is read from the file when it is opened, with the totals that the export
+/// stores for it, and the row of the parent directory.
+#[test]
+fn from_file_subdirectory() {
+    assert_snapshot!(file_screen("tree.ncdu", &imported(), &[Key::Enter], (80, 6)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help        [from file]"
+    "--- /home/user/project/src -----------------------------------------------------"
+    "                          /..                                                   "
+    "    8.0 KiB [###########]  main.rs                                              "
+    "H   4.0 KiB [########   ]  linked                                               "
+    "*Total disk usage:  16.0 KiB   Apparent size:   9.2 KiB   Items: 2              "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// The parent directory is read from the file again, with the cursor where it was left.
+#[test]
+fn from_file_enter_parent() {
+    let keys = [Key::Down, Key::Enter, Key::Left];
+    assert_snapshot!(file_screen("tree.ncdu", &imported(), &keys, (80, 6)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help        [from file]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "   16.0 KiB S   4.0 KiB [###########] /src                                      "
+    "!   4.0 KiB             [####       ] /unreadable                               "
+    "e   4.0 KiB             [####       ] /empty                                    "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// The mtime of a directory is the one that the export stores, its own, which sorts `/src` below
+/// `also-linked`, while a tree in memory has the latest mtime below the directory. The entries
+/// without an mtime keep the order of the export.
+#[test]
+fn from_file_mtime() {
+    let options = BrowserOptions {
+        extended: true,
+        ..imported()
+    };
+    let keys = [Key::Char('m'), Key::Char('M')];
+    let screen = file_screen("tree-extended.ncdu", &options, &keys, (100, 18));
+    assert_snapshot!(redact_times(&screen), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                            [from file]"
+    "--- /home/user/project -----------------------------------------------------------------------------"
+    "    0.0   B             [              ]  2023-11-14 HH:MM:SS +ZZZZ  sparse                         "
+    "@   0.0   B             [              ]  2023-11-14 HH:MM:SS +ZZZZ  socket                         "
+    "!   4.0 KiB             [####          ]  2023-11-14 HH:MM:SS +ZZZZ /unreadable                     "
+    "e   4.0 KiB             [####          ]  2023-11-14 HH:MM:SS +ZZZZ /empty                          "
+    "H   4.0 KiB             [####          ]  2023-11-14 HH:MM:SS +ZZZZ  also-linked                    "
+    "   16.0 KiB S   4.0 KiB [##############]  2023-11-14 HH:MM:SS +ZZZZ /src                            "
+    "    4.0 KiB             [####          ]  2023-11-14 HH:MM:SS +ZZZZ  README.md                      "
+    "    0.0   B             [              ]                   no mtime  raw \xFF\xFE                   "
+    "    0.0   B             [              ]                   no mtime  quote " backsl...control \x01 é"
+    "^   0.0   B             [              ]                   no mtime /proc                           "
+    "<   0.0   B             [              ]                   no mtime  node_modules                   "
+    ">   0.0   B             [              ]                   no mtime /mnt                            "
+    "    0.0   B             [              ]                   no mtime  broken                         "
+    "                                                                                                    "
+    "                                                                                                    "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15                                 "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ....................................................................................................
+    ....................................................................................................
+    ....................................................................................................
+    ....................................................................................................
+    ....................................................................................................
+    ....................................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ....................................................................................................
+    ....................................................................................................
+    ....................................................................................................
+    ....................................................................................................
+    ....................................................................................................
+    ....................................................................................................
+    ....................................................................................................
+    ....................................................................................................
+    ....................................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// A directory of an export of several blocks lists entries that are read from each of them.
+#[test]
+fn from_file_blocks() {
+    let keys = [Key::Char('n'), Key::Enter];
+    assert_snapshot!(file_screen("blocks.ncdu", &imported(), &keys, (80, 10)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help        [from file]"
+    "--- /blocks/directory-0 --------------------------------------------------------"
+    "                          /..                                                   "
+    "    4.0 KiB [###########]  file-with-a-long-name-0                              "
+    "    4.0 KiB [###########]  file-with-a-long-name-7                              "
+    "    4.0 KiB [###########]  file-with-a-long-name-14                             "
+    "    4.0 KiB [###########]  file-with-a-long-name-21                             "
+    "    4.0 KiB [###########]  file-with-a-long-name-28                             "
+    "    4.0 KiB [###########]  file-with-a-long-name-35                             "
+    "*Total disk usage: 176.0 KiB   Apparent size:  10.2 KiB   Items: 43             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// The links tab of a hard link has the height of the info tab, and says that the links are not
+/// available.
+#[test]
+fn from_file_links() {
+    let keys = [
+        Key::Down,
+        Key::Down,
+        Key::Down,
+        Key::Down,
+        Key::Char('i'),
+        Key::Char('2'),
+    ];
+    assert_snapshot!(file_screen("tree.ncdu", &imported(), &keys, (80, 18)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help        [from file]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "   16.0 KiB S   4.0 KiB [###########] /src                                      "
+    "!   4.0 KiB             [####       ] /unreadable                               "
+    "e   4.0 Ki┌── Item info ───────────────────────────1:Info───2:Links──┐          "
+    "    4.0 Ki│                                                          │          "
+    "H   4.0 Ki│ This feature is not available when reading from file.    │          "
+    "    0.0   │                                                          │          "
+    "    0.0   │                                                          │          "
+    "    0.0   │                                                          │rol \x01 é"
+    "@   0.0   │                                                          │          "
+    "^   0.0   │                                                          │          "
+    "<   0.0   │                             Press i to close this window │          "
+    ">   0.0   └──────────────────────────────────────────────────────────┘          "
+    "    0.0   B             [           ]  broken                                   "
+    "                                                                                "
+    "                                                                                "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    .............BBBBBBBBBBB...........................B........#RRRRRR.............
+    ................................................................................
+    RRRRRRRRRR............................................................RRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ..............................................B.................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// A selection key on the links tab moves the cursor of the listing and shows the info tab of the
+/// entry under it, as on the info tab.
+#[test]
+fn from_file_links_down() {
+    let keys = [
+        Key::Down,
+        Key::Down,
+        Key::Down,
+        Key::Down,
+        Key::Char('i'),
+        Key::Char('2'),
+        Key::Down,
+    ];
+    assert_snapshot!(file_screen("tree.ncdu", &imported(), &keys, (80, 18)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help        [from file]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "   16.0 KiB S   4.0 KiB [###########] /src                                      "
+    "!   4.0 KiB             [####       ] /unreadable                               "
+    "e   4.0 KiB             [####       ] /empty                                    "
+    "    4.0 Ki┌── Item info ─────────────────────────────────────────────┐          "
+    "H   4.0 Ki│                                                          │          "
+    "    0.0   │  Name: sparse                                            │          "
+    "    0.0   │  Type: File                                              │          "
+    "    0.0   │     Disk usage:   0.0   B (0)                            │rol \x01 é"
+    "@   0.0   │  Apparent size:   1.0 MiB (1,048,576)                    │          "
+    "^   0.0   │                                                          │          "
+    "<   0.0   │                             Press i to close this window │          "
+    ">   0.0   └──────────────────────────────────────────────────────────┘          "
+    "    0.0   B             [           ]  broken                                   "
+    "                                                                                "
+    "                                                                                "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    .............BBBBBBBBBBB........................................................
+    ................................................................................
+    RRRRRRRRRR...BBBBBB...................................................RRRRRRRRRR
+    .............BBBBBB.............................................................
+    .............BBBBBBBBBBBBBBB....................................................
+    .............BBBBBBBBBBBBBBB....................................................
+    ................................................................................
+    ..............................................B.................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// Refreshing is not available, which a message says.
+#[test]
+fn from_file_refresh() {
+    assert_snapshot!(file_screen("tree.ncdu", &imported(), &[Key::Char('r')], (80, 12)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help        [from file]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "   16.0 KiB S   4.0 KiB [###########] /src                                      "
+    "!   4.0 Ki┌── Message ───────────────────────────────────────────────┐          "
+    "e   4.0 Ki│                                                          │          "
+    "    4.0 Ki│ Refresh feature is not available when reading from file. │          "
+    "H   4.0 Ki│                                                          │          "
+    "    0.0   │                                Press any key to continue │          "
+    "    0.0   └──────────────────────────────────────────────────────────┘          "
+    "    0.0   B             [           ]  quote " backslash \...\x09 control \x01 é"
+    "@   0.0   B             [           ]  socket                                   "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    .............BBBBBBBBB..........................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// Deleting is not available either.
+#[test]
+fn from_file_delete() {
+    assert_snapshot!(file_screen("tree.ncdu", &imported(), &[Key::Char('d')], (80, 12)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help        [from file]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "   16.0 KiB S   4.0 KiB [###########] /src                                      "
+    "!   4.0 Ki┌── Message ───────────────────────────────────────────────┐          "
+    "e   4.0 Ki│                                                          │          "
+    "    4.0 Ki│ File deletion is not available when reading from file.   │          "
+    "H   4.0 Ki│                                                          │          "
+    "    0.0   │                                Press any key to continue │          "
+    "    0.0   └──────────────────────────────────────────────────────────┘          "
+    "    0.0   B             [           ]  quote " backslash \...\x09 control \x01 é"
+    "@   0.0   B             [           ]  socket                                   "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    .............BBBBBBBBB..........................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// The key after a message only closes it.
+#[test]
+fn from_file_message_closes() {
+    let keys = [Key::Char('d'), Key::Down];
+    assert_snapshot!(file_screen("tree.ncdu", &imported(), &keys, (80, 6)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help        [from file]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "   16.0 KiB S   4.0 KiB [###########] /src                                      "
+    "!   4.0 KiB             [####       ] /unreadable                               "
+    "e   4.0 KiB             [####       ] /empty                                    "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
     "#);
 }

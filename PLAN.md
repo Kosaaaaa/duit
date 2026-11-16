@@ -137,6 +137,15 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
   and stops with `Error reading from file` on that index. Those stacks are on the heap and have no
   limit either, so memory grows with the depth, as the set grows with the number of items. A limit
   would be an error that ncdu does not have.
+- **Browsing a binary export: an entry that is reached twice in one directory is an error, unlike
+  ncdu.** ncdu follows the references between the entries of a directory without a check when it
+  opens the directory (`browser.zig:150-178`), so on an entry that refers back to one before it, it
+  reads forever. duit stops with `Error reading item X from file` at the second visit, as an import
+  does. Each directory is read into a tree of its own, so a directory that contains itself can be
+  opened again and again, as in ncdu. When ncdu reads an item for the browser
+  (`bin_reader.zig:441-485`), it leaves the value of a field that the type of the item does not use,
+  such as the `asize` of a directory, unread when it is not an integer, and reads the next field
+  from inside it. duit skips such a value.
 - **Binary import: a block whose header holds another number is an error, unlike ncdu.** ncdu writes
   the number of each data block after its header, the same number as its entry in the index
   (`bin_export.zig:117-118,136`), but does not read it back (`bin_reader.zig:97`). Several entries

@@ -1,4 +1,5 @@
 use std::ffi::OsStr;
+use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -19,7 +20,7 @@ use tempfile::TempDir;
 
 #[cfg(feature = "test-ncdu")]
 use crate::assert_ncdu;
-use crate::{render, table};
+use crate::{binary_file, binary_frames, block_start, item, reference, render, table, text};
 
 /// How long a test waits for duit to draw or to exit.
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -116,8 +117,8 @@ fn quit_after_scan() {
     ");
 }
 
-/// Without `-o` or `-O`, the errors of the import come before the browser opens. Browsing a binary
-/// export is not supported yet. The cases pass `-0`, as in [`quit_after_scan`].
+/// Without `-o` or `-O`, the errors of the import come before the browser opens. The cases pass
+/// `-0`, as in [`quit_after_scan`].
 #[test]
 fn errors() {
     let directory = fixture();
@@ -126,7 +127,7 @@ fn errors() {
     for arguments in cases {
         assert_ncdu(directory.path(), arguments);
     }
-    assert_snapshot!(table(directory.path(), &[cases[0], cases[1], &["-0", "-f", "tree.ncdu"]]), @"
+    assert_snapshot!(table(directory.path(), cases), @"
     $ duit -0 -f missing
     exit_code: 1
     ----- stdout -----
@@ -140,13 +141,6 @@ fn errors() {
 
     ----- stderr -----
     ^[[JError importing file on line 1:23: expected string.
-
-    $ duit -0 -f tree.ncdu
-    exit_code: 1
-    ----- stdout -----
-
-    ----- stderr -----
-    ^[[JBrowsing a binary export is not supported yet.
     ");
 }
 
@@ -273,8 +267,8 @@ fn browse(directory: &Path, arguments: &[&str], keys: &[u8]) -> (ExitStatus, Vec
     (status, output)
 }
 
-/// A scan and an import, plain or compressed, open the browser, and `q` quits with status 0 after
-/// the terminal is restored.
+/// A scan and an import, plain, compressed, or binary, open the browser, and `q` quits with status
+/// 0 after the terminal is restored.
 #[test]
 fn quit() {
     let directory = fixture();
@@ -282,6 +276,7 @@ fn quit() {
         &["."][..],
         &["-f", "tree.json"],
         &["-f", "tree-extended.json.zst"],
+        &["-f", "tree.ncdu"],
     ] {
         let (status, _) = browse(directory.path(), arguments, b"q");
         assert_eq!(status.code(), Some(0), "arguments: {arguments:?}");
@@ -317,55 +312,146 @@ fn escape_then_key() {
 }
 
 /// With an import from standard input, duit draws on and reads keys from `/dev/tty`, its
-/// controlling terminal, and writes nothing to standard output.
+/// controlling terminal, and writes nothing to standard output. A binary export is read from
+/// standard input too when it is a file, which can seek.
 #[test]
 fn import_from_stdin() {
     let directory = fixture();
-    let pty = pty();
-    let receiver = read_output(&pty);
-    let mut command = Command::new(env!("CARGO_BIN_EXE_duit"));
-    command
-        .stdin(File::open(directory.path().join("tree.json")).expect("export is opened"))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::from(
-            pty.terminal.try_clone().expect("terminal is duplicated"),
-        ));
-    let mut child = spawn(directory.path(), &["-f", "-"], &mut command, true);
-    let mut output = Vec::new();
-    wait_for(&receiver, &mut output, FOOTER);
-    (&pty.master).write_all(b"q").expect("keys are typed");
-    assert_eq!(wait_exit(&mut child).code(), Some(0));
-    let mut stdout = Vec::new();
-    child
-        .stdout
-        .take()
-        .expect("stdout is piped")
-        .read_to_end(&mut stdout)
-        .expect("stdout is read");
-    assert_eq!(stdout, b"");
+    for export in ["tree.json", "tree.ncdu"] {
+        let pty = pty();
+        let receiver = read_output(&pty);
+        let mut command = Command::new(env!("CARGO_BIN_EXE_duit"));
+        command
+            .stdin(File::open(directory.path().join(export)).expect("export is opened"))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::from(
+                pty.terminal.try_clone().expect("terminal is duplicated"),
+            ));
+        let mut child = spawn(directory.path(), &["-f", "-"], &mut command, true);
+        let mut output = Vec::new();
+        wait_for(&receiver, &mut output, FOOTER);
+        (&pty.master).write_all(b"q").expect("keys are typed");
+        assert_eq!(wait_exit(&mut child).code(), Some(0), "{export}");
+        let mut stdout = Vec::new();
+        child
+            .stdout
+            .take()
+            .expect("stdout is piped")
+            .read_to_end(&mut stdout)
+            .expect("stdout is read");
+        assert_eq!(stdout, b"", "{export}");
+    }
 }
 
 /// Without a controlling terminal, and with standard input that is not a terminal, duit cannot open
 /// `/dev/tty` to draw the browser. ncdu writes the message of `strerror`, which differs between
-/// systems.
+/// systems, also for a binary export, which is read once the terminal is open.
 #[test]
 fn no_terminal() {
     let directory = fixture();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_duit"));
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let child = spawn(directory.path(), &["-f", "tree.json"], &mut command, false);
-    let output = child.wait_with_output().expect("duit exits");
-    let rendered = render(&output)
+    let mut rendered = String::new();
+    for arguments in [["-f", "tree.json"], ["-f", "tree.ncdu"]] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_duit"));
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let child = spawn(directory.path(), &arguments, &mut command, false);
+        let output = child.wait_with_output().expect("duit exits");
+        let _ = writeln!(
+            rendered,
+            "$ duit {}\n{}",
+            arguments.join(" "),
+            render(&output)
+        );
+    }
+    let rendered = rendered
         .replace("Device not configured", "[ENXIO]")
         .replace("No such device or address", "[ENXIO]");
     assert_snapshot!(rendered, @"
+    $ duit -f tree.json
     exit_code: 1
     ----- stdout -----
 
     ----- stderr -----
     ^[[J^[[JError opening /dev/tty: [ENXIO].
+
+    $ duit -f tree.ncdu
+    exit_code: 1
+    ----- stdout -----
+
+    ----- stderr -----
+    ^[[J^[[JError opening /dev/tty: [ENXIO].
+    ");
+}
+
+/// Run duit with `arguments` on a terminal, type `keys` once it draws the browser unless there are
+/// none, and return what it wrote after it restored the terminal, which it exits with status 1.
+fn browse_error(directory: &Path, arguments: &[&str], keys: &[u8]) -> String {
+    let pty = pty();
+    let receiver = read_output(&pty);
+    let mut child = spawn_on(&pty, directory, arguments);
+    let mut output = Vec::new();
+    if !keys.is_empty() {
+        wait_for(&receiver, &mut output, FOOTER);
+        (&pty.master).write_all(keys).expect("keys are typed");
+    }
+    assert_eq!(wait_exit(&mut child).code(), Some(1), "{arguments:?}");
+    // Everything that duit wrote is on its way once it exited.
+    while let Ok(bytes) = receiver.recv_timeout(Duration::from_millis(500)) {
+        output.extend(bytes);
+    }
+    let restored = output
+        .windows(LEAVE_ALTERNATE_SCREEN.len())
+        .rposition(|window| window == LEAVE_ALTERNATE_SCREEN)
+        .expect("terminal is restored");
+    text(&output[restored..])
+}
+
+/// A binary export is read once the terminal is open, so an error in it stops duit there, as it
+/// stops ncdu, with the message once the terminal is restored: a root that is not a directory, and
+/// a block that is read only when a directory is opened. Entries that refer to each other in a
+/// cycle are an error too, unlike in ncdu, which reads them forever.
+#[test]
+fn read_errors() {
+    let directory = fixture();
+    let file = item(b"\x00\x01\x01\x41f");
+    // Block 1 holds the root and its subdirectory, whose entry is in block 0, which is not a zstd
+    // frame.
+    let subdirectory = item(&[&b"\x00\x00\x01\x43sub"[..], &reference(0x0c, 0)].concat());
+    let root = item(&[&b"\x00\x00\x01\x45/root"[..], &reference(0x0c, 1)].concat());
+    let frame =
+        zstd::bulk::compress(&[&subdirectory[..], &root].concat(), 3).expect("block is compressed");
+    let root_reference = block_start(1) + u64::try_from(subdirectory.len()).expect("offset fits");
+    let cycle = item(&[&b"\x00\x01\x01\x41f"[..], &reference(0x02, 0)].concat());
+    let cycle_root = item(&[&b"\x00\x00\x01\x45/root"[..], &reference(0x0c, 0)].concat());
+    let cases: [(&str, Vec<u8>, &[u8]); 3] = [
+        ("file.ncdu", binary_file(&[&file], 0), b""),
+        (
+            "block.ncdu",
+            binary_frames(&[b"not zstd", &frame], root_reference),
+            b"\r",
+        ),
+        (
+            "cycle.ncdu",
+            binary_file(&[&cycle, &cycle_root], block_start(1)),
+            b"",
+        ),
+    ];
+    let mut rendered = String::new();
+    for (name, export, keys) in cases {
+        fs::write(directory.path().join(name), export).expect("export is written");
+        let output = browse_error(directory.path(), &["-f", name], keys);
+        let _ = writeln!(rendered, "$ duit -f {name}\n{output}");
+    }
+    assert_snapshot!(rendered, @"
+    $ duit -f file.ncdu
+    ^[[?1049l^[[?25h^[[JInvalid import^M
+
+    $ duit -f block.ncdu
+    ^[[?1049l^[[?25h^[[?25h^[[JError reading item 0 from file^M
+
+    $ duit -f cycle.ncdu
+    ^[[?1049l^[[?25h^[[JError reading item 0 from file^M
     ");
 }

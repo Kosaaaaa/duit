@@ -1,7 +1,7 @@
 //! JSON and binary import and export.
 
 pub use bin_export::{BINARY_SIGNATURE, BinaryDirectory, BinaryExport, BinaryExportError};
-pub use bin_reader::{BinaryImportError, BinaryOpenError, BinaryReader};
+pub use bin_reader::{BinaryImportError, BinaryOpenError, BinaryReader, ListedDirectory, Listing};
 pub use json_export::{JsonDirectory, JsonExport, JsonExportError};
 pub use json_import::{ImportError, import};
 

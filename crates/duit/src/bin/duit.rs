@@ -210,14 +210,22 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
     let Some(export_path) = export_json.or(export_binary) else {
         let import_input = import_file.map(open_import).transpose()?;
         let imported = import_input.is_some();
-        if let Some(ImportInput::Binary(_)) = &import_input {
-            if !quit_after_scan {
-                return Err(b"Browsing a binary export is not supported yet.\n".to_vec());
-            }
-            // ncdu opens a binary export without reading it, because the browser reads it
-            // from the file.
+        let mut options = config.browser.clone();
+        options.imported = imported;
+        options.can_delete = config.can_delete.unwrap_or(!imported);
+        options.extended = config.extended;
+        if let Some(separator) = thousands_separator() {
+            options.thousands_separator = separator;
+        }
+        if let Some(ImportInput::Binary(reader)) = import_input {
+            // ncdu opens a binary export without reading it, because the browser reads it from
+            // the file, and writes the clear as it returns or as `ui.init` takes over the
+            // terminal.
             let _ = io::stderr().write_all(CLEAR_TO_END);
-            return Ok(ExitCode::SUCCESS);
+            if quit_after_scan {
+                return Ok(ExitCode::SUCCESS);
+            }
+            return browse(options, |options| Browser::open(reader, options));
         }
         let memory = MemorySink::new(config.extended);
         // `fill` ends with the clear that ncdu writes when it returns after the scan, or when
@@ -226,14 +234,13 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
         if quit_after_scan {
             return Ok(ExitCode::SUCCESS);
         }
-        let mut options = config.browser;
-        options.imported = imported;
-        options.can_delete = config.can_delete.unwrap_or(!imported);
-        options.extended = config.extended;
-        if let Some(separator) = thousands_separator() {
-            options.thousands_separator = separator;
-        }
-        return browse(&tree, options);
+        // A scan or an import that succeeds has created the root.
+        let Some(root) = tree.root() else {
+            return Ok(ExitCode::SUCCESS);
+        };
+        return browse(options, |options| {
+            Ok(Some((Browser::new(&tree, root, options), tree)))
+        });
     };
 
     let out: Box<dyn Write> = if export_path == b"-" {
@@ -277,20 +284,32 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
     fill(export, import_input, scan_directory, &config).map(|()| ExitCode::SUCCESS)
 }
 
-/// Run the browser on `tree` until the user quits, the loop at the end of `main` in `main.zig`
-/// with `handleEvent`. Like ncdu, it handles every key that is waiting before it draws again.
-fn browse(tree: &Tree, mut options: BrowserOptions) -> Result<ExitCode, Vec<u8>> {
-    // A scan or an import that succeeds has created the root.
-    let Some(root) = tree.root() else {
-        return Ok(ExitCode::SUCCESS);
-    };
+/// Run the browser that `open` opens, with the tree it reads, until the user quits, the loop at
+/// the end of `main` in `main.zig` with `handleEvent`. Like ncdu, it handles every key that is
+/// waiting before it draws again. As in ncdu, the browser is opened once the terminal is, so that
+/// the root of a binary export is read then, and `open` gives `None` for a root that is not a
+/// directory.
+fn browse(
+    mut options: BrowserOptions,
+    open: impl FnOnce(&BrowserOptions) -> Result<Option<(Browser, Tree)>, BinaryImportError>,
+) -> Result<ExitCode, Vec<u8>> {
     let mut ui = Ui::init(!io::stdin().is_terminal()).map_err(|error| match error {
         InitError::OpenTty(error) => {
             format!("Error opening /dev/tty: {}.\n", strerror(&error)).into_bytes()
         }
         InitError::Terminal(_) => b"Error initializing the terminal.\n".to_vec(),
     })?;
-    let mut browser = Browser::new(tree, root, &options);
+    let (mut browser, mut tree) = match open(&options) {
+        Ok(Some(opened)) => opened,
+        Ok(None) => {
+            ui.deinit();
+            return Err(b"Invalid import\n".to_vec());
+        }
+        Err(error) => {
+            ui.deinit();
+            return Err(binary_import_error(error));
+        }
+    };
     let mut height = 0;
     let mut draw = true;
     let mut block = true;
@@ -298,17 +317,23 @@ fn browse(tree: &Tree, mut options: BrowserOptions) -> Result<ExitCode, Vec<u8>>
         if draw {
             ui.draw(|frame| {
                 height = frame.area().height;
-                browser.draw(frame, tree, &options);
+                browser.draw(frame, &tree, &options);
             });
             draw = false;
         }
         match ui.getch(block) {
             Ok(Some(Input::Key(key))) => {
-                if browser.key_input(tree, &mut options, key, height) {
-                    ui.deinit();
-                    return Ok(ExitCode::SUCCESS);
+                match browser.key_input(&mut tree, &mut options, key, height) {
+                    Ok(true) => {
+                        ui.deinit();
+                        return Ok(ExitCode::SUCCESS);
+                    }
+                    Ok(false) => block = false,
+                    Err(error) => {
+                        ui.deinit();
+                        return Err(binary_import_error(error));
+                    }
                 }
-                block = false;
             }
             Ok(Some(Input::Resize)) => draw = true,
             Ok(Some(Input::Interrupt)) => {
@@ -407,26 +432,9 @@ fn fill<C: Consumer>(
                 ),
                 Err(ImportError::Sink(error)) => Some(writing(&error)),
             },
-            ImportInput::Binary(mut reader) => match reader.import(&mut consumer) {
-                Ok(()) => None,
-                Err(BinaryImportError::Corrupt { itemref }) => {
-                    Some(format!("Error reading item {itemref:x} from file\n").into_bytes())
-                }
-                Err(BinaryImportError::Decompress {
-                    block,
-                    expected,
-                    result,
-                }) => Some(
-                    format!(
-                        "Error decompressing block {block} (expected {expected} got {result})\n"
-                    )
-                    .into_bytes(),
-                ),
-                Err(BinaryImportError::Read(error)) => {
-                    Some(format!("Error reading from file: {}\n", read_error(&error)).into_bytes())
-                }
-                Err(BinaryImportError::Sink(error)) => Some(writing(&error)),
-            },
+            ImportInput::Binary(mut reader) => {
+                reader.import(&mut consumer).err().map(binary_import_error)
+            }
         };
         // As in ncdu, which stops without flushing its buffer, a failed export writes nothing more.
         if let Some(message) = failure {
@@ -511,6 +519,25 @@ fn open_import(path: &[u8]) -> Result<ImportInput, Vec<u8>> {
             BinaryOpenError::Read(error) => read_failed(&error),
             BinaryOpenError::Corrupt => b"Error reading from file\n".to_vec(),
         })
+}
+
+/// The message that ncdu exits with when it cannot read a binary export.
+fn binary_import_error(error: BinaryImportError) -> Vec<u8> {
+    match error {
+        BinaryImportError::Corrupt { itemref } => {
+            format!("Error reading item {itemref:x} from file\n").into_bytes()
+        }
+        BinaryImportError::Decompress {
+            block,
+            expected,
+            result,
+        } => format!("Error decompressing block {block} (expected {expected} got {result})\n")
+            .into_bytes(),
+        BinaryImportError::Read(error) => {
+            format!("Error reading from file: {}\n", read_error(&error)).into_bytes()
+        }
+        BinaryImportError::Sink(error) => writing(&error),
+    }
 }
 
 fn opening_directory(description: &str) -> Vec<u8> {

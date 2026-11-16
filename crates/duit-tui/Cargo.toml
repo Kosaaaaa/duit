@@ -16,11 +16,11 @@ workspace = true
 
 [dependencies]
 crossterm = { workspace = true }
+duit-format = { workspace = true }
 duit-model = { workspace = true }
 libc = { workspace = true }
 ratatui = { workspace = true }
 unicode-width = { workspace = true }
 
 [dev-dependencies]
-duit-format = { workspace = true }
 insta = { workspace = true }

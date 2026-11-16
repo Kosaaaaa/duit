@@ -3,8 +3,10 @@
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::fs::File;
 use std::iter;
 
+use duit_format::{BinaryImportError, BinaryReader, ListedDirectory, Listing};
 use duit_model::{DirectoryId, Entry, EntryId, EntryKind, LinkId, Special, Tree};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -169,8 +171,28 @@ struct View {
     cursor: Option<Vec<u8>>,
 }
 
+/// Where the browser reads its directories from, `main.config.binreader` in `browser.zig`.
+enum Source {
+    /// The tree in memory of a scan or a JSON import, with the directories that were opened to
+    /// reach the open one, from the root, with the open one last, `dir_parents` in `browser.zig`.
+    /// Going to the parent directory goes back to the one before the last. Enter in the links tab
+    /// of the info window opens another directory without changing them or the path, as ncdu
+    /// does, and the listing then has no row of the parent directory when the directory that was
+    /// open was the root.
+    Memory(Vec<DirectoryId>),
+    /// A binary export, whose directories are read when they are opened, each into a tree of
+    /// its own that replaces the one before.
+    File {
+        reader: BinaryReader<File>,
+        /// The references of the directories that were opened to reach the open one, from the
+        /// root, with the open one last.
+        parents: Vec<u64>,
+        /// The subdirectories of the open directory, `dir_refs` in `browser.zig`.
+        directories: Vec<ListedDirectory>,
+    },
+}
+
 /// The open directory of the browser, with its entries in the order they are listed.
-#[derive(Debug)]
 pub struct Browser {
     directory: DirectoryId,
     /// The path of the directory: the names from the root down, joined with `/`. Going to the
@@ -193,15 +215,12 @@ pub struct Browser {
     /// The view of each directory that was open, by path, `opened_dir_views` in `browser.zig`.
     /// Directories with the same path share a view.
     views: HashMap<Vec<u8>, View>,
-    /// The directories that were opened to reach the open one, from the root, with the open one
-    /// last, `dir_parents` in `browser.zig`. Going to the parent directory goes back to the one
-    /// before the last. Enter in the links tab of the info window opens another directory without
-    /// changing them or the path, as ncdu does, and the listing then has no row of the parent
-    /// directory when the directory that was open was the root.
-    parents: Vec<DirectoryId>,
+    source: Source,
     state: State,
     info: Info,
     help: Help,
+    /// The lines of the message window, which the next key closes.
+    message: Option<&'static [&'static str]>,
 }
 
 /// Whether ncdu shows `kind` as a directory, with a `/` in front of the name: a directory, also
@@ -416,6 +435,44 @@ fn format_item_count(count: u32, separator: &str) -> (&'static str, String, &'st
 impl Browser {
     /// Open `directory` of `tree`, with the cursor on the first row.
     pub fn new(tree: &Tree, directory: DirectoryId, options: &BrowserOptions) -> Self {
+        let mut parents: Vec<DirectoryId> =
+            iter::successors(Some(directory), |&id| tree.directory(id).parent).collect();
+        parents.reverse();
+        Self::with_source(tree, directory, Source::Memory(parents), options)
+    }
+
+    /// Open the root of the binary export of `reader`, `initRoot` in `browser.zig`, and return
+    /// the browser with the tree of the root, which the browser replaces as it opens other
+    /// directories. `None` if the root is not a directory.
+    pub fn open(
+        mut reader: BinaryReader<File>,
+        options: &BrowserOptions,
+    ) -> Result<Option<(Self, Tree)>, BinaryImportError> {
+        let root = reader.root();
+        let Some(Listing {
+            tree,
+            directory,
+            directories,
+        }) = reader.read_directory(root, options.extended)?
+        else {
+            return Ok(None);
+        };
+        let source = Source::File {
+            reader,
+            parents: vec![root],
+            directories,
+        };
+        let browser = Self::with_source(&tree, directory, source, options);
+        Ok(Some((browser, tree)))
+    }
+
+    /// Open `directory` of `tree`, which `source` reads, with the cursor on the first row.
+    fn with_source(
+        tree: &Tree,
+        directory: DirectoryId,
+        source: Source,
+        options: &BrowserOptions,
+    ) -> Self {
         let mut browser = Self {
             directory,
             path: path_of(tree, directory),
@@ -426,14 +483,41 @@ impl Browser {
             max_size: 1,
             has_shared: false,
             views: HashMap::new(),
-            parents: iter::successors(Some(directory), |&id| tree.directory(id).parent).collect(),
+            source,
             state: State::Main,
             info: Info::default(),
             help: Help::default(),
+            message: None,
         };
-        browser.parents.reverse();
         browser.load(tree, options);
         browser
+    }
+
+    /// Whether the directories are read from a binary export.
+    fn reads_file(&self) -> bool {
+        match self.source {
+            Source::Memory(_) => false,
+            Source::File { .. } => true,
+        }
+    }
+
+    /// The number of directories that were opened to reach the open one, the open one included.
+    fn depth(&self) -> usize {
+        match &self.source {
+            Source::Memory(parents) => parents.len(),
+            Source::File { parents, .. } => parents.len(),
+        }
+    }
+
+    /// Whether the directory `id` of `tree` has no entries.
+    fn is_empty(&self, tree: &Tree, id: DirectoryId) -> bool {
+        match &self.source {
+            Source::Memory(_) => tree.entries(id).next().is_none(),
+            Source::File { directories, .. } => directories
+                .iter()
+                .find(|directory| directory.id == id)
+                .is_some_and(|directory| directory.empty),
+        }
     }
 
     /// List the entries of the directory that `options` shows, then sort them, `loadDir` in
@@ -443,7 +527,7 @@ impl Browser {
         self.max_blocks = 1;
         self.max_size = 1;
         self.has_shared = false;
-        if self.parents.len() > 1 {
+        if self.depth() > 1 {
             self.items.push(None);
         }
         for id in tree.entries(self.directory) {
@@ -515,37 +599,95 @@ impl Browser {
             .unwrap_or(0);
     }
 
-    /// Open the subdirectory `directory`, `enterSub` in `browser.zig`, and close the window.
+    /// Open the subdirectory `directory`, `enterSub` in `browser.zig`, and close the window. From
+    /// a binary export, the subdirectory is read into a tree that replaces `tree`.
     fn enter_subdirectory(
         &mut self,
-        tree: &Tree,
+        tree: &mut Tree,
         options: &BrowserOptions,
         directory: DirectoryId,
-    ) {
-        self.directory = directory;
-        self.parents.push(directory);
-        join_path(&mut self.path, tree.name(tree.directory(directory).entry));
+    ) -> Result<(), BinaryImportError> {
+        let name = tree.name(tree.directory(directory).entry).to_vec();
+        let entered = match &mut self.source {
+            Source::Memory(parents) => {
+                parents.push(directory);
+                self.directory = directory;
+                true
+            }
+            Source::File {
+                reader,
+                parents,
+                directories,
+            } => {
+                // Each subdirectory that is listed has its reference, as in ncdu.
+                let itemref = directories
+                    .iter()
+                    .find(|listed| listed.id == directory)
+                    .map(|listed| listed.itemref);
+                if let Some(itemref) = itemref {
+                    let listing = reader
+                        .read_directory(itemref, options.extended)?
+                        .ok_or(BinaryImportError::Corrupt { itemref })?;
+                    *tree = listing.tree;
+                    *directories = listing.directories;
+                    parents.push(itemref);
+                    self.directory = listing.directory;
+                }
+                itemref.is_some()
+            }
+        };
+        if entered {
+            join_path(&mut self.path, &name);
+        }
         self.load(tree, options);
         self.state = State::Main;
+        Ok(())
     }
 
     /// Open the parent directory, if there is one, `enterParent` in `browser.zig`, and close the
-    /// window.
-    fn enter_parent(&mut self, tree: &Tree, options: &BrowserOptions) {
-        if self.parents.len() < 2 {
-            return;
+    /// window. From a binary export, the parent directory is read again into a tree that replaces
+    /// `tree`.
+    fn enter_parent(
+        &mut self,
+        tree: &mut Tree,
+        options: &BrowserOptions,
+    ) -> Result<(), BinaryImportError> {
+        if self.depth() < 2 {
+            return Ok(());
         }
-        self.parents.pop();
-        let Some(&parent) = self.parents.last() else {
-            return;
-        };
-        self.directory = parent;
+        match &mut self.source {
+            Source::Memory(parents) => {
+                parents.pop();
+                let Some(&parent) = parents.last() else {
+                    return Ok(());
+                };
+                self.directory = parent;
+            }
+            Source::File {
+                reader,
+                parents,
+                directories,
+            } => {
+                parents.pop();
+                let Some(&itemref) = parents.last() else {
+                    return Ok(());
+                };
+                let listing = reader
+                    .read_directory(itemref, options.extended)?
+                    .ok_or(BinaryImportError::Corrupt { itemref })?;
+                *tree = listing.tree;
+                *directories = listing.directories;
+                self.directory = listing.directory;
+            }
+        }
         // An empty name leaves a path without a separator to cut, for example a root named `foo`
         // with a subdirectory without a name, which a scan never gives. ncdu reaches `unreachable`
         // there.
-        self.path = dirname(&self.path).map_or_else(|| path_of(tree, parent), <[u8]>::to_vec);
+        self.path =
+            dirname(&self.path).map_or_else(|| path_of(tree, self.directory), <[u8]>::to_vec);
         self.load(tree, options);
         self.state = State::Main;
+        Ok(())
     }
 
     /// Show the info of `item` in `tab`, or close the window when `item` is the row of the parent
@@ -562,6 +704,7 @@ impl Browser {
         self.state = State::Info;
         self.info.tab = tab;
         if tab == Tab::Links
+            && !self.reads_file()
             && self.info.links.is_none()
             && let EntryKind::HardLink(link) = tree.entry(entry).kind
         {
@@ -595,7 +738,7 @@ impl Browser {
             self.set_info(tree, Some(entry), tab);
             return true;
         }
-        if self.info.tab == Tab::Links {
+        if self.info.tab == Tab::Links && !self.reads_file() {
             let links = self.info.links.as_deref().unwrap_or_default();
             if select_with_key(key, &mut self.info.links_index, links.len(), 5) {
                 return true;
@@ -707,14 +850,18 @@ impl Browser {
 
     /// Handle `key` on a terminal with `height` rows, which sets the size of a page, and change
     /// `options` as the display and sort keys say, `keyInput` in `browser.zig`. Returns whether
-    /// to quit.
+    /// to quit, or the error of a binary export whose directory could not be read, which ncdu
+    /// exits with.
+    ///
+    /// `tree` is the tree that the browser was opened with. From a binary export, the browser
+    /// replaces it with each directory that it opens.
     pub fn key_input(
         &mut self,
-        tree: &Tree,
+        tree: &mut Tree,
         options: &mut BrowserOptions,
         key: Key,
         height: u16,
-    ) -> bool {
+    ) -> Result<bool, BinaryImportError> {
         let quit = self.handle_key(tree, options, key, height);
         self.save_view(tree);
         quit
@@ -722,24 +869,27 @@ impl Browser {
 
     fn handle_key(
         &mut self,
-        tree: &Tree,
+        tree: &mut Tree,
         options: &mut BrowserOptions,
         key: Key,
         height: u16,
-    ) -> bool {
+    ) -> Result<bool, BinaryImportError> {
+        if self.message.take().is_some() {
+            return Ok(false);
+        }
         match self.state {
             State::Main => {}
             State::Quit => {
                 self.state = State::Main;
-                return key == Key::Char('y') || key == Key::Char('Y');
+                return Ok(key == Key::Char('y') || key == Key::Char('Y'));
             }
             State::Help => {
                 self.help_key_input(key);
-                return false;
+                return Ok(false);
             }
             State::Info => {
                 if self.info_key_input(tree, options, key, height) {
-                    return false;
+                    return Ok(false);
                 }
             }
         }
@@ -747,7 +897,7 @@ impl Browser {
         match key {
             Key::Char('q') => {
                 if !options.confirm_quit {
-                    return true;
+                    return Ok(true);
                 }
                 self.state = State::Quit;
             }
@@ -757,8 +907,20 @@ impl Browser {
                 }
             }
             Key::Char('?') => self.state = State::Help,
-            // Refresh, shell, and delete.
-            Key::Char('r' | 'b' | 'd') => {}
+            // Refresh and delete, which are not ported yet for a tree in memory, and shell.
+            Key::Char('r') => {
+                if self.reads_file() {
+                    self.message =
+                        Some(&["Refresh feature is not available when reading from file."]);
+                }
+            }
+            Key::Char('d') => {
+                if !self.items.is_empty() && self.reads_file() {
+                    self.message =
+                        Some(&["File deletion is not available when reading from file."]);
+                }
+            }
+            Key::Char('b') => {}
 
             Key::Char('n') => {
                 self.sort_toggle(tree, options, SortColumn::Name, SortOrder::Ascending);
@@ -803,13 +965,15 @@ impl Browser {
             Key::Enter | Key::Char('l') | Key::Right => match self.items.get(self.cursor) {
                 Some(Some(id)) => {
                     if let Some(directory) = directory_of(tree.entry(*id)) {
-                        self.enter_subdirectory(tree, options, directory);
+                        self.enter_subdirectory(tree, options, directory)?;
                     }
                 }
-                Some(None) => self.enter_parent(tree, options),
+                Some(None) => self.enter_parent(tree, options)?,
                 None => {}
             },
-            Key::Char('h' | '<') | Key::Backspace | Key::Left => self.enter_parent(tree, options),
+            Key::Char('h' | '<') | Key::Backspace | Key::Left => {
+                self.enter_parent(tree, options)?;
+            }
 
             Key::Char('c') => options.show_item_count = !options.show_item_count,
             Key::Char('m') => {
@@ -850,7 +1014,7 @@ impl Browser {
                 );
             }
         }
-        false
+        Ok(false)
     }
 
     /// Draw the browser on all of `frame`, which starts at the top left corner of the terminal:
@@ -880,7 +1044,9 @@ impl Browser {
         );
         let x = draw_text(buffer, x, 0, "?", style(Style::KeyHd));
         draw_text(buffer, x, 0, " for help", style(Style::Hd));
-        let mode = if options.imported {
+        let mode = if self.reads_file() {
+            Some("[from file]")
+        } else if options.imported {
             Some("[imported]")
         } else if !options.can_delete {
             Some("[readonly]")
@@ -888,7 +1054,8 @@ impl Browser {
             None
         };
         if let Some(mode) = mode {
-            draw_text(buffer, width.saturating_sub(10), 0, mode, style(Style::Hd));
+            let x = width.saturating_sub(u16::try_from(mode.len()).unwrap_or(width));
+            draw_text(buffer, x, 0, mode, style(Style::Hd));
         }
 
         draw_line(buffer, 0, 1, '-', width, style(Style::Default));
@@ -1004,9 +1171,26 @@ impl Browser {
             State::Help => self.help.draw(buffer, scheme),
             State::Info => {
                 if let Some(&Some(entry)) = self.items.get(self.cursor) {
-                    self.info.draw(buffer, tree, options, entry);
+                    let from_file = self.reads_file();
+                    self.info.draw(buffer, tree, options, entry, from_file);
                 }
             }
+        }
+        if let Some(lines) = self.message {
+            let height = u16::try_from(lines.len())
+                .unwrap_or(u16::MAX)
+                .saturating_add(5);
+            let window = Window::new(buffer, scheme, height, 60, "Message");
+            for (row, line) in (2..).zip(lines) {
+                window.text(buffer, row, 2, line, Style::Default);
+            }
+            window.text(
+                buffer,
+                height - 2,
+                33,
+                "Press any key to continue",
+                Style::Default,
+            );
         }
     }
 }
@@ -1146,8 +1330,16 @@ fn draw_help_about(window: &Window, buffer: &mut Buffer) {
 const INFO_WIDTH: u16 = 60;
 
 impl Info {
-    /// Draw the window over the listing with the info of `entry`, the entry under the cursor.
-    fn draw(&mut self, buffer: &mut Buffer, tree: &Tree, options: &BrowserOptions, entry: EntryId) {
+    /// Draw the window over the listing with the info of `entry`, the entry under the cursor. The
+    /// links of an entry that is read `from_file` are not known.
+    fn draw(
+        &mut self,
+        buffer: &mut Buffer,
+        tree: &Tree,
+        options: &BrowserOptions,
+        entry: EntryId,
+        from_file: bool,
+    ) {
         let data = tree.entry(entry);
         let link = match data.kind {
             EntryKind::HardLink(link) => Some(link),
@@ -1160,8 +1352,8 @@ impl Info {
         // The border, the padding, and the row that says how to close the window, and the rows of
         // the tab.
         let height = 5 + match self.tab {
-            Tab::Links => 8,
-            Tab::Info => {
+            Tab::Links if !from_file => 8,
+            Tab::Links | Tab::Info => {
                 4 + u16::from(tree.extended(entry).is_some())
                     + u16::from(link.is_some())
                     + directory.map_or(0, |directory| {
@@ -1184,6 +1376,10 @@ impl Info {
 
         match self.tab {
             Tab::Info => draw_info_tab(&window, buffer, tree, options, entry),
+            Tab::Links if from_file => {
+                let message = "This feature is not available when reading from file.";
+                window.text(buffer, 2, 2, message, Style::Default);
+            }
             Tab::Links => self.draw_links(&window, buffer, tree, height),
         }
 
@@ -1394,7 +1590,7 @@ impl Row<'_> {
                     "!"
                 } else if directory.sub_error {
                     "."
-                } else if self.tree.entries(id).next().is_none() {
+                } else if self.browser.is_empty(self.tree, id) {
                     "e"
                 } else {
                     return;

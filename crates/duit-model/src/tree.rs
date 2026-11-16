@@ -142,7 +142,11 @@ pub struct EntryExtended {
 
 /// A directory tree in memory. Entries refer to each other by identifier, and each identifier is
 /// only valid for the tree that returned it.
-#[derive(Debug, Default)]
+///
+/// A [`crate::MemorySink`] builds a tree with the totals of each directory. The browser reads a
+/// binary export into a tree of one directory and its entries at a time, with the totals that the
+/// export stores, through [`Tree::create_directory`] and [`Tree::create`].
+#[derive(Debug, Default, Clone)]
 pub struct Tree {
     entries: Vec<Entry>,
     directories: Vec<Directory>,
@@ -248,7 +252,7 @@ impl Tree {
     }
 
     /// The identifier of `device`, which is new for a device that the tree does not have yet.
-    pub(crate) fn device_id(&mut self, device: u64) -> Result<DeviceId, TreeError> {
+    pub fn device_id(&mut self, device: u64) -> Result<DeviceId, TreeError> {
         match self.device_ids.entry(device) {
             MapEntry::Occupied(occupied) => Ok(*occupied.get()),
             MapEntry::Vacant(vacant) => {
@@ -264,7 +268,7 @@ impl Tree {
 
     /// Add the directory `name` with the sizes of `stat` to `parent`, or as a directory without
     /// a parent when `parent` is `None`.
-    pub(crate) fn create_directory(
+    pub fn create_directory(
         &mut self,
         parent: Option<DirectoryId>,
         device: DeviceId,
@@ -294,7 +298,7 @@ impl Tree {
     /// Add the entry `name` with the sizes of `stat` to `parent`. A hard link gets the inode and
     /// the link count of `stat`, and joins the links to the same inode, whose sizes are then
     /// left out of the totals until [`Tree::add_all_stats`].
-    pub(crate) fn create(
+    pub fn create(
         &mut self,
         parent: DirectoryId,
         kind: FileKind,
@@ -361,7 +365,7 @@ impl Tree {
         &mut self.entries[id.0]
     }
 
-    pub(crate) fn directory_mut(&mut self, id: DirectoryId) -> &mut Directory {
+    pub fn directory_mut(&mut self, id: DirectoryId) -> &mut Directory {
         &mut self.directories[id.0]
     }
 
@@ -631,7 +635,7 @@ impl Tree {
 
 /// What [`Tree::create`] adds: any entry that is not a directory.
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum FileKind {
+pub enum FileKind {
     HardLink,
     Regular,
     NonRegular,
