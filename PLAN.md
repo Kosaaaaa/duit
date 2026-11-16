@@ -206,7 +206,7 @@ Done when `duit -o- DIR` equals `ncdu -o- DIR` on the fixture trees, on Linux an
 - Conversion between formats without a UI.
 
 Done when round trips with ncdu pass in both directions and the malformed input table produces no
-panic.
+panic. Done.
 
 ### M3: Browser
 
