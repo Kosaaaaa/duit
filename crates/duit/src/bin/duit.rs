@@ -19,7 +19,7 @@ use duit_format::{
     BINARY_SIGNATURE, BinaryExport, BinaryExportError, BinaryImportError, BinaryOpenError,
     BinaryReader, ImportError, JsonExport, JsonExportError, import,
 };
-use duit_model::{MemorySink, Sink, Tree};
+use duit_model::{MemorySink, Sink, Tree, TreeError};
 use duit_scan::{ScanError, ScanOptions, scan};
 use duit_tui::{Browser, BrowserOptions, InitError, Input, Ui};
 
@@ -519,6 +519,13 @@ fn opening_directory(description: &str) -> Vec<u8> {
 
 fn writing(error: &io::Error) -> Vec<u8> {
     let inner = error.get_ref();
+    if let Some(error) = inner.and_then(|error| error.downcast_ref::<TreeError>()) {
+        return match error {
+            TreeError::TooManyDevices => {
+                b"Maximum number of device identifiers exceeded.\n".to_vec()
+            }
+        };
+    }
     if let Some(error) = inner.and_then(|error| error.downcast_ref::<JsonExportError>()) {
         return match error {
             JsonExportError::PathTooLong => b"Error writing JSON export: path too long.\n".to_vec(),
