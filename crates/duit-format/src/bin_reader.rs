@@ -640,12 +640,14 @@ fn add_listed_directory(
     let device = tree.device_id(item.stat.device)?;
     let entry_extended = EntryExtended::of(&item.stat, extended);
     let id = tree.create_directory(parent, device, &item.stat, entry_extended, &item.name);
-    let directory = tree.directory_mut(id);
-    directory.items = item.items;
-    directory.shared_blocks = item.shared_blocks;
-    directory.shared_size = item.shared_size;
-    directory.read_error = item.read_error;
-    directory.sub_error = item.sub_error;
+    tree.set_totals(
+        id,
+        item.items,
+        item.shared_blocks,
+        item.shared_size,
+        item.read_error,
+        item.sub_error,
+    );
     Ok(id)
 }
 

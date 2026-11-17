@@ -376,8 +376,28 @@ impl Tree {
         &mut self.entries[id.0]
     }
 
-    pub fn directory_mut(&mut self, id: DirectoryId) -> &mut Directory {
+    pub(crate) fn directory_mut(&mut self, id: DirectoryId) -> &mut Directory {
         &mut self.directories[id.0]
+    }
+
+    /// Set the totals of `id` that a binary export stores, for a directory that is read without
+    /// the entries below it. The `parent` of a directory stays out of reach, as every walk up the
+    /// tree needs it to be acyclic.
+    pub fn set_totals(
+        &mut self,
+        id: DirectoryId,
+        items: u32,
+        shared_blocks: u64,
+        shared_size: u64,
+        read_error: bool,
+        sub_error: bool,
+    ) {
+        let directory = &mut self.directories[id.0];
+        directory.items = items;
+        directory.shared_blocks = shared_blocks;
+        directory.shared_size = shared_size;
+        directory.read_error = read_error;
+        directory.sub_error = sub_error;
     }
 
     pub(crate) fn extended_mut(&mut self, id: EntryId) -> Option<&mut EntryExtended> {
