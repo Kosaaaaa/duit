@@ -16,8 +16,6 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::{Frame, Terminal};
 
-use crate::browser::Key;
-
 /// Why [`Ui::init`] failed.
 #[derive(Debug)]
 pub enum InitError {
@@ -37,6 +35,27 @@ pub enum Input {
     /// the signal handler of ncurses restores the terminal and exits with status 1. The raw mode
     /// of crossterm reports it as a key instead.
     Interrupt,
+}
+
+/// A key press, as the browser reads it from ncurses `getch`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Key {
+    /// A character key.
+    Char(char),
+    /// The Enter key, which ncurses reports as `\n`.
+    Enter,
+    Backspace,
+    Up,
+    Down,
+    Left,
+    Right,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    /// A key that has no binding, such as a function key. It still closes a window that any key
+    /// closes.
+    Other,
 }
 
 /// The terminal while the full-screen interface owns it.

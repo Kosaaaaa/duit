@@ -9,6 +9,7 @@ use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::style::Style;
 
+use crate::terminal::Key;
 use crate::ui::{
     BOLD, BOLD_REVERSE, PLAIN, REVERSE, Window, draw_line, draw_size, draw_text, format_number,
     format_timestamp, shorten, to_utf8,
@@ -101,27 +102,6 @@ impl Default for BrowserOptions {
             confirm_quit: false,
         }
     }
-}
-
-/// A key press, as the browser reads it from ncurses `getch`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Key {
-    /// A character key.
-    Char(char),
-    /// The Enter key, which ncurses reports as `\n`.
-    Enter,
-    Backspace,
-    Up,
-    Down,
-    Left,
-    Right,
-    Home,
-    End,
-    PageUp,
-    PageDown,
-    /// A key that has no binding, such as a function key. It still closes a window that any key
-    /// closes.
-    Other,
 }
 
 /// The window over the listing that takes the keys, `state` in `browser.zig`.
