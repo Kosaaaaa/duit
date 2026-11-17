@@ -4,7 +4,7 @@ use std::fs::{self, File, OpenOptions, Permissions};
 use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
@@ -467,6 +467,31 @@ fn interrupt() {
         let (status, _) = browse(directory.path(), arguments, keys);
         assert_eq!(status.code(), Some(1), "arguments: {arguments:?}");
     }
+}
+
+/// Ctrl-\ ends duit with `SIGQUIT` after the terminal is restored.
+#[test]
+fn quit_signal() {
+    let directory = fixture();
+    let (status, _) = browse(directory.path(), &["-f", "tree.json"], b"\x1c");
+    assert_eq!(status.signal(), Some(libc::SIGQUIT));
+}
+
+/// Ctrl-Z restores the terminal before it raises `SIGTSTP`, and duit takes the terminal over again
+/// and draws the browser once it continues. duit runs in an orphaned process group, so the kernel
+/// discards the signal instead of stopping it.
+#[test]
+fn suspend() {
+    let directory = fixture();
+    let pty = pty();
+    let receiver = read_output(&pty);
+    let mut child = spawn_on(&pty, directory.path(), &["-f", "tree.json"]);
+    let mut output = Vec::new();
+    wait_for(&receiver, &mut output, FOOTER);
+    (&pty.master).write_all(b"\x1a").expect("key is typed");
+    wait_for_return(&receiver, &mut output);
+    (&pty.master).write_all(b"q").expect("key is typed");
+    assert_eq!(wait_exit(&mut child).code(), Some(0));
 }
 
 /// An ESC that the terminal sends together with the next key, as for Alt+y, is two keys, as ncurses

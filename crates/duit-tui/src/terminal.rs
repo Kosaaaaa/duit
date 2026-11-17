@@ -33,7 +33,8 @@ pub enum InitError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Input {
     Key(Key),
-    /// The terminal changed its size, so the screen needs a redraw.
+    /// The screen needs a redraw: the terminal changed its size, or duit took it over again after
+    /// Ctrl-Z suspended it.
     Resize,
     /// Ctrl-C. ncurses keeps the terminal from turning it into a key, so it raises `SIGINT`, and
     /// the signal handler of ncurses restores the terminal and exits with status 1. The raw mode
@@ -161,6 +162,24 @@ impl Ui {
                 return Ok(None);
             }
             let input = match event::read()? {
+                // Ctrl-Z and Ctrl-\, which crossterm 0.29 reads as Ctrl-4. ncurses keeps the
+                // terminal from turning them into keys, so they raise `SIGTSTP` and `SIGQUIT`, and
+                // the `SIGTSTP` handler of ncurses restores the terminal around the suspend.
+                Event::Key(KeyEvent {
+                    code: KeyCode::Char(character @ ('z' | '4')),
+                    modifiers,
+                    kind,
+                    ..
+                }) if kind != KeyEventKind::Release
+                    && modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    self.raise(if character == 'z' {
+                        libc::SIGTSTP
+                    } else {
+                        libc::SIGQUIT
+                    })?;
+                    Some(Input::Resize)
+                }
                 // crossterm reads an ESC and the key after it in the same read as that key with
                 // ALT, and ncurses as two keys.
                 // shortcut: also splits a key whose ALT comes from a CSI modifier, such as
@@ -189,6 +208,21 @@ impl Ui {
     /// Give the terminal back, `deinit` in `ui.zig`.
     pub fn deinit(mut self) {
         restore(self.terminal.backend_mut());
+    }
+
+    /// Give the terminal back, raise `signal`, and take the terminal over again if duit continues,
+    /// as after a suspend.
+    fn raise(&mut self, signal: libc::c_int) -> io::Result<()> {
+        restore(self.terminal.backend_mut());
+        #[expect(unsafe_code)]
+        // SAFETY: `raise` takes a signal number and no pointers, and a signal number that is not
+        // valid makes it fail with `EINVAL`.
+        unsafe {
+            libc::raise(signal);
+        }
+        self.terminal = enter(&self.output)
+            .map_err(|(InitError::OpenTty(error) | InitError::Terminal(error))| error)?;
+        Ok(())
     }
 
     /// Give the terminal back and exit with status 1, as on Ctrl-C.
