@@ -303,6 +303,19 @@ fn interrupt() {
     }
 }
 
+/// An ESC that the terminal sends together with the next key, as for Alt+y, is two keys, as ncurses
+/// reads them: the ESC closes the confirmation of `--confirm-quit`, and the `y` does not quit.
+#[test]
+fn escape_then_key() {
+    let directory = fixture();
+    let (status, _) = browse(
+        directory.path(),
+        &["-f", "tree.json", "--confirm-quit"],
+        b"q\x1by\x03",
+    );
+    assert_eq!(status.code(), Some(1));
+}
+
 /// With an import from standard input, duit draws on and reads keys from `/dev/tty`, its
 /// controlling terminal, and writes nothing to standard output.
 #[test]

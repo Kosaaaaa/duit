@@ -61,6 +61,9 @@ pub enum Key {
 /// The terminal while the full-screen interface owns it.
 pub struct Ui {
     terminal: Terminal<CrosstermBackend<BufWriter<File>>>,
+    /// The input after an ESC that crossterm read together with it, which [`Ui::getch`] returns
+    /// next.
+    pending: Option<Input>,
 }
 
 impl Ui {
@@ -98,7 +101,10 @@ impl Ui {
         let terminal = execute!(output, EnterAlternateScreen)
             .and_then(|()| Terminal::new(CrosstermBackend::new(output)));
         match terminal {
-            Ok(terminal) => Ok(Self { terminal }),
+            Ok(terminal) => Ok(Self {
+                terminal,
+                pending: None,
+            }),
             Err(error) => {
                 let _ = disable_raw_mode();
                 Err(InitError::Terminal(error))
@@ -114,7 +120,10 @@ impl Ui {
 
     /// Read the next input, `getch` in `ui.zig`. Without `block`, return `None` when no input is
     /// waiting. Events that are no input for ncurses, such as a focus change, are skipped.
-    pub fn getch(&self, block: bool) -> io::Result<Option<Input>> {
+    pub fn getch(&mut self, block: bool) -> io::Result<Option<Input>> {
+        if let Some(input) = self.pending.take() {
+            return Ok(Some(input));
+        }
         loop {
             // crossterm 0.29 with `use-dev-tty` does not look at the events that it parsed already
             // when it polls with a timeout of zero, so a batch of keys would end after its first.
@@ -124,6 +133,21 @@ impl Ui {
                 return Ok(None);
             }
             let input = match event::read()? {
+                // crossterm reads an ESC and the key after it in the same read as that key with
+                // ALT, and ncurses as two keys.
+                // shortcut: also splits a key whose ALT comes from a CSI modifier, such as
+                // `\x1b[1;3A`, which ncurses reads as one key; tell them apart by `KeyCode` if
+                // such a key ever needs a binding.
+                Event::Key(event)
+                    if event.kind != KeyEventKind::Release
+                        && event.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    self.pending = input_of(KeyEvent {
+                        modifiers: event.modifiers.difference(KeyModifiers::ALT),
+                        ..event
+                    });
+                    Some(Input::Key(Key::Char('\x1b')))
+                }
                 Event::Key(event) => input_of(event),
                 Event::Resize(..) => Some(Input::Resize),
                 Event::FocusGained | Event::FocusLost | Event::Mouse(_) | Event::Paste(_) => None,
