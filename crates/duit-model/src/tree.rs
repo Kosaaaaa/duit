@@ -200,8 +200,8 @@ impl Tree {
 
     /// Append the path of `directory` to `out`: the names of the directories from the root down
     /// to it, joined with a `/` that is left out after a name that ends with one. The root is
-    /// left out unless `with_root` is set, and then the root adds nothing. `Dir.fmtPath` in
-    /// `model.zig`.
+    /// left out unless `with_root` is set, so without it the path of the root is empty.
+    /// `Dir.fmtPath` in `model.zig`.
     pub fn format_path(&self, directory: DirectoryId, with_root: bool, out: &mut Vec<u8>) {
         let mut names = Vec::new();
         let mut current = Some(directory);
