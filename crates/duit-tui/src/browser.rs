@@ -514,8 +514,9 @@ impl Browser {
         match &self.source {
             Source::Memory(_) => tree.entries(id).next().is_none(),
             Source::File { directories, .. } => directories
-                .iter()
-                .find(|directory| directory.id == id)
+                .binary_search_by_key(&id, |directory| directory.id)
+                .ok()
+                .and_then(|index| directories.get(index))
                 .is_some_and(|directory| directory.empty),
         }
     }

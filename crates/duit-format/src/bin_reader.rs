@@ -113,7 +113,7 @@ pub struct Listing {
     pub tree: Tree,
     /// The directory, the one in the tree without a parent.
     pub directory: DirectoryId,
-    /// The subdirectories, `dir_refs` in `browser.zig`.
+    /// The subdirectories, `dir_refs` in `browser.zig`, sorted by [`DirectoryId`].
     pub directories: Vec<ListedDirectory>,
 }
 

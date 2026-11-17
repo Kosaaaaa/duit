@@ -47,8 +47,8 @@ impl From<TreeError> for io::Error {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EntryId(usize);
 
-/// The identifier of a [`Directory`] in its [`Tree`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// The identifier of a [`Directory`] in its [`Tree`], in the order the tree creates directories.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DirectoryId(usize);
 
 /// The identifier of a [`Link`] in its [`Tree`].
