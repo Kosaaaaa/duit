@@ -133,6 +133,9 @@ pub enum Action {
     Shell,
     /// Delete the entry that the cursor was on, with [`Browser::delete`].
     Delete,
+    /// Scan the open directory again, [`Browser::directory`], and list it with
+    /// [`Browser::load_directory`].
+    Refresh,
 }
 
 /// The window over the listing that takes the keys, `state` in `browser.zig`.
@@ -1026,6 +1029,11 @@ impl Browser {
         self.sort(tree, options);
     }
 
+    /// The open directory, `dir_parent` in `browser.zig`.
+    pub fn directory(&self) -> DirectoryId {
+        self.directory
+    }
+
     /// The path of the open directory, `dir_path` in `browser.zig`.
     pub fn path(&self) -> &[u8] {
         &self.path
@@ -1099,7 +1107,6 @@ impl Browser {
                 }
             }
             Key::Char('?') => self.state = State::Help,
-            // The action of refresh is not ported yet.
             Key::Char('r') => {
                 if self.reads_file() {
                     self.message =
@@ -1111,6 +1118,8 @@ impl Browser {
                     ]);
                 } else if !options.can_refresh {
                     self.message = Some(&["Directory refresh feature disabled."]);
+                } else {
+                    return Ok(Action::Refresh);
                 }
             }
             Key::Char('b') => {

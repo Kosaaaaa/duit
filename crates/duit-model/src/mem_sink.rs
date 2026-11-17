@@ -1,6 +1,7 @@
+use std::collections::{HashMap, HashSet};
 use std::io;
 
-use crate::tree::{DirectoryId, EntryExtended, FileKind, Tree, add_blocks};
+use crate::tree::{DirectoryId, EntryExtended, EntryId, FileKind, Tree, add_blocks};
 use crate::{EntryType, Sink, Special, Stat};
 
 /// A [`Sink`] that builds a [`Tree`] in memory, with the totals of each directory.
@@ -12,7 +13,14 @@ pub struct MemorySink {
     tree: Tree,
     /// Whether to keep the extended information, as with `-e`.
     extended: bool,
+    /// The directory of the tree that a refresh scans again, `global.root` in `mem_sink.zig`, or
+    /// `None` for a new tree.
+    refresh: Option<DirectoryId>,
 }
+
+/// A refresh clears the counts of a directory with more items than this on a screen of its own,
+/// as `createRoot` in `mem_sink.zig` does.
+const ZEROING_ITEMS: u32 = 10_000;
 
 /// The handle of a directory of a [`MemorySink`] whose entries are being added.
 #[derive(Debug)]
@@ -27,10 +35,19 @@ pub struct MemoryDirectory {
     items: u32,
     mtime: u64,
     sub_error: bool,
+    /// The entries that the directory had before a refresh, by name, which the refresh has not
+    /// found again yet. The first entry of a name is the one that a refresh finds.
+    previous: HashMap<Vec<u8>, EntryId>,
 }
 
 impl MemoryDirectory {
-    fn new(directory: DirectoryId, stat: &Stat) -> Self {
+    /// The handle of `directory` of `tree`, which has the sizes of `stat`, `Dir.init` in
+    /// `mem_sink.zig`.
+    fn new(tree: &Tree, directory: DirectoryId, stat: &Stat) -> Self {
+        let mut previous = HashMap::new();
+        for id in tree.entries(directory) {
+            previous.entry(tree.name(id).to_vec()).or_insert(id);
+        }
         Self {
             directory,
             own_blocks: stat.blocks,
@@ -40,6 +57,7 @@ impl MemoryDirectory {
             items: 0,
             mtime: 0,
             sub_error: false,
+            previous,
         }
     }
 }
@@ -50,15 +68,46 @@ impl MemorySink {
         Self {
             tree: Tree::default(),
             extended,
+            refresh: None,
+        }
+    }
+
+    /// A sink that scans `directory` of `tree` again into it, as a refresh does. The root of the
+    /// scan is the directory, whose entries are kept when the scan finds them again by name, and
+    /// dropped when it does not.
+    pub fn refresh(tree: Tree, directory: DirectoryId, extended: bool) -> Self {
+        Self {
+            tree,
+            extended,
+            refresh: Some(directory),
         }
     }
 
     /// Finish the tree after the root is finished, with the sizes of the hard links, and return
-    /// it.
+    /// it, `done` in `mem_sink.zig`. The directories above a refreshed directory get its totals.
+    ///
+    /// A refresh whose directory could not be opened finishes the tree too, as `scan` in
+    /// `scan.zig` defers `done`. The directory was not cleared then, so the directories above it
+    /// count its totals twice, as in ncdu.
     pub fn finish(self) -> Tree {
         let mut tree = self.tree;
-        if let Some(root) = tree.root() {
-            tree.update_sub_error(root);
+        if let Some(directory) = self.refresh.or(tree.root()) {
+            let data = tree.directory(directory);
+            let entry = tree.entry(data.entry);
+            let (blocks, size, items) = (entry.blocks, entry.size, data.items);
+            let mut next = Some(directory);
+            while let Some(current) = next {
+                tree.update_sub_error(current);
+                let data = tree.directory_mut(current);
+                next = data.parent;
+                if current != directory {
+                    data.items = data.items.saturating_add(items).saturating_add(1);
+                    let id = data.entry;
+                    let entry = tree.entry_mut(id);
+                    entry.blocks = add_blocks(entry.blocks, blocks);
+                    entry.size = entry.size.saturating_add(size);
+                }
+            }
         }
         tree.add_all_stats();
         tree
@@ -86,6 +135,28 @@ impl MemorySink {
                 .max(stat.extended.mtime.unwrap_or(0));
         }
     }
+
+    /// Add the entry `name` of `kind` to `directory`, or give the entry of that name that a
+    /// refresh finds again the new data, `getEntry` and `statToEntry` in `mem_sink.zig`.
+    fn add_file(
+        &mut self,
+        directory: &mut MemoryDirectory,
+        kind: FileKind,
+        stat: &Stat,
+        extended: Option<EntryExtended>,
+        name: &[u8],
+    ) {
+        if let Some(id) = directory.previous.get(name).copied()
+            && self
+                .tree
+                .reuse(id, directory.directory, kind, stat, extended)
+        {
+            directory.previous.remove(name);
+        } else {
+            self.tree
+                .create(directory.directory, kind, stat, extended, name);
+        }
+    }
 }
 
 impl Sink for MemorySink {
@@ -93,12 +164,36 @@ impl Sink for MemorySink {
 
     fn create_root(&mut self, path: &[u8], stat: &Stat) -> io::Result<MemoryDirectory> {
         let device = self.tree.device_id(stat.device)?;
-        let entry_extended = self.extended_of(stat);
-        let root = self
-            .tree
-            .create_directory(None, device, stat, entry_extended, path);
-        self.tree.set_root(root);
-        Ok(MemoryDirectory::new(root, stat))
+        let Some(root) = self.refresh else {
+            let entry_extended = self.extended_of(stat);
+            let root = self
+                .tree
+                .create_directory(None, device, stat, entry_extended, path);
+            self.tree.set_root(root);
+            return Ok(MemoryDirectory::new(&self.tree, root, stat));
+        };
+        // The counts are cleared once the directory could be opened, so that a refresh that
+        // fails leaves them.
+        let data = self.tree.directory(root);
+        let (id, parent) = (data.entry, data.parent);
+        self.tree.zero_stats(id, parent);
+        self.tree.directory_mut(root).device = device;
+        let entry = self.tree.entry_mut(id);
+        entry.blocks = stat.blocks;
+        entry.size = stat.size;
+        // The directory keeps its extended information, or its lack of it.
+        if let Some(entry_extended) = self.tree.extended_mut(id) {
+            *entry_extended = EntryExtended {
+                extended: stat.extended,
+                latest_mtime: stat.extended.mtime.unwrap_or(0),
+            };
+        }
+        Ok(MemoryDirectory::new(&self.tree, root, stat))
+    }
+
+    fn zeroing(&self) -> bool {
+        self.refresh
+            .is_some_and(|directory| self.tree.directory(directory).items > ZEROING_ITEMS)
     }
 
     fn add_special(
@@ -112,8 +207,8 @@ impl Sink for MemorySink {
         if special == Special::ReadError {
             data.sub_error = true;
         }
-        self.tree.create(
-            directory.directory,
+        self.add_file(
+            directory,
             FileKind::Special(special),
             &Stat::default(),
             None,
@@ -137,8 +232,7 @@ impl Sink for MemorySink {
         };
         self.count(directory, stat);
         let entry_extended = self.extended_of(stat);
-        self.tree
-            .create(directory.directory, kind, stat, entry_extended, name);
+        self.add_file(directory, kind, stat, entry_extended, name);
         Ok(())
     }
 
@@ -151,10 +245,18 @@ impl Sink for MemorySink {
         let device = self.tree.device_id(stat.device)?;
         self.count(parent, stat);
         let entry_extended = self.extended_of(stat);
-        let directory =
+        let reused = parent.previous.get(name).copied().and_then(|id| {
+            let directory = self
+                .tree
+                .reuse_directory(id, device, stat, entry_extended)?;
+            parent.previous.remove(name);
+            Some(directory)
+        });
+        let directory = reused.unwrap_or_else(|| {
             self.tree
-                .create_directory(Some(parent.directory), device, stat, entry_extended, name);
-        Ok(MemoryDirectory::new(directory, stat))
+                .create_directory(Some(parent.directory), device, stat, entry_extended, name)
+        });
+        Ok(MemoryDirectory::new(&self.tree, directory, stat))
     }
 
     fn set_read_error(&mut self, directory: &mut MemoryDirectory) -> io::Result<()> {
@@ -167,6 +269,13 @@ impl Sink for MemorySink {
         directory: MemoryDirectory,
         parent: Option<&mut MemoryDirectory>,
     ) -> io::Result<()> {
+        // The entries that a refresh did not find again are cleared already, with their hard links
+        // out of the accounting.
+        if !directory.previous.is_empty() {
+            let gone: HashSet<EntryId> = directory.previous.values().copied().collect();
+            self.tree
+                .retain(directory.directory, |id| !gone.contains(&id));
+        }
         let id = self.tree.directory(directory.directory).entry;
         let data = self.tree.directory_mut(directory.directory);
         data.items = data.items.saturating_add(directory.items);

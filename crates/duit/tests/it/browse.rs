@@ -734,6 +734,53 @@ fn read_errors() {
     ");
 }
 
+/// `r` scans the open directory again and lists what changed on disk since the scan, also with
+/// `-0`, which a refresh ignores. The names have no spaces, because duit does not write a space
+/// that is on the screen already.
+#[test]
+fn refresh() {
+    for arguments in [&["."][..], &["-0", "."]] {
+        let directory = TempDir::new().expect("temporary directory is created");
+        fs::write(directory.path().join("gone"), [0; 5000]).expect("file is written");
+        let pty = pty();
+        let receiver = read_output(&pty);
+        let mut child = spawn_on(&pty, directory.path(), arguments);
+        let mut output = Vec::new();
+        wait_for(&receiver, &mut output, FOOTER);
+        fs::remove_file(directory.path().join("gone")).expect("file is removed");
+        fs::write(directory.path().join("added-file"), [0; 7000]).expect("file is written");
+        fs::create_dir(directory.path().join("added-directory")).expect("directory is created");
+        (&pty.master).write_all(b"r").expect("key is typed");
+        wait_for(&receiver, &mut output, b"added-file");
+        wait_for(&receiver, &mut output, b"/added-directory");
+        (&pty.master).write_all(b"q").expect("key is typed");
+        assert_eq!(wait_exit(&mut child).code(), Some(0), "{arguments:?}");
+    }
+}
+
+/// A refresh of a directory that is gone shows the error screen of `-2`, also with `-0`, and any
+/// key goes back to the browser, where `?` opens the help.
+#[test]
+fn refresh_error() {
+    let directory = TempDir::new().expect("temporary directory is created");
+    fs::create_dir(directory.path().join("sub")).expect("directory is created");
+    let pty = pty();
+    let receiver = read_output(&pty);
+    let mut child = spawn_on(&pty, directory.path(), &["-0", "."]);
+    let mut output = Vec::new();
+    wait_for(&receiver, &mut output, FOOTER);
+    // `/sub` is empty, so no key is dropped while it is listed. It is opened from memory, and
+    // removed before `r` is typed.
+    (&pty.master).write_all(b"\r").expect("key is typed");
+    fs::remove_dir(directory.path().join("sub")).expect("directory is removed");
+    (&pty.master).write_all(b"r").expect("key is typed");
+    wait_for(&receiver, &mut output, b"directory:");
+    (&pty.master).write_all(b"x?").expect("keys are typed");
+    wait_for(&receiver, &mut output, b"cursor");
+    (&pty.master).write_all(b"qq").expect("keys are typed");
+    assert_eq!(wait_exit(&mut child).code(), Some(0));
+}
+
 /// Wait until `path` no longer exists.
 fn wait_removed(path: &Path) {
     let deadline = Instant::now() + TIMEOUT;

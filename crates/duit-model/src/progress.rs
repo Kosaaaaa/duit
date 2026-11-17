@@ -25,6 +25,9 @@ pub struct Progress {
     lengths: Vec<usize>,
     /// The path of the last entry that could not be read, `last_error` in `sink.zig`.
     last_error: Option<Vec<u8>>,
+    /// The sink clears the counts of the directory that a refresh scans again, `zeroing` in
+    /// `sink.zig`.
+    zeroing: bool,
 }
 
 impl Progress {
@@ -49,6 +52,12 @@ impl Progress {
     /// entry that failed to `stat`.
     pub fn last_error(&self) -> Option<&[u8]> {
         self.last_error.as_deref()
+    }
+
+    /// Whether the sink is about to clear the counts of the directory that a refresh scans again,
+    /// which ncdu shows on a screen of its own.
+    pub fn zeroing(&self) -> bool {
+        self.zeroing
     }
 
     fn enter(&mut self, name: &[u8]) {
@@ -131,6 +140,12 @@ impl<S: Sink> Sink for ProgressSink<'_, S> {
     type Directory = S::Directory;
 
     fn create_root(&mut self, path: &[u8], stat: &Stat) -> io::Result<S::Directory> {
+        if self.sink.zeroing() {
+            self.progress.zeroing = true;
+            let handled = (self.handle_event)(&self.progress);
+            self.progress.zeroing = false;
+            handled?;
+        }
         let root = self.sink.create_root(path, stat)?;
         self.progress.enter(path);
         match self.producer {
@@ -356,6 +371,36 @@ mod tests {
             .add_special(&mut root, b"excluded", Special::Pattern)
             .expect_err("event handler fails");
         assert_eq!(error.to_string(), "aborted");
+    }
+
+    /// A refresh of a directory with more than 10 000 items handles an event before it clears
+    /// their counts, once the directory could be opened, as `createRoot` in `mem_sink.zig` draws
+    /// `zeroing`. The next event is that of the root.
+    #[test]
+    fn zeroing() {
+        for (items, expected) in [(10_000, &[false][..]), (10_001, &[true, false])] {
+            let mut memory = MemorySink::new(false);
+            let built = (|| -> io::Result<()> {
+                let mut root = memory.create_root(b"/", &directory())?;
+                for _ in 0..items {
+                    memory.add_special(&mut root, b"excluded", Special::Pattern)?;
+                }
+                memory.finish_directory(root, None)
+            })();
+            built.expect("entries are added");
+            let tree = memory.finish();
+            let root = tree.root().expect("tree has a root");
+            let mut zeroing = Vec::new();
+            let mut record = |progress: &Progress| {
+                zeroing.push(progress.zeroing());
+                Ok(())
+            };
+            let memory = MemorySink::refresh(tree, root, false);
+            let mut sink = ProgressSink::new(memory, Producer::Scan, &mut record);
+            sink.create_root(b"/", &directory()).expect("root is added");
+            drop(sink);
+            assert_eq!(zeroing, expected, "{items}");
+        }
     }
 
     /// The bytes saturate, as `+|` and `*|` do in `sink.zig`.

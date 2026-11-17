@@ -479,6 +479,126 @@ impl Tree {
         }
     }
 
+    /// Take the entries of `directory` for which `keep` is false out of its entries, without
+    /// changing any total.
+    pub(crate) fn retain(&mut self, directory: DirectoryId, mut keep: impl FnMut(EntryId) -> bool) {
+        let mut previous = None;
+        let mut next = self.directories[directory.0].sub;
+        while let Some(id) = next {
+            next = self.entries[id.0].next;
+            if keep(id) {
+                previous = Some(id);
+            } else {
+                match previous {
+                    Some(previous) => self.entries[previous.0].next = next,
+                    None => self.directories[directory.0].sub = next,
+                }
+            }
+        }
+    }
+
+    /// Give the directory `id`, which a refresh found again by name, the sizes of `stat`, `device`,
+    /// and `extended`, as `getEntry` and `statToEntry` in `mem_sink.zig` reuse an entry. Its
+    /// entries stay, for the refresh to find again. Returns `None`, and changes nothing, when `id`
+    /// is not a directory, or when [`Tree::refill`] does not take it.
+    pub(crate) fn reuse_directory(
+        &mut self,
+        id: EntryId,
+        device: DeviceId,
+        stat: &Stat,
+        extended: Option<EntryExtended>,
+    ) -> Option<DirectoryId> {
+        let directory = match self.entries[id.0].kind {
+            EntryKind::Directory(directory) => directory,
+            EntryKind::HardLink(_)
+            | EntryKind::Regular
+            | EntryKind::NonRegular
+            | EntryKind::Special(_) => return None,
+        };
+        if !self.refill(id, stat, extended) {
+            return None;
+        }
+        self.directories[directory.0].device = device;
+        Some(directory)
+    }
+
+    /// Give the entry `id` of `parent`, which a refresh found again by name, the kind `kind`, the
+    /// sizes of `stat`, and `extended`, as `getEntry` and `statToEntry` in `mem_sink.zig` reuse an
+    /// entry. A hard link gets the inode and the link count of `stat`, and joins the links to its
+    /// inode again, which [`Tree::zero_stats`] took it out of. Returns `false`, and changes
+    /// nothing, unless both are hard links or neither is a hard link or a directory, or when
+    /// [`Tree::refill`] does not take it.
+    pub(crate) fn reuse(
+        &mut self,
+        id: EntryId,
+        parent: DirectoryId,
+        kind: FileKind,
+        stat: &Stat,
+        extended: Option<EntryExtended>,
+    ) -> bool {
+        let kind = match (self.entries[id.0].kind, kind) {
+            (EntryKind::HardLink(link), FileKind::HardLink) => EntryKind::HardLink(link),
+            (
+                EntryKind::Regular | EntryKind::NonRegular | EntryKind::Special(_),
+                FileKind::Regular,
+            ) => EntryKind::Regular,
+            (
+                EntryKind::Regular | EntryKind::NonRegular | EntryKind::Special(_),
+                FileKind::NonRegular,
+            ) => EntryKind::NonRegular,
+            (
+                EntryKind::Regular | EntryKind::NonRegular | EntryKind::Special(_),
+                FileKind::Special(special),
+            ) => EntryKind::Special(special),
+            (
+                EntryKind::Directory(_),
+                FileKind::HardLink
+                | FileKind::Regular
+                | FileKind::NonRegular
+                | FileKind::Special(_),
+            )
+            | (
+                EntryKind::HardLink(_),
+                FileKind::Regular | FileKind::NonRegular | FileKind::Special(_),
+            )
+            | (
+                EntryKind::Regular | EntryKind::NonRegular | EntryKind::Special(_),
+                FileKind::HardLink,
+            ) => return false,
+        };
+        if !self.refill(id, stat, extended) {
+            return false;
+        }
+        self.entries[id.0].kind = kind;
+        if let EntryKind::HardLink(link) = kind {
+            let data = &mut self.links[link.0];
+            data.parent = parent;
+            data.inode = stat.inode;
+            data.link_count = stat.link_count;
+            data.next = link;
+            data.previous = link;
+            data.counted = false;
+            self.add_link(link);
+        }
+        true
+    }
+
+    /// Give the entry `id` the sizes of `stat` and `extended`, or no extended information without
+    /// it. Returns `false`, and changes nothing, when `extended` is given and `id` has no extended
+    /// information, which a refresh then adds as a new entry.
+    fn refill(&mut self, id: EntryId, stat: &Stat, extended: Option<EntryExtended>) -> bool {
+        let entry = &mut self.entries[id.0];
+        match (entry.extended, extended) {
+            (None, Some(_)) => return false,
+            (Some(index), Some(extended)) => self.extended[index] = extended,
+            (Some(_), None) => entry.extended = None,
+            (None, None) => {}
+        }
+        entry.blocks = stat.blocks;
+        entry.size = stat.size;
+        true
+    }
+
     /// Take every hard link at or below `id` out of the accounting, in the order of the tree.
     fn remove_links(&mut self, id: EntryId) {
         let mut stack = vec![id];
