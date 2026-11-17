@@ -11,6 +11,7 @@ mod convert;
 mod export;
 mod import;
 mod options;
+mod progress;
 
 /// The first bytes of a binary export.
 const BINARY_SIGNATURE: &[u8] = b"\xbfncduEX1";

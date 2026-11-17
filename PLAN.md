@@ -210,8 +210,8 @@ Workspace, lints, CI, and documentation. No code. Done.
 - The option parser for every flag, and config files. Modes without an implementation yet (`-f`,
   `-O`, `-c`, `-t` above 1, and any run without `-o`) are rejected with a clear message. Flags that
   only change the scan progress, the browser, or the actions of M3 and M4 are parsed and have no
-  effect until then, so the ncdu config files that duit falls back to keep working. Until M4, duit
-  shows no scan progress, as with `-0`.
+  effect until then, so the ncdu config files that duit falls back to keep working. Until M4 ports
+  the full-screen progress of `-2`, a scan or an import with it shows no progress, as with `-0`.
 - The entry types, the sink, and a single-threaded scan with `-x`, `-L`, `-e`, exclude patterns,
   kernfs, and cache directories. `-o` writes the scan straight to the export, so the in-memory tree
   waits for M3.

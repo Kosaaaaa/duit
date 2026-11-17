@@ -12,16 +12,18 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use duit::{
-    Arg, Args, Config, OptionError, open_error, read_error, seek_error, stat_error, strerror,
-    write_error,
+    Arg, Args, Config, OptionError, ScanUi, open_error, read_error, seek_error, stat_error,
+    strerror, write_error,
 };
 use duit_format::{
     BINARY_SIGNATURE, BinaryExport, BinaryExportError, BinaryImportError, BinaryOpenError,
     BinaryReader, ImportError, JsonExport, JsonExportError, import,
 };
-use duit_model::{MemorySink, Sink, Tree, TreeError};
+use duit_model::{MemorySink, Producer, Progress, ProgressSink, Sink, Tree, TreeError};
 use duit_scan::{ScanError, ScanOptions, scan};
-use duit_tui::{Action, Browser, BrowserOptions, Deletion, InitError, Input, Loading, Ui};
+use duit_tui::{
+    Action, Browser, BrowserOptions, Console, Deletion, InitError, Input, Loading, ScanState, Ui,
+};
 
 /// The terminal sequence that clears from the cursor to the end of the screen. ncdu writes it to
 /// standard error before an error message and at the end of a scan, to clear a progress line.
@@ -206,6 +208,14 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
     if import_file.is_none() && config.threads > 1 {
         return Err(b"A scan with more than one thread is not supported yet.\n".to_vec());
     }
+    let scan_ui = config
+        .scan_ui
+        .unwrap_or(match export_json.or(export_binary) {
+            Some(path) if path != b"-" && io::stdout().is_terminal() => ScanUi::Line,
+            Some(_) => ScanUi::Off,
+            None => ScanUi::Full,
+        });
+    let mut progress = ScanProgress::new(scan_ui, config.update_delay, config.browser.si);
 
     let Some(export_path) = export_json.or(export_binary) else {
         let import_input = import_file.map(open_import).transpose()?;
@@ -234,7 +244,7 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
         let memory = MemorySink::new(config.extended);
         // `fill` ends with the clear that ncdu writes when it returns after the scan, or when
         // `ui.init` takes over the terminal.
-        let tree = fill(memory, import_input, scan_directory, &config)?;
+        let tree = fill(memory, import_input, scan_directory, &config, &mut progress)?;
         if quit_after_scan {
             return Ok(ExitCode::SUCCESS);
         }
@@ -271,7 +281,8 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
         )
         .map_err(|error| writing(&error))?;
         let import_input = import_file.map(open_import).transpose()?;
-        return fill(export, import_input, scan_directory, &config).map(|()| ExitCode::SUCCESS);
+        return fill(export, import_input, scan_directory, &config, &mut progress)
+            .map(|()| ExitCode::SUCCESS);
     }
     // As in ncdu, the export file is created before the import is read.
     let import_input = import_file.map(open_import).transpose()?;
@@ -285,7 +296,7 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
         config.compress.then_some(config.compress_level),
     )
     .map_err(|error| writing(&error))?;
-    fill(export, import_input, scan_directory, &config).map(|()| ExitCode::SUCCESS)
+    fill(export, import_input, scan_directory, &config, &mut progress).map(|()| ExitCode::SUCCESS)
 }
 
 /// Run the browser that `open` opens, with the tree it reads, until the user quits, the loop at
@@ -544,6 +555,10 @@ trait Consumer: Sink {
     /// What the consumer gives when it is complete.
     type Output;
 
+    /// Whether [`Consumer::finish`] adds the sizes of the hard links, which ncdu shows as a step of
+    /// the scan, as `done` in `mem_sink.zig` does.
+    const COUNTS_HARD_LINKS: bool = false;
+
     /// Write the end of the export and flush it, or complete the tree.
     fn finish(self) -> io::Result<Self::Output>;
 
@@ -578,6 +593,8 @@ impl<W: Write> Consumer for BinaryExport<W> {
 impl Consumer for MemorySink {
     type Output = Tree;
 
+    const COUNTS_HARD_LINKS: bool = true;
+
     fn finish(self) -> io::Result<Tree> {
         Ok(Self::finish(self))
     }
@@ -593,16 +610,20 @@ enum ImportInput {
     Binary(BinaryReader<File>),
 }
 
-/// Write the import of `import_input`, or else the scan of `scan_directory`, into `consumer`.
+/// Write the import of `import_input`, or else the scan of `scan_directory`, into `consumer`, and
+/// show its `progress`.
 fn fill<C: Consumer>(
-    mut consumer: C,
+    consumer: C,
     import_input: Option<ImportInput>,
     scan_directory: Option<&[u8]>,
     config: &Config,
+    progress: &mut ScanProgress,
 ) -> Result<C::Output, Vec<u8>> {
+    let mut report = |state: &Progress| progress.report(state);
     if let Some(import_input) = import_input {
+        let mut sink = ProgressSink::new(consumer, Producer::Import, &mut report);
         let failure = match import_input {
-            ImportInput::Json(input, head) => match import(&mut consumer, input, &head) {
+            ImportInput::Json(input, head) => match import(&mut sink, input, &head) {
                 Ok(()) => None,
                 Err(ImportError::Input {
                     line,
@@ -615,15 +636,16 @@ fn fill<C: Consumer>(
                 Err(ImportError::Sink(error)) => Some(writing(&error)),
             },
             ImportInput::Binary(mut reader) => {
-                reader.import(&mut consumer).err().map(binary_import_error)
+                reader.import(&mut sink).err().map(binary_import_error)
             }
         };
+        let consumer = sink.into_inner();
         // As in ncdu, which stops without flushing its buffer, a failed export writes nothing more.
         if let Some(message) = failure {
             consumer.discard();
             return Err(message);
         }
-        let output = consumer.finish().map_err(|error| writing(&error))?;
+        let output = progress.finish(consumer)?;
         let _ = io::stderr().write_all(CLEAR_TO_END);
         return Ok(output);
     }
@@ -642,19 +664,88 @@ fn fill<C: Consumer>(
         exclude_kernfs: config.exclude_kernfs,
         exclude_caches: config.exclude_caches,
     };
+    let mut sink = ProgressSink::new(consumer, Producer::Scan, &mut report);
+    let scanned = scan(&mut sink, &path, options, &config.exclude);
+    let consumer = sink.into_inner();
     // A failure at the root still ends the export, as in ncdu.
-    let root_error = match scan(&mut consumer, &path, options, &config.exclude) {
+    let root_error = match scanned {
         Ok(()) => None,
         Err(ScanError::Stat(error)) => Some(stat_error(&error)),
         Err(ScanError::Open(error)) => Some(open_error(&error)),
         Err(ScanError::Sink(error)) => return Err(writing(&error)),
     };
-    let output = consumer.finish().map_err(|error| writing(&error))?;
+    let output = progress.finish(consumer)?;
     if let Some(description) = root_error {
         return Err(opening_directory(description));
     }
     let _ = io::stderr().write_all(CLEAR_TO_END);
     Ok(output)
+}
+
+/// The progress of a scan or an import, which `handleEvent` in `main.zig` draws with `draw` in
+/// `sink.zig` once `update_delay` has passed since it last drew, or when a draw is forced. The
+/// timer starts before the export file is opened, as in ncdu.
+struct ScanProgress {
+    scan_ui: ScanUi,
+    update_delay: Duration,
+    /// Whether sizes are in SI units, as with `--si`.
+    si: bool,
+    drawn: Instant,
+    console: Console,
+}
+
+impl ScanProgress {
+    fn new(scan_ui: ScanUi, update_delay: Duration, si: bool) -> Self {
+        // As Zig's `File.supportsAnsiEscapeCodes` decides for standard error.
+        let ansi =
+            io::stderr().is_terminal() && env::var_os("TERM").is_none_or(|term| term != "dumb");
+        Self {
+            scan_ui,
+            update_delay,
+            si,
+            drawn: Instant::now(),
+            console: Console::new(ansi),
+        }
+    }
+
+    /// Handle an event of the scan or the import, which has reported `progress`.
+    fn report(&mut self, progress: &Progress) {
+        let state = ScanState::Running {
+            files: progress.files(),
+            bytes: progress.bytes(),
+            directory: progress.directory(),
+        };
+        self.handle_event(&state, false);
+    }
+
+    fn handle_event(&mut self, state: &ScanState<'_>, force: bool) {
+        if !force && self.drawn.elapsed() <= self.update_delay {
+            return;
+        }
+        match self.scan_ui {
+            ScanUi::Line => {
+                let _ = io::stderr().write_all(&self.console.draw(state, self.si));
+            }
+            // shortcut: the full-screen progress of `-2` is not drawn yet, so it shows nothing, as
+            // `-0` does. Draw it once `drawProgress` in `sink.zig` is ported.
+            ScanUi::Off | ScanUi::Full => {}
+        }
+        self.drawn = Instant::now();
+    }
+
+    /// Complete `consumer` once the scan or the import is done, and erase the progress of `-1`, as
+    /// `done` in `sink.zig` does.
+    fn finish<C: Consumer>(&mut self, consumer: C) -> Result<C::Output, Vec<u8>> {
+        if C::COUNTS_HARD_LINKS {
+            self.handle_event(&ScanState::CountingHardLinks, true);
+        }
+        let output = consumer.finish().map_err(|error| writing(&error))?;
+        match self.scan_ui {
+            ScanUi::Line => self.handle_event(&ScanState::Done, true),
+            ScanUi::Off | ScanUi::Full => {}
+        }
+        Ok(output)
+    }
 }
 
 /// Open the import file at `path`, or standard input for `-`, and read its first 8 bytes, which
