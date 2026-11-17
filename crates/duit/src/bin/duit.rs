@@ -395,7 +395,7 @@ struct Load<'a> {
     /// Whether the browser reported a directory that it lists, which it does once it has listed 2
     /// entries.
     listed: bool,
-    /// How duit ends once the listing is done, after Ctrl-C or an error reading the keys.
+    /// How duit ends once the listing is done, after an error reading the keys.
     exit: Option<Result<ExitCode, Vec<u8>>>,
 }
 
@@ -420,14 +420,14 @@ impl<'a> Load<'a> {
         }
     }
 
-    /// Read the input that waits and drop it. Unlike ncurses, which raises `SIGINT` at once,
-    /// Ctrl-C ends duit when the listing is done. A resize needs no redraw, because the next frame
-    /// is drawn at the new size.
+    /// Read the input that waits and drop it. Ctrl-C ends duit at the next check of the keys
+    /// during the listing, where ncurses raises `SIGINT` at once. A resize needs no redraw, because
+    /// the next frame is drawn at the new size.
     fn drop_keys(&mut self) {
         while self.exit.is_none() {
             match self.ui.getch(false) {
                 Ok(Some(Input::Key(_) | Input::Resize)) => {}
-                Ok(Some(Input::Interrupt)) => self.exit = Some(Ok(ExitCode::FAILURE)),
+                Ok(Some(Input::Interrupt)) => self.ui.interrupt(),
                 Ok(None) => break,
                 Err(error) => self.exit = Some(Err(input_error(&error))),
             }

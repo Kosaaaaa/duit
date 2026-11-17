@@ -5,6 +5,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::os::fd::AsFd;
 use std::panic;
+use std::process;
 use std::time::Duration;
 
 use crossterm::cursor::Show;
@@ -161,6 +162,13 @@ impl Ui {
     /// Give the terminal back, `deinit` in `ui.zig`.
     pub fn deinit(mut self) {
         restore(self.terminal.backend_mut());
+    }
+
+    /// Give the terminal back and exit with status 1, as on Ctrl-C.
+    pub fn interrupt(&mut self) -> ! {
+        restore(self.terminal.backend_mut());
+        // The SIGINT handler of ncurses restores the terminal and exits at once.
+        process::exit(1)
     }
 }
 
