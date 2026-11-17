@@ -15,8 +15,9 @@ use duit_tui::{
 use insta::assert_snapshot;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use ratatui::style::{Color, Modifier};
 use tempfile::TempDir;
+
+use crate::render;
 
 /// The JSON export that `crates/duit/tests/fixtures/generate.sh` converts with ncdu. It has every
 /// kind of entry.
@@ -224,72 +225,6 @@ fn run(
             .expect("browser draws");
     }
     render(&terminal)
-}
-
-/// The text and the attributes of the screen of `terminal`, as [`screen`] describes.
-fn render(terminal: &Terminal<TestBackend>) -> String {
-    let buffer = terminal.backend().buffer();
-    let (width, height) = (buffer.area.width, buffer.area.height);
-    let mut screen = terminal.backend().to_string();
-    for row in 0..height {
-        for column in 0..width {
-            let modifier = buffer[(column, row)].modifier;
-            screen.push(
-                match (
-                    modifier.contains(Modifier::REVERSED),
-                    modifier.contains(Modifier::BOLD),
-                ) {
-                    (true, true) => '#',
-                    (true, false) => 'R',
-                    (false, true) => 'B',
-                    (false, false) => '.',
-                },
-            );
-        }
-        screen.push('\n');
-    }
-    if buffer
-        .content
-        .iter()
-        .any(|cell| cell.fg != Color::Reset || cell.bg != Color::Reset)
-    {
-        for background in [false, true] {
-            for row in 0..height {
-                for column in 0..width {
-                    let cell = &buffer[(column, row)];
-                    screen.push(color_code(if background { cell.bg } else { cell.fg }));
-                }
-                screen.push('\n');
-            }
-        }
-    }
-    screen
-}
-
-/// One letter for each of the eight colors of ncurses, and `.` for the default color of the
-/// terminal.
-fn color_code(color: Color) -> char {
-    match color {
-        Color::Reset => '.',
-        Color::Black => 'k',
-        Color::Red => 'r',
-        Color::Green => 'g',
-        Color::Yellow => 'y',
-        Color::Blue => 'b',
-        Color::Magenta => 'm',
-        Color::Cyan => 'c',
-        Color::Gray => 'w',
-        Color::DarkGray
-        | Color::LightRed
-        | Color::LightGreen
-        | Color::LightYellow
-        | Color::LightBlue
-        | Color::LightMagenta
-        | Color::LightCyan
-        | Color::White
-        | Color::Rgb(..)
-        | Color::Indexed(_) => '?',
-    }
 }
 
 /// Replace the time of day and the offset of each timestamp in `screen`, which depend on the time

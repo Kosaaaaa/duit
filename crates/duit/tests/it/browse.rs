@@ -26,17 +26,17 @@ use crate::{binary_file, binary_frames, block_start, item, reference, render, ta
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Text in the footer of the browser, which duit draws once the tree is loaded.
-const FOOTER: &[u8] = b"Total disk usage: ";
+pub(crate) const FOOTER: &[u8] = b"Total disk usage: ";
 
 /// The sequence that leaves the alternate screen, which duit writes when it restores the terminal.
-const LEAVE_ALTERNATE_SCREEN: &[u8] = b"\x1b[?1049l";
+pub(crate) const LEAVE_ALTERNATE_SCREEN: &[u8] = b"\x1b[?1049l";
 
 /// The sequence that enters the alternate screen, which duit writes when it takes over the
 /// terminal.
-const ENTER_ALTERNATE_SCREEN: &[u8] = b"\x1b[?1049h";
+pub(crate) const ENTER_ALTERNATE_SCREEN: &[u8] = b"\x1b[?1049h";
 
 /// A directory with a copy of the golden files, and a JSON export with a syntax error.
-fn fixture() -> TempDir {
+pub(crate) fn fixture() -> TempDir {
     let directory = TempDir::new().expect("temporary directory is created");
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     for entry in fs::read_dir(fixtures).expect("fixtures are listed") {
@@ -54,7 +54,7 @@ fn fixture() -> TempDir {
 
 /// `--quit-after-scan` scans or imports into memory and exits without opening the browser, so it
 /// needs no terminal. A binary export is only opened, not read. The cases pass `-0` or `-1`,
-/// because duit shows no full-screen progress yet, and ncdu opens it on the terminal without them.
+/// because the full-screen progress of `-2` would take over the terminal.
 /// With `-1`, the tree in memory draws the line that it counts hard links on, even after an error
 /// at the root, and erases it only on a terminal.
 #[test]
@@ -196,7 +196,7 @@ fn errors() {
 /// A pseudo-terminal of 80 columns and 24 rows: the side that the test reads and writes, and the
 /// terminal side that duit runs on.
 pub(crate) struct Pty {
-    master: File,
+    pub(crate) master: File,
     pub(crate) terminal: File,
 }
 
@@ -255,7 +255,7 @@ pub(crate) fn spawn(
 
 /// Run duit with `arguments` in `directory` on the terminal of `pty`, as its standard input,
 /// output, and error.
-fn spawn_on(pty: &Pty, directory: &Path, arguments: &[&str]) -> Child {
+pub(crate) fn spawn_on(pty: &Pty, directory: &Path, arguments: &[&str]) -> Child {
     spawn_command_on(
         pty,
         directory,
@@ -609,19 +609,25 @@ fn import_from_stdin() {
 }
 
 /// Without a controlling terminal, and with standard input that is not a terminal, duit cannot open
-/// `/dev/tty` to draw the browser. ncdu writes the message of `strerror`, which differs between
-/// systems, also for a binary export, which is read once the terminal is open.
+/// `/dev/tty` to draw the progress of `-2`, or the browser of a binary export, which is read once
+/// the terminal is open. ncdu writes the message of `strerror`, which differs between systems.
+/// `--quit-after-scan` lets a scan run without a terminal on standard input, and its progress
+/// fails to open `/dev/tty` too.
 #[test]
 fn no_terminal() {
     let directory = fixture();
     let mut rendered = String::new();
-    for arguments in [["-f", "tree.json"], ["-f", "tree.ncdu"]] {
+    for arguments in [
+        &["-f", "tree.json"][..],
+        &["-f", "tree.ncdu"],
+        &["--quit-after-scan", "."],
+    ] {
         let mut command = Command::new(env!("CARGO_BIN_EXE_duit"));
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let child = spawn(directory.path(), &arguments, &mut command, false);
+        let child = spawn(directory.path(), arguments, &mut command, false);
         let output = child.wait_with_output().expect("duit exits");
         let _ = writeln!(
             rendered,
@@ -642,6 +648,13 @@ fn no_terminal() {
     ^[[J^[[JError opening /dev/tty: [ENXIO].
 
     $ duit -f tree.ncdu
+    exit_code: 1
+    ----- stdout -----
+
+    ----- stderr -----
+    ^[[J^[[JError opening /dev/tty: [ENXIO].
+
+    $ duit --quit-after-scan .
     exit_code: 1
     ----- stdout -----
 

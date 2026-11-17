@@ -23,6 +23,8 @@ pub struct Progress {
     path: Vec<u8>,
     /// The length of `path` before each open directory was added to it, from the root.
     lengths: Vec<usize>,
+    /// The path of the last entry that could not be read, `last_error` in `sink.zig`.
+    last_error: Option<Vec<u8>>,
 }
 
 impl Progress {
@@ -43,12 +45,30 @@ impl Progress {
         (!self.lengths.is_empty()).then_some(self.path.as_slice())
     }
 
+    /// The path of the last entry that could not be read: a directory that failed to read, or an
+    /// entry that failed to `stat`.
+    pub fn last_error(&self) -> Option<&[u8]> {
+        self.last_error.as_deref()
+    }
+
     fn enter(&mut self, name: &[u8]) {
         self.lengths.push(self.path.len());
         if self.lengths.len() > 1 && !self.path.ends_with(b"/") {
             self.path.push(b'/');
         }
         self.path.extend_from_slice(name);
+    }
+
+    /// Store the path of the open directory, joined with `name` if it is given, as the last error.
+    fn set_error(&mut self, name: Option<&[u8]>) {
+        let mut path = self.path.clone();
+        if let Some(name) = name {
+            if !path.ends_with(b"/") {
+                path.push(b'/');
+            }
+            path.extend_from_slice(name);
+        }
+        self.last_error = Some(path);
     }
 
     fn leave(&mut self) {
@@ -60,16 +80,21 @@ impl Progress {
 
 /// A [`Sink`] in front of another that keeps the [`Progress`] of the producer, and passes it to
 /// `handle_event` where ncdu calls `main.handleEvent`, as `Dir` and `Thread` in `sink.zig` count
-/// what passes through them.
+/// what passes through them. An error of `handle_event` stops the producer, which the sink returns
+/// it to, as a key that aborts the scan in `keyInput` does.
 pub struct ProgressSink<'a, S> {
     sink: S,
     producer: Producer,
     progress: Progress,
-    handle_event: &'a mut dyn FnMut(&Progress),
+    handle_event: &'a mut dyn FnMut(&Progress) -> io::Result<()>,
 }
 
 impl<'a, S: Sink> ProgressSink<'a, S> {
-    pub fn new(sink: S, producer: Producer, handle_event: &'a mut dyn FnMut(&Progress)) -> Self {
+    pub fn new(
+        sink: S,
+        producer: Producer,
+        handle_event: &'a mut dyn FnMut(&Progress) -> io::Result<()>,
+    ) -> Self {
         Self {
             sink,
             producer,
@@ -84,14 +109,15 @@ impl<'a, S: Sink> ProgressSink<'a, S> {
     }
 
     /// Handle an event after an item, if the producer handles one there.
-    fn item_done(&mut self) {
+    fn item_done(&mut self) -> io::Result<()> {
         let due = match self.producer {
             Producer::Scan => true,
             Producer::Import => self.progress.files & 0b100_0001 == 0,
         };
         if due {
-            (self.handle_event)(&self.progress);
+            (self.handle_event)(&self.progress)?;
         }
+        Ok(())
     }
 
     fn add(&mut self, bytes: u64) {
@@ -107,7 +133,7 @@ impl<S: Sink> Sink for ProgressSink<'_, S> {
         let root = self.sink.create_root(path, stat)?;
         self.progress.enter(path);
         match self.producer {
-            Producer::Scan => (self.handle_event)(&self.progress),
+            Producer::Scan => (self.handle_event)(&self.progress)?,
             Producer::Import => {}
         }
         Ok(root)
@@ -120,9 +146,12 @@ impl<S: Sink> Sink for ProgressSink<'_, S> {
         special: Special,
     ) -> io::Result<()> {
         self.sink.add_special(directory, name, special)?;
+        match special {
+            Special::ReadError => self.progress.set_error(Some(name)),
+            Special::Pattern | Special::OtherFilesystem | Special::KernelFilesystem => {}
+        }
         self.add(0);
-        self.item_done();
-        Ok(())
+        self.item_done()
     }
 
     fn add_stat(
@@ -133,8 +162,7 @@ impl<S: Sink> Sink for ProgressSink<'_, S> {
     ) -> io::Result<()> {
         self.sink.add_stat(directory, name, stat)?;
         self.add(stat.blocks.saturating_mul(512) / u64::from(stat.link_count.max(1)));
-        self.item_done();
-        Ok(())
+        self.item_done()
     }
 
     /// A directory is done after its entries, so no event is handled here. A scan reads the first
@@ -151,8 +179,11 @@ impl<S: Sink> Sink for ProgressSink<'_, S> {
         Ok(directory)
     }
 
+    /// Every producer marks the innermost open directory, whose path is the last error then.
     fn set_read_error(&mut self, directory: &mut S::Directory) -> io::Result<()> {
-        self.sink.set_read_error(directory)
+        self.sink.set_read_error(directory)?;
+        self.progress.set_error(None);
+        Ok(())
     }
 
     /// A scan handles no event after the root, whose walk ends there.
@@ -165,10 +196,9 @@ impl<S: Sink> Sink for ProgressSink<'_, S> {
         self.sink.finish_directory(directory, parent)?;
         self.progress.leave();
         match self.producer {
-            Producer::Scan if is_root => {}
+            Producer::Scan if is_root => Ok(()),
             Producer::Scan | Producer::Import => self.item_done(),
         }
-        Ok(())
     }
 }
 
@@ -191,6 +221,7 @@ mod tests {
                 .directory()
                 .map(|directory| String::from_utf8_lossy(directory).into_owned());
             events.push((progress.files(), progress.bytes(), directory));
+            Ok(())
         };
         let mut sink = ProgressSink::new(MemorySink::new(false), producer, &mut record);
         build(&mut sink).expect("entries are added");
@@ -265,6 +296,65 @@ mod tests {
         assert_eq!(files, expected);
         assert_eq!(events.first(), Some(&(2, 0, Some("root".to_owned()))));
         assert_eq!(events.last(), Some(&(130, 0, None)));
+    }
+
+    /// The last read error names the directory that failed to read, unlike ncdu, which names the
+    /// root, or the entry that failed in its directory, as `setReadError` and `addSpecial` in
+    /// `sink.zig` store `last_error`. Other special entries leave it as it is.
+    #[test]
+    fn last_error() {
+        let mut errors = Vec::new();
+        let mut record = |progress: &Progress| {
+            errors.push(
+                progress
+                    .last_error()
+                    .map(|path| String::from_utf8_lossy(path).into_owned()),
+            );
+            Ok(())
+        };
+        let mut sink = ProgressSink::new(MemorySink::new(false), Producer::Scan, &mut record);
+        let built = (|| -> io::Result<()> {
+            let mut root = sink.create_root(b"/", &directory())?;
+            sink.add_special(&mut root, b"unreadable", Special::ReadError)?;
+            let mut child = sink.add_directory(&mut root, b"child", &directory())?;
+            sink.set_read_error(&mut child)?;
+            sink.add_special(&mut child, b"excluded", Special::Pattern)?;
+            sink.finish_directory(child, Some(&mut root))?;
+            sink.add_special(&mut root, b"other", Special::OtherFilesystem)?;
+            sink.finish_directory(root, None)
+        })();
+        built.expect("entries are added");
+        drop(sink);
+        assert_eq!(
+            errors,
+            [
+                None,
+                Some("/unreadable".to_owned()),
+                Some("/child".to_owned()),
+                Some("/child".to_owned()),
+                Some("/child".to_owned()),
+            ]
+        );
+    }
+
+    /// An error of the event handler is returned to the producer.
+    #[test]
+    fn handle_event_error() {
+        let mut fail = |progress: &Progress| {
+            if progress.files() == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::other("aborted"))
+            }
+        };
+        let mut sink = ProgressSink::new(MemorySink::new(false), Producer::Scan, &mut fail);
+        let mut root = sink
+            .create_root(b"root", &directory())
+            .expect("root is added");
+        let error = sink
+            .add_special(&mut root, b"excluded", Special::Pattern)
+            .expect_err("event handler fails");
+        assert_eq!(error.to_string(), "aborted");
     }
 
     /// The bytes saturate, as `+|` and `*|` do in `sink.zig`.

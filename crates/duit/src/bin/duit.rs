@@ -22,7 +22,8 @@ use duit_format::{
 use duit_model::{MemorySink, Producer, Progress, ProgressSink, Sink, Tree, TreeError};
 use duit_scan::{ScanError, ScanOptions, scan};
 use duit_tui::{
-    Action, Browser, BrowserOptions, Console, Deletion, InitError, Input, Loading, ScanState, Ui,
+    Action, Browser, BrowserOptions, Console, Deletion, InitError, Input, Loading, ScanScreen,
+    ScanState, Ui,
 };
 
 /// The terminal sequence that clears from the cursor to the end of the screen. ncdu writes it to
@@ -215,7 +216,16 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
             Some(_) => ScanUi::Off,
             None => ScanUi::Full,
         });
-    let mut progress = ScanProgress::new(scan_ui, config.update_delay, config.browser.si);
+    // `nc_tty` in `main.zig`: the full-screen interface draws on `/dev/tty` when standard input or
+    // standard output is not for the terminal.
+    let open_tty = !io::stdin().is_terminal()
+        || export_json
+            .or(export_binary)
+            .is_some_and(|path| path == b"-");
+    if let Some(separator) = thousands_separator() {
+        config.browser.thousands_separator = separator;
+    }
+    let mut progress = ScanProgress::new(scan_ui, config.update_delay, &config.browser, open_tty);
 
     let Some(export_path) = export_json.or(export_binary) else {
         let import_input = import_file.map(open_import).transpose()?;
@@ -226,9 +236,6 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
         options.can_delete = config.can_delete.unwrap_or(!imported);
         options.can_refresh = config.can_refresh.unwrap_or(!imported);
         options.extended = config.extended;
-        if let Some(separator) = thousands_separator() {
-            options.thousands_separator = separator;
-        }
         if let Some(ImportInput::Binary(reader)) = import_input {
             // ncdu opens a binary export without reading it, because the browser reads it from
             // the file, and writes the clear as it returns or as `ui.init` takes over the
@@ -237,14 +244,17 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
             if quit_after_scan {
                 return Ok(ExitCode::SUCCESS);
             }
-            return browse(options, config.update_delay, |options, loading| {
+            return browse(None, options, config.update_delay, |options, loading| {
                 Browser::open(reader, options, loading)
             });
         }
         let memory = MemorySink::new(config.extended);
         // `fill` ends with the clear that ncdu writes when it returns after the scan, or when
         // `ui.init` takes over the terminal.
-        let tree = fill(memory, import_input, scan_directory, &config, &mut progress)?;
+        let tree = match fill(memory, import_input, scan_directory, &config, &mut progress) {
+            Ok(tree) => tree,
+            Err(exit) => return exit,
+        };
         if quit_after_scan {
             return Ok(ExitCode::SUCCESS);
         }
@@ -252,9 +262,12 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
         let Some(root) = tree.root() else {
             return Ok(ExitCode::SUCCESS);
         };
-        return browse(options, config.update_delay, |options, loading| {
-            Ok(Some((Browser::new(&tree, root, options, loading), tree)))
-        });
+        return browse(
+            progress.ui.take(),
+            options,
+            config.update_delay,
+            |options, loading| Ok(Some((Browser::new(&tree, root, options, loading), tree))),
+        );
     };
 
     let out: Box<dyn Write> = if export_path == b"-" {
@@ -282,7 +295,7 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
         .map_err(|error| writing(&error))?;
         let import_input = import_file.map(open_import).transpose()?;
         return fill(export, import_input, scan_directory, &config, &mut progress)
-            .map(|()| ExitCode::SUCCESS);
+            .map_or_else(|exit| exit, |()| Ok(ExitCode::SUCCESS));
     }
     // As in ncdu, the export file is created before the import is read.
     let import_input = import_file.map(open_import).transpose()?;
@@ -296,7 +309,8 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
         config.compress.then_some(config.compress_level),
     )
     .map_err(|error| writing(&error))?;
-    fill(export, import_input, scan_directory, &config, &mut progress).map(|()| ExitCode::SUCCESS)
+    fill(export, import_input, scan_directory, &config, &mut progress)
+        .map_or_else(|exit| exit, |()| Ok(ExitCode::SUCCESS))
 }
 
 /// Run the browser that `open` opens, with the tree it reads, until the user quits, the loop at
@@ -304,8 +318,9 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
 /// waiting before it draws again. As in ncdu, the browser is opened once the terminal is, so that
 /// the root of a binary export is read then, and `open` gives `None` for a root that is not a
 /// directory. While the browser lists a directory, [`Load`] draws the loading screen after
-/// `update_delay`.
+/// `update_delay`. The browser draws on `ui` if the progress of `-2` took over the terminal.
 fn browse(
+    ui: Option<Ui>,
     mut options: BrowserOptions,
     update_delay: Duration,
     open: impl FnOnce(
@@ -313,7 +328,10 @@ fn browse(
         &mut dyn FnMut(&Loading<'_>),
     ) -> Result<Option<(Browser, Tree)>, BinaryImportError>,
 ) -> Result<ExitCode, Vec<u8>> {
-    let mut ui = Ui::init(!io::stdin().is_terminal()).map_err(init_error)?;
+    let mut ui = match ui {
+        Some(ui) => ui,
+        None => Ui::init(!io::stdin().is_terminal()).map_err(init_error)?,
+    };
     let mut load = Load::new(&mut ui, update_delay);
     let opened = open(&options, &mut |loading| load.report(loading));
     if let Some(exit) = load.finish() {
@@ -611,14 +629,15 @@ enum ImportInput {
 }
 
 /// Write the import of `import_input`, or else the scan of `scan_directory`, into `consumer`, and
-/// show its `progress`.
+/// show its `progress`. An error is how duit ends instead: with a status once the user aborts, or
+/// with a message.
 fn fill<C: Consumer>(
     consumer: C,
     import_input: Option<ImportInput>,
     scan_directory: Option<&[u8]>,
     config: &Config,
     progress: &mut ScanProgress,
-) -> Result<C::Output, Vec<u8>> {
+) -> Result<C::Output, Result<ExitCode, Vec<u8>>> {
     let mut report = |state: &Progress| progress.report(state);
     if let Some(import_input) = import_input {
         let mut sink = ProgressSink::new(consumer, Producer::Import, &mut report);
@@ -640,13 +659,18 @@ fn fill<C: Consumer>(
             }
         };
         let consumer = sink.into_inner();
-        // As in ncdu, which stops without flushing its buffer, a failed export writes nothing more.
+        // As in ncdu, which stops without flushing its buffer, a failed or aborted export writes
+        // nothing more.
+        if let Some(exit) = progress.exit.take() {
+            consumer.discard();
+            return Err(exit);
+        }
         if let Some(message) = failure {
             consumer.discard();
-            return Err(message);
+            return Err(Err(message));
         }
         let output = progress.finish(consumer)?;
-        let _ = io::stderr().write_all(CLEAR_TO_END);
+        progress.clear();
         return Ok(output);
     }
 
@@ -657,7 +681,7 @@ fn fill<C: Consumer>(
         |path| path.into_os_string().into_vec(),
     );
     // Arguments are C strings and cannot hold a NUL byte.
-    let path = CString::new(path).map_err(|_| opening_directory("Unexpected"))?;
+    let path = CString::new(path).map_err(|_| Err(opening_directory("Unexpected")))?;
     let options = ScanOptions {
         same_filesystem: config.same_filesystem,
         follow_symlinks: config.follow_symlinks,
@@ -667,55 +691,84 @@ fn fill<C: Consumer>(
     let mut sink = ProgressSink::new(consumer, Producer::Scan, &mut report);
     let scanned = scan(&mut sink, &path, options, &config.exclude);
     let consumer = sink.into_inner();
+    if let Some(exit) = progress.exit.take() {
+        consumer.discard();
+        return Err(exit);
+    }
     // A failure at the root still ends the export, as in ncdu.
     let root_error = match scanned {
         Ok(()) => None,
         Err(ScanError::Stat(error)) => Some(stat_error(&error)),
         Err(ScanError::Open(error)) => Some(open_error(&error)),
-        Err(ScanError::Sink(error)) => return Err(writing(&error)),
+        Err(ScanError::Sink(error)) => return Err(Err(writing(&error))),
     };
     let output = progress.finish(consumer)?;
     if let Some(description) = root_error {
-        return Err(opening_directory(description));
+        return Err(Err(opening_directory(description)));
     }
-    let _ = io::stderr().write_all(CLEAR_TO_END);
+    progress.clear();
     Ok(output)
 }
 
 /// The progress of a scan or an import, which `handleEvent` in `main.zig` draws with `draw` in
 /// `sink.zig` once `update_delay` has passed since it last drew, or when a draw is forced. The
 /// timer starts before the export file is opened, as in ncdu.
+///
+/// With `-2`, the first draw takes over the terminal, as `ui.init` in `ui.zig` does, and the
+/// browser keeps it. Dropping the progress restores a terminal that the browser did not take.
 struct ScanProgress {
     scan_ui: ScanUi,
     update_delay: Duration,
-    /// Whether sizes are in SI units, as with `--si`.
-    si: bool,
+    /// The options that the screen of `-2` draws with, and that `-1` takes `--si` from.
+    options: BrowserOptions,
     drawn: Instant,
     console: Console,
+    screen: ScanScreen,
+    /// Whether the screen of `-2` draws on `/dev/tty`, as [`Ui::init`] takes it.
+    open_tty: bool,
+    ui: Option<Ui>,
+    /// How duit ends once the user aborted the scan or the import, after Ctrl-C, or after the
+    /// screen of `-2` failed.
+    exit: Option<Result<ExitCode, Vec<u8>>>,
 }
 
 impl ScanProgress {
-    fn new(scan_ui: ScanUi, update_delay: Duration, si: bool) -> Self {
+    fn new(
+        scan_ui: ScanUi,
+        update_delay: Duration,
+        options: &BrowserOptions,
+        open_tty: bool,
+    ) -> Self {
         // As Zig's `File.supportsAnsiEscapeCodes` decides for standard error.
         let ansi =
             io::stderr().is_terminal() && env::var_os("TERM").is_none_or(|term| term != "dumb");
         Self {
             scan_ui,
             update_delay,
-            si,
+            options: options.clone(),
             drawn: Instant::now(),
             console: Console::new(ansi),
+            screen: ScanScreen::new(update_delay),
+            open_tty,
+            ui: None,
+            exit: None,
         }
     }
 
-    /// Handle an event of the scan or the import, which has reported `progress`.
-    fn report(&mut self, progress: &Progress) {
+    /// Handle an event of the scan or the import, which has reported `progress`, and fail to stop
+    /// it once duit is to end.
+    fn report(&mut self, progress: &Progress) -> io::Result<()> {
         let state = ScanState::Running {
             files: progress.files(),
             bytes: progress.bytes(),
             directory: progress.directory(),
+            last_error: progress.last_error(),
         };
         self.handle_event(&state, false);
+        match self.exit {
+            Some(_) => Err(io::Error::other("duit ends")),
+            None => Ok(()),
+        }
     }
 
     fn handle_event(&mut self, state: &ScanState<'_>, force: bool) {
@@ -724,27 +777,87 @@ impl ScanProgress {
         }
         match self.scan_ui {
             ScanUi::Line => {
-                let _ = io::stderr().write_all(&self.console.draw(state, self.si));
+                let _ = io::stderr().write_all(&self.console.draw(state, self.options.si));
             }
-            // shortcut: the full-screen progress of `-2` is not drawn yet, so it shows nothing, as
-            // `-0` does. Draw it once `drawProgress` in `sink.zig` is ported.
-            ScanUi::Off | ScanUi::Full => {}
+            ScanUi::Full => self.draw_full(state),
+            ScanUi::Off => {}
         }
         self.drawn = Instant::now();
     }
 
+    /// Draw `state` on the full screen, taking over the terminal first, and handle the keys that
+    /// wait. `q` aborts the scan or the import with status 0, as `ui.quit` in `ui.zig` does.
+    fn draw_full(&mut self, state: &ScanState<'_>) {
+        let Self {
+            options,
+            screen,
+            open_tty,
+            ui,
+            exit,
+            ..
+        } = self;
+        let ui = if let Some(ui) = ui {
+            ui
+        } else {
+            // The clear of `ui.init`, which ncdu writes before it opens the terminal.
+            let _ = io::stderr().write_all(CLEAR_TO_END);
+            match Ui::init(*open_tty) {
+                Ok(new) => ui.insert(new),
+                Err(error) => {
+                    *exit = Some(Err(init_error(error)));
+                    return;
+                }
+            }
+        };
+        ui.draw(|frame| screen.draw(frame, state, options));
+        // shortcut: keys are read only when the screen is drawn, because `getch` without `block`
+        // waits up to 1 ms. Read them at each event once it returns at once.
+        while exit.is_none() {
+            match ui.getch(false) {
+                Ok(Some(Input::Key(key))) => match screen.key_input(state, key, options) {
+                    Some(Action::Quit) => *exit = Some(Ok(ExitCode::SUCCESS)),
+                    Some(Action::Browse | Action::Shell | Action::Delete) | None => {}
+                },
+                Ok(Some(Input::Resize)) => ui.draw(|frame| screen.draw(frame, state, options)),
+                Ok(Some(Input::Interrupt)) => *exit = Some(Ok(ExitCode::FAILURE)),
+                Ok(None) => break,
+                Err(error) => *exit = Some(Err(input_error(&error))),
+            }
+        }
+    }
+
     /// Complete `consumer` once the scan or the import is done, and erase the progress of `-1`, as
     /// `done` in `sink.zig` does.
-    fn finish<C: Consumer>(&mut self, consumer: C) -> Result<C::Output, Vec<u8>> {
+    fn finish<C: Consumer>(&mut self, consumer: C) -> Result<C::Output, Result<ExitCode, Vec<u8>>> {
         if C::COUNTS_HARD_LINKS {
             self.handle_event(&ScanState::CountingHardLinks, true);
+            if let Some(exit) = self.exit.take() {
+                consumer.discard();
+                return Err(exit);
+            }
         }
-        let output = consumer.finish().map_err(|error| writing(&error))?;
+        let output = consumer.finish().map_err(|error| Err(writing(&error)))?;
         match self.scan_ui {
             ScanUi::Line => self.handle_event(&ScanState::Done, true),
             ScanUi::Off | ScanUi::Full => {}
         }
         Ok(output)
+    }
+
+    /// Write the clear that ncdu writes at the end of a scan, as `ui.init` takes over the
+    /// terminal or `ui.deinit` gives it back, when the progress did not take it over.
+    fn clear(&self) {
+        if self.ui.is_none() {
+            let _ = io::stderr().write_all(CLEAR_TO_END);
+        }
+    }
+}
+
+impl Drop for ScanProgress {
+    fn drop(&mut self) {
+        if let Some(ui) = self.ui.take() {
+            ui.deinit();
+        }
     }
 }
 
