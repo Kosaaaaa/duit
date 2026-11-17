@@ -74,6 +74,10 @@ pub struct BrowserOptions {
     /// Deleting is enabled. The header marks a tree that is not imported and cannot be deleted
     /// from as read-only.
     pub can_delete: bool,
+    /// The shell of `b` is enabled.
+    pub can_shell: bool,
+    /// Refreshing with `r` is enabled.
+    pub can_refresh: bool,
     /// The separator between groups of three digits in full numbers.
     pub thousands_separator: String,
     /// The tree has extended information, `-e`, which the mtime keys need.
@@ -102,6 +106,8 @@ impl Default for BrowserOptions {
             sort_natural: true,
             imported: false,
             can_delete: true,
+            can_shell: true,
+            can_refresh: true,
             thousands_separator: ",".to_string(),
             extended: false,
             confirm_quit: false,
@@ -1060,20 +1066,42 @@ impl Browser {
                 }
             }
             Key::Char('?') => self.state = State::Help,
-            // Refresh and delete, which are not ported yet for a tree in memory, and shell.
+            // Refresh, delete, and shell, whose actions are not ported yet.
             Key::Char('r') => {
                 if self.reads_file() {
                     self.message =
                         Some(&["Refresh feature is not available when reading from file."]);
+                } else if !options.can_refresh && options.imported {
+                    self.message = Some(&[
+                        "Refresh feature disabled.",
+                        "Re-run with --enable-refresh to enable this option.",
+                    ]);
+                } else if !options.can_refresh {
+                    self.message = Some(&["Directory refresh feature disabled."]);
                 }
             }
+            Key::Char('b') => {
+                if !options.can_shell {
+                    self.message = Some(&[
+                        "Shell feature disabled.",
+                        "Re-run with --enable-shell to enable this option.",
+                    ]);
+                }
+            }
+            Key::Char('d') if self.items.is_empty() => {}
             Key::Char('d') => {
-                if !self.items.is_empty() && self.reads_file() {
+                if self.reads_file() {
                     self.message =
                         Some(&["File deletion is not available when reading from file."]);
+                } else if !options.can_delete && options.imported {
+                    self.message = Some(&[
+                        "File deletion is disabled.",
+                        "Re-run with --enable-delete to enable this option.",
+                    ]);
+                } else if !options.can_delete {
+                    self.message = Some(&["File deletion is disabled."]);
                 }
             }
-            Key::Char('b') => {}
 
             Key::Char('n') => {
                 self.sort_toggle(tree, options, SortColumn::Name, SortOrder::Ascending);
