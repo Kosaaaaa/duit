@@ -140,6 +140,17 @@ pub struct EntryExtended {
     pub latest_mtime: u64,
 }
 
+impl EntryExtended {
+    /// The extended information to keep for an entry with `stat`, with `-e` (`extended`), and
+    /// when `stat` has any.
+    pub fn of(stat: &Stat, extended: bool) -> Option<Self> {
+        (extended && stat.extended != Extended::default()).then(|| Self {
+            extended: stat.extended,
+            latest_mtime: stat.extended.mtime.unwrap_or(0),
+        })
+    }
+}
+
 /// A directory tree in memory. Entries refer to each other by identifier, and each identifier is
 /// only valid for the tree that returned it.
 ///

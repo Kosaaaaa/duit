@@ -291,7 +291,7 @@ impl<R: Read + Seek> BinaryReader<R> {
                 ItemType::Stat(EntryType::HardLink) => FileKind::HardLink,
                 ItemType::Special(special) => FileKind::Special(special),
             };
-            let entry_extended = listed_extended(item, extended);
+            let entry_extended = EntryExtended::of(&item.stat, extended);
             tree.create(id, kind, &item.stat, entry_extended, &item.name);
         }
         Ok(Some(Listing {
@@ -638,7 +638,7 @@ fn add_listed_directory(
     extended: bool,
 ) -> Result<DirectoryId, TreeError> {
     let device = tree.device_id(item.stat.device)?;
-    let entry_extended = listed_extended(item, extended);
+    let entry_extended = EntryExtended::of(&item.stat, extended);
     let id = tree.create_directory(parent, device, &item.stat, entry_extended, &item.name);
     let directory = tree.directory_mut(id);
     directory.items = item.items;
@@ -647,16 +647,6 @@ fn add_listed_directory(
     directory.read_error = item.read_error;
     directory.sub_error = item.sub_error;
     Ok(id)
-}
-
-/// The extended information of `item` that the browser keeps with `extended`: none when the item
-/// has none. A directory has its own mtime, as the export stores it.
-fn listed_extended(item: &ListedItem, extended: bool) -> Option<EntryExtended> {
-    let fields = item.stat.extended;
-    (extended && fields != Extended::default()).then(|| EntryExtended {
-        extended: fields,
-        latest_mtime: fields.mtime.unwrap_or(0),
-    })
 }
 
 /// The item type of the value of the `type` field. An unknown type is a pattern if it is negative
