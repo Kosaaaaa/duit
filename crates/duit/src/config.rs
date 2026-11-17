@@ -61,6 +61,10 @@ pub struct Config {
     pub scan_ui: Option<ScanUi>,
     /// The options of the browser, of which the config sets the listing, the columns, and
     /// `--confirm-quit`.
+    ///
+    /// `imported`, `can_delete`, `thousands_separator`, and `extended` describe the session, not
+    /// the config. They keep their defaults here until `run` sets them, from `can_delete` and
+    /// `extended` above among others.
     pub browser: BrowserOptions,
     pub color: Color,
     pub can_delete: Option<bool>,
