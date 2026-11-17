@@ -151,11 +151,17 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
   (`bin_export.zig:117-118,136`), but does not read it back (`bin_reader.zig:97`). Several entries
   of the index can then point at one block, and each of them costs a decompression of the same
   frame. duit stops with `Error reading item X from file` at such a block, which ncdu never writes.
-- **Binary import: the block cache has ncdu's size, and there is no limit on the work.** As in ncdu
-  (`bin_reader.zig:44,72-112`), duit keeps the 8 data blocks that it decompressed last. Items whose
-  references rotate through more blocks than that decompress a block at each read, and a block can
-  decompress to almost 16 MiB: a 12 KB export of 9 blocks and 9000 items takes about 50 s on a debug
-  build, and 6 s in ncdu. A limit on that work would be an error that ncdu does not have.
+- **Binary import and browsing: the block cache has ncdu's size, and there is no limit on the
+  work.** As in ncdu (`bin_reader.zig:44,72-112`), duit keeps the 8 data blocks that it decompressed
+  last. Items whose references rotate through more blocks than that decompress a block at each read,
+  and a block can decompress to almost 16 MiB: a 12 KB export of 9 blocks and 9000 items takes about
+  50 s on a debug build, and 6 s in ncdu. A limit on that work would be an error that ncdu does not
+  have. The browser reads through the same cache when it opens a directory (`read_directory`), so a
+  crafted export costs that work at each open. No budget separates such a file from one that ncdu
+  writes: with `-t` above 8, each scan thread writes the entries of a shared parent into a block of
+  its own (`bin_export.zig:394`), so a directory also rotates through more than 8 blocks, and
+  `--export-block-size 16000` makes each of those blocks almost 16 MiB. Revisit this in M5, when
+  duit writes such exports with `-t` itself.
 - **Panics: the terminal is restored from the panic hook.** The release profile uses
   `panic = "abort"`, so `Drop` guards do not run.
 - **`unsafe`: `#[expect(unsafe_code)]` plus a `SAFETY` comment.** The workspace lint warns on
