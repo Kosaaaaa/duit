@@ -231,6 +231,7 @@ panic. Done.
   info, help, quit, colors, and every display flag.
 
 Done when the snapshot tests pass and a manual side-by-side checklist against ncdu is complete.
+Done.
 
 ### M4: Actions
 
