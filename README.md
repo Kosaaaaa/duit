@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.98.0-orange.svg?logo=rust)](Cargo.toml)
 [![ncdu](https://img.shields.io/badge/ncdu-2.9.2-informational.svg)](https://dev.yorhel.nl/ncdu)
-[![Status: M2 done](https://img.shields.io/badge/status-M2%20done-yellow.svg)](PLAN.md)
+[![Status: M3 done](https://img.shields.io/badge/status-M3%20done-yellow.svg)](PLAN.md)
 
 A disk usage analyzer with a terminal interface, written in Rust. duit aims to be a drop-in
 replacement for [ncdu](https://dev.yorhel.nl/ncdu) 2: the same flags, the same keys, and the same
@@ -12,9 +12,11 @@ JSON and binary export formats.
 
 ## 🚧 Status
 
-M2 is done: `duit -o- DIR` scans a directory and writes ncdu's JSON export, `-c` compresses it, and
-`-O` writes the binary export. `-f` imports any of the three, so duit also converts between formats.
-There is no UI and no release yet. See [PLAN.md](PLAN.md) for the architecture and the milestones.
+M3 is done: `duit DIR` scans a directory and opens a read-only browser over it, and `duit -f FILE`
+opens the same browser over a JSON export or reads a binary export straight from the file. `-o-`
+still writes ncdu's JSON export, `-c` compresses it, and `-O` writes the binary export, so with `-f`
+duit also converts between formats. Scan progress, refresh, delete, and shell come in M4. There is
+no release yet. See [PLAN.md](PLAN.md) for the architecture and the milestones.
 
 ## 🤝 Contributing
 
