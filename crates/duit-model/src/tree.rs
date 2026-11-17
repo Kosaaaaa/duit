@@ -486,7 +486,7 @@ impl Tree {
         let link_count = self.links[link.0].link_count;
         let mut found: u32 = 0;
         let mut inconsistent = false;
-        let mut directories: HashMap<DirectoryId, u32> = HashMap::new();
+        let mut parents: HashMap<DirectoryId, u32> = HashMap::new();
         let mut current = link;
         loop {
             let data = &mut self.links[current.0];
@@ -496,13 +496,38 @@ impl Tree {
                 inconsistent = true;
             }
             current = data.next;
-            let mut parent = Some(data.parent);
-            while let Some(directory) = parent {
-                *directories.entry(directory).or_insert(0) += 1;
-                parent = self.directories[directory.0].parent;
-            }
+            let count = parents.entry(data.parent).or_insert(0);
+            *count = count.saturating_add(1);
             if current == link {
                 break;
+            }
+        }
+        // Visit every directory above the links once, as an import controls both the number of
+        // links and the depth. A walk up stops at a directory that an earlier walk reached, so the
+        // reached directories always include their ancestors. Reversing each walk then lists every
+        // directory after the directories above it.
+        let mut directories: HashMap<DirectoryId, u32> = HashMap::new();
+        let mut order: Vec<DirectoryId> = Vec::new();
+        for &start in parents.keys() {
+            let walk_start = order.len();
+            let mut parent = Some(start);
+            while let Some(directory) = parent
+                && !directories.contains_key(&directory)
+            {
+                directories.insert(directory, parents.get(&directory).copied().unwrap_or(0));
+                order.push(directory);
+                parent = self.directories[directory.0].parent;
+            }
+            order[walk_start..].reverse();
+        }
+        // A directory counts its own links and those below it, so add each count to the parent
+        // after the directories below it have added theirs.
+        for &directory in order.iter().rev() {
+            if let Some(parent) = self.directories[directory.0].parent
+                && let Some(&count) = directories.get(&directory)
+                && let Some(total) = directories.get_mut(&parent)
+            {
+                *total = total.saturating_add(count);
             }
         }
         let link_count = if !inconsistent && link_count >= found {

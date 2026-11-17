@@ -298,6 +298,32 @@ fn inconsistent_link_count() {
     "#);
 }
 
+/// A directory counts the links of an inode in the directories below it, however deep, so only
+/// the directory that holds one of the two links shares its size.
+#[test]
+fn nested_links() {
+    let tree = build(false, |sink| {
+        let mut root = sink.create_root(b"/root", &directory(1))?;
+        let mut outer = sink.add_directory(&mut root, b"outer", &directory(1))?;
+        let mut middle = sink.add_directory(&mut outer, b"middle", &directory(1))?;
+        let mut inner = sink.add_directory(&mut middle, b"inner", &directory(1))?;
+        sink.add_stat(&mut inner, b"deep", &link(1, 10))?;
+        sink.finish_directory(inner, Some(&mut middle))?;
+        sink.add_stat(&mut middle, b"shallow", &link(1, 10))?;
+        sink.finish_directory(middle, Some(&mut outer))?;
+        sink.finish_directory(outer, Some(&mut root))?;
+        sink.finish_directory(root, None)
+    });
+    assert_snapshot!(render(&tree), @r#"
+    "/root" directory {asize: 16394, blocks: 33, items: 5, dev: 1}
+      "outer" directory {asize: 12298, blocks: 25, items: 4, dev: 1}
+        "middle" directory {asize: 8202, blocks: 17, items: 3, dev: 1}
+          "shallow" hard link {asize: 10, blocks: 1, ino: 1, nlink: 2}
+          "inner" directory {asize: 4106, blocks: 9, items: 1, dev: 1, shared_asize: 10, shared_blocks: 1}
+            "deep" hard link {asize: 10, blocks: 1, ino: 1, nlink: 2}
+    "#);
+}
+
 /// Entries on several devices, with read errors below the root and extended fields on only some
 /// of the directories.
 fn mixed(sink: &mut MemorySink) -> io::Result<()> {
