@@ -669,13 +669,19 @@ impl Browser {
                 parents,
                 directories,
             } => {
-                parents.pop();
-                let Some(&itemref) = parents.last() else {
+                // The open directory leaves `parents` only once its parent is read, so an error
+                // leaves the browser where it was.
+                let Some(&itemref) = parents
+                    .len()
+                    .checked_sub(2)
+                    .and_then(|index| parents.get(index))
+                else {
                     return Ok(());
                 };
                 let listing = reader
                     .read_directory(itemref, options.extended)?
                     .ok_or(BinaryImportError::Corrupt { itemref })?;
+                parents.pop();
                 *tree = listing.tree;
                 *directories = listing.directories;
                 self.directory = listing.directory;
