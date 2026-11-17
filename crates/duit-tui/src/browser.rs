@@ -763,13 +763,7 @@ impl Browser {
         if entered {
             self.path = path;
         }
-        // A binary export reported the read as the listing.
-        if self.reads_file() {
-            self.load(tree, options, &mut |_| {});
-        } else {
-            self.load(tree, options, loading);
-        }
-        self.state = State::Main;
+        self.load_entered(tree, options, loading);
         Ok(())
     }
 
@@ -824,14 +818,25 @@ impl Browser {
             }
         }
         self.path = path.unwrap_or_else(|| path_of(tree, self.directory));
-        // A binary export reported the read as the listing.
+        self.load_entered(tree, options, loading);
+        Ok(())
+    }
+
+    /// List the directory that [`Browser::enter_subdirectory`] or [`Browser::enter_parent`]
+    /// opened, and close any window. `loading` gets the screen while the entries are listed,
+    /// unless a binary export already reported the read as the listing.
+    fn load_entered(
+        &mut self,
+        tree: &Tree,
+        options: &BrowserOptions,
+        loading: &mut dyn FnMut(&Loading<'_>),
+    ) {
         if self.reads_file() {
             self.load(tree, options, &mut |_| {});
         } else {
             self.load(tree, options, loading);
         }
         self.state = State::Main;
-        Ok(())
     }
 
     /// Show the info of `item` in `tab`, or close the window when `item` is the row of the parent
