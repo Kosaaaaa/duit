@@ -5,7 +5,8 @@ use std::path::Path;
 use duit_format::{BinaryReader, import};
 use duit_model::{DirectoryId, EntryKind, MemorySink, Tree};
 use duit_tui::{
-    Browser, BrowserOptions, ColorScheme, GraphStyle, Key, SharedColumn, SortColumn, SortOrder,
+    Action, Browser, BrowserOptions, ColorScheme, GraphStyle, Key, SharedColumn, SortColumn,
+    SortOrder,
 };
 use insta::assert_snapshot;
 use ratatui::Terminal;
@@ -1415,6 +1416,7 @@ fn quit_keys() {
                 browser
                     .key_input(&mut tree, &mut options, key, 24, &mut |_| {})
                     .expect("key is handled")
+                    == Action::Quit
             })
             .collect::<Vec<_>>()
     };
@@ -1995,6 +1997,7 @@ fn info_keys() {
         browser
             .key_input(&mut tree, &mut options, key, 18, &mut |_| {})
             .expect("key is handled")
+            == Action::Quit
     };
     key_input(i);
     assert!(!key_input(Key::Char('q')));
@@ -2267,6 +2270,7 @@ fn help_keys() {
         browser
             .key_input(&mut tree, &mut options, key, 18, &mut |_| {})
             .expect("key is handled")
+            == Action::Quit
     };
     key_input(help);
     assert!(!key_input(Key::Char('q')));

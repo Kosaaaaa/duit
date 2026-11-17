@@ -116,6 +116,16 @@ impl Default for BrowserOptions {
     }
 }
 
+/// What the main loop does after a key, the `state` in `main.zig` that the browser sets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    /// Keep browsing.
+    Browse,
+    Quit,
+    /// Run a shell in the open directory, [`Browser::path`].
+    Shell,
+}
+
 /// The window over the listing that takes the keys, `state` in `browser.zig`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -1004,10 +1014,15 @@ impl Browser {
         self.sort(tree, options);
     }
 
+    /// The path of the open directory, `dir_path` in `browser.zig`.
+    pub fn path(&self) -> &[u8] {
+        &self.path
+    }
+
     /// Handle `key` on a terminal with `height` rows, which sets the size of a page, and change
-    /// `options` as the display and sort keys say, `keyInput` in `browser.zig`. Returns whether
-    /// to quit, or the error of a binary export whose directory could not be read, which ncdu
-    /// exits with.
+    /// `options` as the display and sort keys say, `keyInput` in `browser.zig`. Returns what the
+    /// main loop does next, or the error of a binary export whose directory could not be read,
+    /// which ncdu exits with.
     ///
     /// `tree` is the tree that the browser was opened with. From a binary export, the browser
     /// replaces it with each directory that it opens. `loading` gets the screen while a directory
@@ -1019,10 +1034,10 @@ impl Browser {
         key: Key,
         height: u16,
         loading: &mut dyn FnMut(&Loading<'_>),
-    ) -> Result<bool, BinaryImportError> {
-        let quit = self.handle_key(tree, options, key, height, loading);
+    ) -> Result<Action, BinaryImportError> {
+        let action = self.handle_key(tree, options, key, height, loading);
         self.save_view(tree);
-        quit
+        action
     }
 
     fn handle_key(
@@ -1032,23 +1047,24 @@ impl Browser {
         key: Key,
         height: u16,
         loading: &mut dyn FnMut(&Loading<'_>),
-    ) -> Result<bool, BinaryImportError> {
+    ) -> Result<Action, BinaryImportError> {
         if self.message.take().is_some() {
-            return Ok(false);
+            return Ok(Action::Browse);
         }
         match self.state {
             State::Main => {}
             State::Quit => {
                 self.state = State::Main;
-                return Ok(key == Key::Char('y') || key == Key::Char('Y'));
+                let quit = key == Key::Char('y') || key == Key::Char('Y');
+                return Ok(if quit { Action::Quit } else { Action::Browse });
             }
             State::Help => {
                 self.help_key_input(key);
-                return Ok(false);
+                return Ok(Action::Browse);
             }
             State::Info => {
                 if self.info_key_input(tree, options, key, height, loading) {
-                    return Ok(false);
+                    return Ok(Action::Browse);
                 }
             }
         }
@@ -1056,7 +1072,7 @@ impl Browser {
         match key {
             Key::Char('q') => {
                 if !options.confirm_quit {
-                    return Ok(true);
+                    return Ok(Action::Quit);
                 }
                 self.state = State::Quit;
             }
@@ -1066,7 +1082,7 @@ impl Browser {
                 }
             }
             Key::Char('?') => self.state = State::Help,
-            // Refresh, delete, and shell, whose actions are not ported yet.
+            // The actions of refresh and delete are not ported yet.
             Key::Char('r') => {
                 if self.reads_file() {
                     self.message =
@@ -1086,6 +1102,8 @@ impl Browser {
                         "Shell feature disabled.",
                         "Re-run with --enable-shell to enable this option.",
                     ]);
+                } else {
+                    return Ok(Action::Shell);
                 }
             }
             Key::Char('d') if self.items.is_empty() => {}
@@ -1195,7 +1213,7 @@ impl Browser {
                 );
             }
         }
-        Ok(false)
+        Ok(Action::Browse)
     }
 
     /// Draw the browser on all of `frame`, which starts at the top left corner of the terminal:

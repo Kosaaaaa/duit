@@ -1,11 +1,11 @@
 use std::ffi::OsStr;
 use std::fmt::Write as _;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, OpenOptions, Permissions};
 use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -30,6 +30,10 @@ const FOOTER: &[u8] = b"Total disk usage: ";
 
 /// The sequence that leaves the alternate screen, which duit writes when it restores the terminal.
 const LEAVE_ALTERNATE_SCREEN: &[u8] = b"\x1b[?1049l";
+
+/// The sequence that enters the alternate screen, which duit writes when it takes over the
+/// terminal.
+const ENTER_ALTERNATE_SCREEN: &[u8] = b"\x1b[?1049h";
 
 /// A directory with a copy of the golden files, and a JSON export with a syntax error.
 fn fixture() -> TempDir {
@@ -202,13 +206,27 @@ fn spawn(directory: &Path, arguments: &[&str], command: &mut Command, controllin
 /// Run duit with `arguments` in `directory` on the terminal of `pty`, as its standard input,
 /// output, and error.
 fn spawn_on(pty: &Pty, directory: &Path, arguments: &[&str]) -> Child {
+    spawn_command_on(
+        pty,
+        directory,
+        arguments,
+        &mut Command::new(env!("CARGO_BIN_EXE_duit")),
+    )
+}
+
+/// Run duit with `command`, as [`spawn_on`] does.
+fn spawn_command_on(
+    pty: &Pty,
+    directory: &Path,
+    arguments: &[&str],
+    command: &mut Command,
+) -> Child {
     let terminal = || Stdio::from(pty.terminal.try_clone().expect("terminal is duplicated"));
-    let mut command = Command::new(env!("CARGO_BIN_EXE_duit"));
     command
         .stdin(terminal())
         .stdout(terminal())
         .stderr(terminal());
-    spawn(directory, arguments, &mut command, true)
+    spawn(directory, arguments, command, true)
 }
 
 /// Send what duit writes to the terminal of `pty` to the returned receiver, until it closes.
@@ -251,6 +269,18 @@ fn wait_exit(child: &mut Child) -> ExitStatus {
         assert!(Instant::now() <= deadline, "duit exits in time");
         thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// Wait until duit restores the terminal and draws the browser again, and drop what `output` held
+/// before it restored the terminal.
+fn wait_for_return(receiver: &Receiver<Vec<u8>>, output: &mut Vec<u8>) {
+    wait_for(receiver, output, LEAVE_ALTERNATE_SCREEN);
+    let restored = output
+        .windows(LEAVE_ALTERNATE_SCREEN.len())
+        .position(|window| window == LEAVE_ALTERNATE_SCREEN)
+        .expect("terminal is restored");
+    output.drain(..restored);
+    wait_for(receiver, output, FOOTER);
 }
 
 /// Run duit with `arguments` on a terminal, wait until it draws the browser, type `keys`, and
@@ -309,6 +339,119 @@ fn features_disabled() {
         (&pty.master).write_all(b"qq").expect("keys are typed");
         assert_eq!(wait_exit(&mut child).code(), Some(0), "{arguments:?}");
     }
+}
+
+/// Write an executable script in `directory` that appends `name`, its working directory, and its
+/// `NCDU_LEVEL` to `record`, and exits with status 3. It stands in for a shell.
+fn shell_script(directory: &Path, name: &str, record: &Path) -> PathBuf {
+    let path = directory.join(name);
+    let script = format!(
+        "#!/bin/sh\nprintf '%s %s %s\\n' {name} \"$(pwd -P)\" \"${{NCDU_LEVEL-unset}}\" >> '{}'\nexit 3\n",
+        record.display()
+    );
+    fs::write(&path, script).expect("script is written");
+    fs::set_permissions(&path, Permissions::from_mode(0o755)).expect("script is executable");
+    path
+}
+
+/// `b` runs `NCDU_SHELL`, or `SHELL` without it, in the open directory, with `NCDU_LEVEL` one
+/// higher than duit's: 1 when it is unset, at most 9, and from the first character only, so 1 for
+/// a letter and 2 for 12. The browser comes back once the shell exits, without a message for its
+/// status 3, and `q` quits.
+#[test]
+fn shell() {
+    let directory = TempDir::new().expect("temporary directory is created");
+    fs::create_dir(directory.path().join("sub")).expect("directory is created");
+    let scripts = TempDir::new().expect("temporary directory is created");
+    let record = scripts.path().join("record");
+    let ncdu_shell = shell_script(scripts.path(), "ncdu-shell", &record);
+    let shell = shell_script(scripts.path(), "shell", &record);
+    let cases: [(Option<&Path>, Option<&str>); 5] = [
+        (Some(&ncdu_shell), None),
+        (Some(&ncdu_shell), Some("3")),
+        (Some(&ncdu_shell), Some("9")),
+        (Some(&ncdu_shell), Some("x")),
+        (None, Some("12")),
+    ];
+    for (ncdu_shell, level) in cases {
+        let pty = pty();
+        let receiver = read_output(&pty);
+        let mut command = Command::new(env!("CARGO_BIN_EXE_duit"));
+        command
+            .env("SHELL", &shell)
+            .env_remove("NCDU_SHELL")
+            .env_remove("NCDU_LEVEL");
+        if let Some(ncdu_shell) = ncdu_shell {
+            command.env("NCDU_SHELL", ncdu_shell);
+        }
+        if let Some(level) = level {
+            command.env("NCDU_LEVEL", level);
+        }
+        let mut child = spawn_command_on(&pty, directory.path(), &["."], &mut command);
+        let mut output = Vec::new();
+        wait_for(&receiver, &mut output, FOOTER);
+        // `/sub` is empty, so no key is dropped while it is listed.
+        (&pty.master).write_all(b"\rb").expect("keys are typed");
+        wait_for_return(&receiver, &mut output);
+        (&pty.master).write_all(b"q").expect("key is typed");
+        assert_eq!(wait_exit(&mut child).code(), Some(0), "{level:?}");
+    }
+    let canonical = fs::canonicalize(directory.path()).expect("directory is resolved");
+    let rendered = fs::read_to_string(&record)
+        .expect("record is read")
+        .replace(canonical.to_str().expect("path is UTF-8"), "[DIR]");
+    assert_snapshot!(rendered, @"
+    ncdu-shell [DIR]/sub 1
+    ncdu-shell [DIR]/sub 4
+    ncdu-shell [DIR]/sub 9
+    ncdu-shell [DIR]/sub 1
+    shell [DIR]/sub 2
+    ");
+}
+
+/// A shell that cannot run, or that a signal ends, leaves a message on the restored terminal, as
+/// in ncdu, and the browser comes back after Enter. The clear before the browser is ncdu's too.
+#[test]
+fn shell_errors() {
+    let directory = fixture();
+    let scripts = TempDir::new().expect("temporary directory is created");
+    let shell = shell_script(scripts.path(), "shell", &scripts.path().join("record"));
+    let signal = scripts.path().join("signal");
+    fs::write(&signal, "#!/bin/sh\nkill -TERM $$\n").expect("script is written");
+    fs::set_permissions(&signal, Permissions::from_mode(0o755)).expect("script is executable");
+    let mut rendered = String::new();
+    for ncdu_shell in [Path::new("/nonexistent"), &signal] {
+        let pty = pty();
+        let receiver = read_output(&pty);
+        let mut command = Command::new(env!("CARGO_BIN_EXE_duit"));
+        command.env("SHELL", &shell).env("NCDU_SHELL", ncdu_shell);
+        let mut child = spawn_command_on(&pty, directory.path(), &["."], &mut command);
+        let mut output = Vec::new();
+        wait_for(&receiver, &mut output, FOOTER);
+        (&pty.master).write_all(b"b").expect("key is typed");
+        wait_for(&receiver, &mut output, b"continue.");
+        (&pty.master).write_all(b"\r").expect("key is typed");
+        wait_for_return(&receiver, &mut output);
+        (&pty.master).write_all(b"q").expect("key is typed");
+        assert_eq!(wait_exit(&mut child).code(), Some(0), "{ncdu_shell:?}");
+        let entered = output
+            .windows(ENTER_ALTERNATE_SCREEN.len())
+            .position(|window| window == ENTER_ALTERNATE_SCREEN)
+            .expect("terminal is entered again");
+        let _ = writeln!(rendered, "{}", text(&output[..entered]));
+    }
+    assert_snapshot!(rendered, @"
+    ^[[?1049l^[[?25hError running command: No such file or directory^M
+    ^M
+    Press enter to continue.^M
+    ^M
+    ^[[J
+    ^[[?1049l^[[?25h^M
+    Command returned with signal code 15.^M
+    Press enter to continue.^M
+    ^M
+    ^[[J
+    ");
 }
 
 /// Ctrl-C ends duit with status 1 after the terminal is restored, as ncurses does on `SIGINT`, also

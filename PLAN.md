@@ -162,6 +162,12 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
   its own (`bin_export.zig:394`), so a directory also rotates through more than 8 blocks, and
   `--export-block-size 16000` makes each of those blocks almost 16 MiB. Revisit this in M5, when
   duit writes such exports with `-t` itself.
+- **Running a command: the shell is started by Rust's `std::process::Command`, unlike ncdu.** ncdu's
+  `runCmd` (`ui.zig:655`) starts it with Zig's `std.process.Child`, which runs its own `PATH` search
+  over `execve`. libc runs the search for Rust, and differs at two edges. A file without `#!` that
+  `execve` rejects with `ENOEXEC` is run by `/bin/sh`, at least on macOS, where ncdu shows
+  `Invalid executable`. An empty `NCDU_SHELL` fails with `No such file or directory`, where Zig
+  tries each `PATH` directory itself and ncdu shows `Access denied`.
 - **Panics: the terminal is restored from the panic hook.** The release profile uses
   `panic = "abort"`, so `Drop` guards do not run.
 - **`unsafe`: `#[expect(unsafe_code)]` plus a `SAFETY` comment.** The workspace lint warns on
