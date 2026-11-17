@@ -3,11 +3,13 @@
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::ffi::CStr;
 use std::fs::File;
 use std::iter;
+use std::process::Command;
 
 use duit_format::{BinaryImportError, BinaryReader, ListedDirectory, Listing};
-use duit_model::{DirectoryId, Entry, EntryId, EntryKind, LinkId, Special, Tree};
+use duit_model::{DirectoryId, Entry, EntryId, EntryKind, LinkId, Special, Stat, Tree, TreeError};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::style::Style as StyleAttr;
@@ -1144,9 +1146,6 @@ impl Browser {
                     ]);
                 } else if !options.can_delete {
                     self.message = Some(&["File deletion is disabled."]);
-                } else if !options.delete_command.is_empty() {
-                    // shortcut: `d` does nothing with `--delete-command`, rather than delete
-                    // without the command. Port `deleteCmd` of `delete.zig` with refresh.
                 } else if let Some(&Some(entry)) = self.items.get(self.cursor) {
                     let next = match self.items.get(self.cursor + 1) {
                         Some(&item) => item,
@@ -1395,7 +1394,8 @@ impl Browser {
             );
         }
         if self.deletion.is_confirming() {
-            self.deletion.draw_confirm(buffer, tree, scheme);
+            self.deletion
+                .draw_confirm(buffer, tree, scheme, &options.delete_command);
         }
     }
 
@@ -1405,9 +1405,35 @@ impl Browser {
     /// still in the tree, and else goes to the entry after it, or the one before it when it was the
     /// last, or none. Call [`Browser::load_directory`] next, as `main.zig` does.
     pub fn delete(&mut self, tree: &mut Tree, events: &mut dyn FnMut(&mut Deletion, &Tree, bool)) {
-        // Without an entry to select, the cursor stays on the name of the deleted entry, which is
-        // no longer listed, so the view puts it on the first row.
-        if let Some(entry) = self.deletion.run(tree, events) {
+        let entry = self.deletion.run(tree, events);
+        self.select(tree, entry);
+    }
+
+    /// Run the command of `--delete-command` on the entry of the deletion that [`Action::Delete`]
+    /// started, instead of [`Browser::delete`], `delete` in `delete.zig`. `run` runs the command,
+    /// and returns the [`Stat`] of the path that it gets afterwards, or `None` when it cannot be
+    /// read. The cursor then goes as [`Browser::delete`] says.
+    ///
+    /// Returns the directory to scan again, as the `.refresh` state of `main.zig`, when a directory
+    /// is at the path after the command. Call [`Browser::load_directory`] next, after the scan.
+    pub fn delete_command(
+        &mut self,
+        tree: &mut Tree,
+        options: &BrowserOptions,
+        run: &mut dyn FnMut(&mut Command, &CStr) -> Option<Stat>,
+    ) -> Result<Option<DirectoryId>, TreeError> {
+        let (entry, directory) =
+            self.deletion
+                .run_command(tree, &options.delete_command, options.extended, run)?;
+        self.select(tree, entry);
+        Ok(directory)
+    }
+
+    /// Put the cursor on `entry` once the directory is listed again. Without an entry, the cursor
+    /// stays on the name of the deleted entry, which is no longer listed, so the view puts it on
+    /// the first row.
+    fn select(&mut self, tree: &Tree, entry: Option<EntryId>) {
+        if let Some(entry) = entry {
             self.views.entry(self.path.clone()).or_default().cursor =
                 Some(tree.name(entry).to_vec());
         }

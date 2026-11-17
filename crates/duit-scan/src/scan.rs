@@ -190,8 +190,9 @@ fn scan_entry<'a, S: Sink>(
 /// The largest link count that ncdu stores, in 31 bits.
 const LINK_COUNT_MAX: u32 = (1 << 31) - 1;
 
-/// The [`Stat`] of the entry `name` in `directory`, and whether the entry is a symlink.
-fn stat_at(directory: impl AsFd, name: &CStr, follow: bool) -> io::Result<(Stat, bool)> {
+/// The [`Stat`] of the entry `name` in `directory`, and whether the entry is a symlink, `statAt` in
+/// `scan.zig`. With `follow`, a symlink is followed.
+pub fn stat_at(directory: impl AsFd, name: &CStr, follow: bool) -> io::Result<(Stat, bool)> {
     let flags = if follow {
         AtFlags::empty()
     } else {

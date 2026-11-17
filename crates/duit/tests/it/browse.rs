@@ -795,16 +795,11 @@ fn wait_removed(path: &Path) {
 }
 
 /// `d` deletes the entry under the cursor once "yes" is selected and confirmed, and at once with
-/// `--no-confirm-delete`. With `--delete-command`, whose command duit does not run yet, `d` does
-/// nothing rather than delete the entry itself.
+/// `--no-confirm-delete`.
 #[test]
 fn delete() {
-    let cases: [(&[&str], &[u8], bool); 3] = [
-        (&["."], b"dh\r", true),
-        (&["--no-confirm-delete", "."], b"d", true),
-        (&["--delete-command", "true", "."], b"dh\r", false),
-    ];
-    for (arguments, keys, deleted) in cases {
+    let cases: [(&[&str], &[u8]); 2] = [(&["."], b"dh\r"), (&["--no-confirm-delete", "."], b"d")];
+    for (arguments, keys) in cases {
         let directory = TempDir::new().expect("temporary directory is created");
         let file = directory.path().join("file");
         fs::write(&file, b"").expect("file is written");
@@ -814,12 +809,133 @@ fn delete() {
         let mut output = Vec::new();
         wait_for(&receiver, &mut output, FOOTER);
         (&pty.master).write_all(keys).expect("keys are typed");
-        if deleted {
-            wait_removed(&file);
-        }
+        wait_removed(&file);
         (&pty.master).write_all(b"q").expect("key is typed");
         assert_eq!(wait_exit(&mut child).code(), Some(0), "{arguments:?}");
-        assert_eq!(file.exists(), !deleted, "{arguments:?}");
+    }
+}
+
+/// Write an executable script in `directory` with the commands `body`, as a command of
+/// `--delete-command`.
+fn delete_script(directory: &Path, body: &str) -> PathBuf {
+    let path = directory.join("delete");
+    fs::write(&path, format!("#!/bin/sh\n{body}")).expect("script is written");
+    fs::set_permissions(&path, Permissions::from_mode(0o755)).expect("script is executable");
+    path
+}
+
+/// With `--delete-command`, `d` runs the command through `/bin/sh` once confirmed, in the working
+/// directory of duit, with the path of the entry as its argument and in `NCDU_DELETE_PATH`, which
+/// needs no quoting, and with `NCDU_LEVEL` one higher. The entry is gone from the listing after the
+/// command moved it away.
+#[test]
+fn delete_command() {
+    let directory = TempDir::new().expect("temporary directory is created");
+    let file = directory.path().join("a \"b\" $c");
+    fs::write(&file, b"").expect("file is written");
+    let scripts = TempDir::new().expect("temporary directory is created");
+    let record = scripts.path().join("record");
+    let script = delete_script(
+        scripts.path(),
+        &format!(
+            "printf '%s|%s|%s|%s\\n' \"$1\" \"$NCDU_DELETE_PATH\" \"$NCDU_LEVEL\" \"$(pwd -P)\" > '{record}'\n\
+             mv \"$1\" '{trash}'\n",
+            record = record.display(),
+            trash = scripts.path().display(),
+        ),
+    );
+    let script = script.to_str().expect("path is UTF-8");
+    let pty = pty();
+    let receiver = read_output(&pty);
+    let mut command = Command::new(env!("CARGO_BIN_EXE_duit"));
+    command.env_remove("NCDU_LEVEL");
+    let mut child = spawn_command_on(
+        &pty,
+        directory.path(),
+        &["--delete-command", script, "."],
+        &mut command,
+    );
+    let mut output = Vec::new();
+    wait_for(&receiver, &mut output, FOOTER);
+    (&pty.master).write_all(b"dh\r").expect("keys are typed");
+    wait_for_return(&receiver, &mut output);
+    (&pty.master).write_all(b"q").expect("key is typed");
+    assert_eq!(wait_exit(&mut child).code(), Some(0));
+    assert!(!file.exists());
+    let canonical = fs::canonicalize(directory.path()).expect("directory is resolved");
+    let rendered = fs::read_to_string(&record)
+        .expect("record is read")
+        .replace(canonical.to_str().expect("path is UTF-8"), "[DIR]");
+    assert_snapshot!(rendered, @r#"[DIR]/a "b" $c|[DIR]/a "b" $c|1|[DIR]"#);
+}
+
+/// A command that exits with a status other than 0 leaves a message on the restored terminal, and
+/// the browser comes back after Enter, with the entry that the command left in place.
+#[test]
+fn delete_command_error() {
+    let directory = TempDir::new().expect("temporary directory is created");
+    let file = directory.path().join("file");
+    fs::write(&file, b"").expect("file is written");
+    let pty = pty();
+    let receiver = read_output(&pty);
+    let mut child = spawn_on(&pty, directory.path(), &["--delete-command", "false", "."]);
+    let mut output = Vec::new();
+    wait_for(&receiver, &mut output, FOOTER);
+    (&pty.master).write_all(b"dh\r").expect("keys are typed");
+    wait_for(&receiver, &mut output, b"continue.");
+    (&pty.master).write_all(b"\r").expect("key is typed");
+    wait_for_return(&receiver, &mut output);
+    wait_for(&receiver, &mut output, b"file");
+    (&pty.master).write_all(b"q").expect("key is typed");
+    assert_eq!(wait_exit(&mut child).code(), Some(0));
+    assert!(file.exists());
+    let entered = output
+        .windows(ENTER_ALTERNATE_SCREEN.len())
+        .position(|window| window == ENTER_ALTERNATE_SCREEN)
+        .expect("terminal is entered again");
+    assert_snapshot!(text(&output[..entered]), @"
+    ^[[?1049l^[[?25h^M
+    Command returned with error code 1.^M
+    Press enter to continue.^M
+    ^M
+    ^[[J
+    ");
+}
+
+/// A directory at the path after the command is scanned again, whether the entry was a directory
+/// or a file that the command replaced with one, and opening it lists what the command added.
+#[test]
+fn delete_command_directory() {
+    for directory_before in [true, false] {
+        let directory = TempDir::new().expect("temporary directory is created");
+        let path = directory.path().join("sub");
+        if directory_before {
+            fs::create_dir(&path).expect("directory is created");
+        } else {
+            fs::write(&path, b"").expect("file is written");
+        }
+        let scripts = TempDir::new().expect("temporary directory is created");
+        let script = delete_script(
+            scripts.path(),
+            &format!(
+                "[ -d \"$1\" ] || {{ mv \"$1\" '{trash}' && mkdir \"$1\"; }}\n\
+                 printf x > \"$1/added-file\"\n",
+                trash = scripts.path().display(),
+            ),
+        );
+        let script = script.to_str().expect("path is UTF-8");
+        let pty = pty();
+        let receiver = read_output(&pty);
+        let mut child = spawn_on(&pty, directory.path(), &["--delete-command", script, "."]);
+        let mut output = Vec::new();
+        wait_for(&receiver, &mut output, FOOTER);
+        (&pty.master).write_all(b"dh\r").expect("keys are typed");
+        wait_for_return(&receiver, &mut output);
+        // `sub` holds one entry, so no key is dropped while it is listed.
+        (&pty.master).write_all(b"\r").expect("key is typed");
+        wait_for(&receiver, &mut output, b"added-file");
+        (&pty.master).write_all(b"q").expect("key is typed");
+        assert_eq!(wait_exit(&mut child).code(), Some(0), "{directory_before}");
     }
 }
 

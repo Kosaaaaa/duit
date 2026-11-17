@@ -6,7 +6,7 @@ use std::io;
 use std::iter;
 use std::mem;
 
-use crate::{Extended, Special, Stat};
+use crate::{EntryType, Extended, Special, Stat};
 
 /// The largest block count that ncdu stores, in 60 bits. Sums of block counts saturate here.
 pub const BLOCKS_MAX: u64 = (1 << 60) - 1;
@@ -477,6 +477,62 @@ impl Tree {
             Some(previous) => self.entries[previous.0].next = next,
             None => self.directories[directory.0].sub = next,
         }
+    }
+
+    /// Replace `id` of `directory`, where it follows `previous`, or is the first entry when
+    /// `previous` is `None`, with a new entry of the same name, the type and the sizes of `stat`,
+    /// and `extended`, at the same place, as `deleteCmd` in `delete.zig` does with what a command
+    /// left at the path of an entry. `id` is zeroed as [`Tree::zero_stats`] does, and the new entry
+    /// is added to the item counts of `directory` and of the directories above it, and to their
+    /// sizes unless it is a hard link: call [`Tree::add_all_stats`] afterwards. The latest mtime of
+    /// the directories stays, as in ncdu. Returns the new entry, or an error, and changes nothing,
+    /// when a new directory is on a device that the tree cannot number.
+    pub fn replace(
+        &mut self,
+        directory: DirectoryId,
+        previous: Option<EntryId>,
+        id: EntryId,
+        stat: &Stat,
+        extended: Option<EntryExtended>,
+    ) -> Result<EntryId, TreeError> {
+        let name = self.name(id).to_vec();
+        let kind = match stat.entry_type {
+            EntryType::Directory => None,
+            EntryType::Regular => Some(FileKind::Regular),
+            EntryType::NonRegular => Some(FileKind::NonRegular),
+            EntryType::HardLink => Some(FileKind::HardLink),
+        };
+        let entry = if let Some(kind) = kind {
+            self.remove(directory, previous, id);
+            self.create(directory, kind, stat, extended, &name)
+        } else {
+            let device = self.device_id(stat.device)?;
+            self.remove(directory, previous, id);
+            let created = self.create_directory(Some(directory), device, stat, extended, &name);
+            self.directories[created.0].entry
+        };
+        // The new entry is the first one: move it after `previous`.
+        if let Some(previous) = previous {
+            self.directories[directory.0].sub = self.entries[entry.0].next;
+            self.entries[entry.0].next = self.entries[previous.0].next;
+            self.entries[previous.0].next = Some(entry);
+        }
+        let (blocks, size) = match stat.entry_type {
+            EntryType::HardLink => (0, 0),
+            EntryType::Directory | EntryType::Regular | EntryType::NonRegular => {
+                (stat.blocks, stat.size)
+            }
+        };
+        let mut next = Some(directory);
+        while let Some(current) = next {
+            let data = &mut self.directories[current.0];
+            data.items = data.items.saturating_add(1);
+            next = data.parent;
+            let entry = &mut self.entries[data.entry.0];
+            entry.blocks = add_blocks(entry.blocks, blocks);
+            entry.size = entry.size.saturating_add(size);
+        }
+        Ok(entry)
     }
 
     /// Take the entries of `directory` for which `keep` is false out of its entries, without

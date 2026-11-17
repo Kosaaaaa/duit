@@ -1,9 +1,14 @@
 //! The deletion of `delete.zig`: the confirmation, the deletion of an entry and of everything below
 //! it from the filesystem and from the tree, and the windows that it shows while it runs.
 
+use std::ffi::{CStr, OsStr};
 use std::os::fd::{AsFd, BorrowedFd};
+use std::os::unix::ffi::OsStrExt;
+use std::process::Command;
 
-use duit_model::{DirectoryId, EntryId, EntryKind, Tree};
+use duit_model::{
+    DirectoryId, EntryExtended, EntryId, EntryKind, EntryType, Stat, Tree, TreeError,
+};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use rustix::fs::{AtFlags, CWD, FileType, Mode, OFlags, openat, statat, unlinkat};
@@ -209,12 +214,7 @@ impl Deletion {
             return Some(entry);
         }
         let previous = tree.entries(parent).take_while(|&id| id != entry).last();
-        let mut path = Vec::new();
-        tree.format_path(parent, true, &mut path);
-        if path.last() != Some(&b'/') {
-            path.push(b'/');
-        }
-        path.extend_from_slice(tree.name(entry));
+        let path = entry_path(tree, parent, entry);
         let next = self.next;
         let mut run = Run {
             deletion: self,
@@ -230,32 +230,129 @@ impl Deletion {
         }
     }
 
-    /// Draw the confirmation over the screen in `buffer`, `drawConfirm` in `delete.zig`.
-    pub(crate) fn draw_confirm(&self, buffer: &mut Buffer, tree: &Tree, scheme: ColorScheme) {
+    /// Run `delete_command` on the entry once the deletion is confirmed instead of deleting it,
+    /// `delete` and `deleteCmd` in `delete.zig`, and update `tree` with what the command left at
+    /// the path of the entry. `run` runs the command, and returns the [`Stat`] of the path
+    /// afterwards, or `None` when it cannot be read. With `extended`, a new entry keeps its
+    /// extended information, as with `-e`.
+    ///
+    /// Returns the entry to put the cursor on, as [`Deletion::run`] does, and the directory at the
+    /// path, which `main.zig` scans again next. Fails, as ncdu does, when a new directory is on a
+    /// device that the tree cannot number.
+    pub(crate) fn run_command(
+        &mut self,
+        tree: &mut Tree,
+        delete_command: &[u8],
+        extended: bool,
+        run: &mut dyn FnMut(&mut Command, &CStr) -> Option<Stat>,
+    ) -> Result<(Option<EntryId>, Option<DirectoryId>), TreeError> {
+        let (Some(parent), Some(entry)) = (self.parent, self.entry) else {
+            return Ok((None, None));
+        };
+        let state = self.state;
+        self.state = State::Closed;
+        if state != State::Busy {
+            return Ok((Some(entry), None));
+        }
+        let previous = tree.entries(parent).take_while(|&id| id != entry).last();
+        let mut path = entry_path(tree, parent, entry);
+        path.push(0);
+        // A name with a NUL byte, which only an import has, ends the path there, as for ncdu.
+        let path = CStr::from_bytes_until_nul(&path).unwrap_or_default();
+        // The path goes through the environment, so that the shell needs no quoting of it.
+        let mut script = delete_command.to_vec();
+        script.extend_from_slice(b" \"$NCDU_DELETE_PATH\"");
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(OsStr::from_bytes(&script))
+            .env("NCDU_DELETE_PATH", OsStr::from_bytes(path.to_bytes()));
+        // Nothing at the path, or a path that cannot be read, counts as deleted.
+        let Some(stat) = run(&mut command, path) else {
+            tree.remove(parent, previous, entry);
+            tree.add_all_stats();
+            return Ok((self.next, None));
+        };
+        let entry = match (tree.entry(entry).kind, stat.entry_type) {
+            (EntryKind::Directory(_), EntryType::Directory) => entry,
+            (
+                EntryKind::Directory(_)
+                | EntryKind::HardLink(_)
+                | EntryKind::Regular
+                | EntryKind::NonRegular
+                | EntryKind::Special(_),
+                EntryType::Directory
+                | EntryType::Regular
+                | EntryType::NonRegular
+                | EntryType::HardLink,
+            ) => tree.replace(
+                parent,
+                previous,
+                entry,
+                &stat,
+                EntryExtended::of(&stat, extended),
+            )?,
+        };
+        tree.add_all_stats();
+        let directory = match tree.entry(entry).kind {
+            EntryKind::Directory(directory) => Some(directory),
+            EntryKind::HardLink(_)
+            | EntryKind::Regular
+            | EntryKind::NonRegular
+            | EntryKind::Special(_) => None,
+        };
+        Ok((Some(entry), directory))
+    }
+
+    /// Draw the confirmation over the screen in `buffer`, `drawConfirm` in `delete.zig`. With
+    /// `delete_command`, it asks to run the command on the entry.
+    pub(crate) fn draw_confirm(
+        &self,
+        buffer: &mut Buffer,
+        tree: &Tree,
+        scheme: ColorScheme,
+        delete_command: &[u8],
+    ) {
         let Some(entry) = self.entry else {
             return;
         };
         let window = Window::new(buffer, scheme, 6, 60, "Confirm delete");
         let name = to_utf8(tree.name(entry));
-        let x = window.text(
-            buffer,
-            1,
-            2,
-            "Are you sure you want to delete \"",
-            Style::Default,
-        );
-        let x = window.text(buffer, 1, x, &shorten(&name, 21), Style::Default);
-        let x = window.text(buffer, 1, x, "\"", Style::Default);
-        match tree.entry(entry).kind {
-            EntryKind::Directory(_) => {
-                window.text(buffer, 2, 18, "and all of its contents?", Style::Default);
+        if delete_command.is_empty() {
+            let x = window.text(
+                buffer,
+                1,
+                2,
+                "Are you sure you want to delete \"",
+                Style::Default,
+            );
+            let x = window.text(buffer, 1, x, &shorten(&name, 21), Style::Default);
+            let x = window.text(buffer, 1, x, "\"", Style::Default);
+            match tree.entry(entry).kind {
+                EntryKind::Directory(_) => {
+                    window.text(buffer, 2, 18, "and all of its contents?", Style::Default);
+                }
+                EntryKind::HardLink(_)
+                | EntryKind::Regular
+                | EntryKind::NonRegular
+                | EntryKind::Special(_) => {
+                    window.text(buffer, 1, x, "?", Style::Default);
+                }
             }
-            EntryKind::HardLink(_)
-            | EntryKind::Regular
-            | EntryKind::NonRegular
-            | EntryKind::Special(_) => {
-                window.text(buffer, 1, x, "?", Style::Default);
-            }
+        } else {
+            let x = window.text(
+                buffer,
+                1,
+                2,
+                "Are you sure you want to run \"",
+                Style::Default,
+            );
+            let command = to_utf8(delete_command);
+            let x = window.text(buffer, 1, x, &shorten(&command, 25), Style::Default);
+            window.text(buffer, 1, x, "\"", Style::Default);
+            let x = window.text(buffer, 2, 4, "on \"", Style::Default);
+            let x = window.text(buffer, 2, x, &shorten(&name, 50), Style::Default);
+            window.text(buffer, 2, x, "\"", Style::Default);
         }
         for (column, label, button) in [
             (15, "yes", Confirm::Yes),
@@ -316,6 +413,17 @@ impl Deletion {
             }
         }
     }
+}
+
+/// The path of `entry` of `parent`, from the root, as `delete` in `delete.zig` builds it.
+fn entry_path(tree: &Tree, parent: DirectoryId, entry: EntryId) -> Vec<u8> {
+    let mut path = Vec::new();
+    tree.format_path(parent, true, &mut path);
+    if path.last() != Some(&b'/') {
+        path.push(b'/');
+    }
+    path.extend_from_slice(tree.name(entry));
+    path
 }
 
 /// A deletion that runs, with the tree that it deletes from and the events of the main loop.

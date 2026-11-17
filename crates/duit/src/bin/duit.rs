@@ -23,11 +23,12 @@ use duit_format::{
 use duit_model::{
     DirectoryId, MemorySink, Producer, Progress, ProgressSink, Sink, Tree, TreeError,
 };
-use duit_scan::{ScanError, ScanOptions, scan};
+use duit_scan::{ScanError, ScanOptions, scan, stat_at};
 use duit_tui::{
     Action, Browser, BrowserOptions, Console, Deletion, InitError, Input, Loading, ScanKey,
     ScanScreen, ScanState, Ui,
 };
+use rustix::fs::CWD;
 
 /// The terminal sequence that clears from the cursor to the end of the screen. ncdu writes it to
 /// standard error before an error message and at the end of a scan, to clear a progress line.
@@ -397,6 +398,41 @@ fn browse(
                             Ok(ui) => ui,
                             Err(exit) => return exit,
                         };
+                        let mut load = Load::new(&mut ui, update_delay);
+                        browser.load_directory(&tree, &options, &mut |loading| {
+                            load.report(loading);
+                        });
+                        if let Some(exit) = load.finish() {
+                            ui.deinit();
+                            return exit;
+                        }
+                        draw = true;
+                        block = true;
+                    }
+                    Ok(Action::Delete) if !options.delete_command.is_empty() => {
+                        let mut failed = None;
+                        let deleted =
+                            browser.delete_command(&mut tree, &options, &mut |command, path| {
+                                if let Err(error) = ui.run_command(command, true) {
+                                    failed = Some(error);
+                                }
+                                stat_at(CWD, path, false).ok().map(|(stat, _)| stat)
+                            });
+                        if let Some(error) = failed {
+                            return Err(init_error(error));
+                        }
+                        let Ok(directory) = deleted else {
+                            ui.deinit();
+                            return Err(
+                                b"Maximum number of device identifiers exceeded.\n".to_vec()
+                            );
+                        };
+                        if let Some(directory) = directory {
+                            ui = match refresh(ui, &mut tree, directory, &options, config, drawn) {
+                                Ok(ui) => ui,
+                                Err(exit) => return exit,
+                            };
+                        }
                         let mut load = Load::new(&mut ui, update_delay);
                         browser.load_directory(&tree, &options, &mut |loading| {
                             load.report(loading);
