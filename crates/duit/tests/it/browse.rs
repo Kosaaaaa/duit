@@ -670,3 +670,81 @@ fn read_errors() {
     ^[[?1049l^[[?25h^[[JError reading item 0 from file^M
     ");
 }
+
+/// Wait until `path` no longer exists.
+fn wait_removed(path: &Path) {
+    let deadline = Instant::now() + TIMEOUT;
+    while path.exists() {
+        assert!(
+            Instant::now() <= deadline,
+            "{} is deleted in time",
+            path.display()
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// `d` deletes the entry under the cursor once "yes" is selected and confirmed, and at once with
+/// `--no-confirm-delete`. With `--delete-command`, whose command duit does not run yet, `d` does
+/// nothing rather than delete the entry itself.
+#[test]
+fn delete() {
+    let cases: [(&[&str], &[u8], bool); 3] = [
+        (&["."], b"dh\r", true),
+        (&["--no-confirm-delete", "."], b"d", true),
+        (&["--delete-command", "true", "."], b"dh\r", false),
+    ];
+    for (arguments, keys, deleted) in cases {
+        let directory = TempDir::new().expect("temporary directory is created");
+        let file = directory.path().join("file");
+        fs::write(&file, b"").expect("file is written");
+        let pty = pty();
+        let receiver = read_output(&pty);
+        let mut child = spawn_on(&pty, directory.path(), arguments);
+        let mut output = Vec::new();
+        wait_for(&receiver, &mut output, FOOTER);
+        (&pty.master).write_all(keys).expect("keys are typed");
+        if deleted {
+            wait_removed(&file);
+        }
+        (&pty.master).write_all(b"q").expect("key is typed");
+        assert_eq!(wait_exit(&mut child).code(), Some(0), "{arguments:?}");
+        assert_eq!(file.exists(), !deleted, "{arguments:?}");
+    }
+}
+
+/// A directory that is read-only until the value is dropped, so that the entries in it cannot be
+/// deleted and the temporary directory that holds it can.
+struct ReadOnly(PathBuf);
+
+impl ReadOnly {
+    fn new(path: PathBuf) -> Self {
+        fs::set_permissions(&path, Permissions::from_mode(0o555)).expect("directory is read-only");
+        Self(path)
+    }
+}
+
+impl Drop for ReadOnly {
+    fn drop(&mut self) {
+        let _ = fs::set_permissions(&self.0, Permissions::from_mode(0o755));
+    }
+}
+
+/// Ctrl-C in the error window of a deletion ends duit with status 1.
+#[test]
+fn delete_interrupt() {
+    let directory = TempDir::new().expect("temporary directory is created");
+    let path = directory.path().join("ro");
+    fs::create_dir(&path).expect("directory is created");
+    fs::write(path.join("file"), b"").expect("file is written");
+    let _read_only = ReadOnly::new(path);
+    let pty = pty();
+    let receiver = read_output(&pty);
+    let mut child = spawn_on(&pty, directory.path(), &["."]);
+    let mut output = Vec::new();
+    wait_for(&receiver, &mut output, FOOTER);
+    (&pty.master).write_all(b"dh\r").expect("keys are typed");
+    wait_for(&receiver, &mut output, b"deleting");
+    (&pty.master).write_all(b"\x03").expect("key is typed");
+    assert_eq!(wait_exit(&mut child).code(), Some(1));
+}

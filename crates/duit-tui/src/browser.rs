@@ -12,6 +12,7 @@ use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::style::Style as StyleAttr;
 
+use crate::delete::Deletion;
 use crate::terminal::Key;
 use crate::ui::{
     Bg, ColorScheme, Style, Window, draw_line, draw_size, draw_text, format_mode, format_number,
@@ -84,6 +85,10 @@ pub struct BrowserOptions {
     pub extended: bool,
     /// Ask before quitting, `--confirm-quit`.
     pub confirm_quit: bool,
+    /// Ask before deleting, `--confirm-delete`, until "don't ask me again" turns it off.
+    pub confirm_delete: bool,
+    /// The command that deletes instead of duit, `--delete-command`, or nothing.
+    pub delete_command: Vec<u8>,
     /// The color scheme, `--color`.
     pub color: ColorScheme,
 }
@@ -111,6 +116,8 @@ impl Default for BrowserOptions {
             thousands_separator: ",".to_string(),
             extended: false,
             confirm_quit: false,
+            confirm_delete: true,
+            delete_command: Vec::new(),
             color: ColorScheme::Off,
         }
     }
@@ -124,6 +131,8 @@ pub enum Action {
     Quit,
     /// Run a shell in the open directory, [`Browser::path`].
     Shell,
+    /// Delete the entry that the cursor was on, with [`Browser::delete`].
+    Delete,
 }
 
 /// The window over the listing that takes the keys, `state` in `browser.zig`.
@@ -237,6 +246,8 @@ pub struct Browser {
     help: Help,
     /// The lines of the message window, which the next key closes.
     message: Option<&'static [&'static str]>,
+    /// The deletion, whose confirmation takes the keys while it is open.
+    deletion: Deletion,
 }
 
 /// Whether ncdu shows `kind` as a directory, with a `/` in front of the name: a directory, also
@@ -616,6 +627,7 @@ impl Browser {
             info: Info::default(),
             help: Help::default(),
             message: None,
+            deletion: Deletion::default(),
         };
         browser.load(tree, options, loading);
         browser
@@ -1048,6 +1060,11 @@ impl Browser {
         height: u16,
         loading: &mut dyn FnMut(&Loading<'_>),
     ) -> Result<Action, BinaryImportError> {
+        if self.deletion.is_confirming() {
+            return Ok(self
+                .deletion
+                .confirm_key_input(key, &mut options.confirm_delete));
+        }
         if self.message.take().is_some() {
             return Ok(Action::Browse);
         }
@@ -1082,7 +1099,7 @@ impl Browser {
                 }
             }
             Key::Char('?') => self.state = State::Help,
-            // The actions of refresh and delete are not ported yet.
+            // The action of refresh is not ported yet.
             Key::Char('r') => {
                 if self.reads_file() {
                     self.message =
@@ -1118,6 +1135,23 @@ impl Browser {
                     ]);
                 } else if !options.can_delete {
                     self.message = Some(&["File deletion is disabled."]);
+                } else if !options.delete_command.is_empty() {
+                    // shortcut: `d` does nothing with `--delete-command`, rather than delete
+                    // without the command. Port `deleteCmd` of `delete.zig` with refresh.
+                } else if let Some(&Some(entry)) = self.items.get(self.cursor) {
+                    let next = match self.items.get(self.cursor + 1) {
+                        Some(&item) => item,
+                        None => self
+                            .cursor
+                            .checked_sub(1)
+                            .and_then(|index| self.items.get(index).copied())
+                            .flatten(),
+                    };
+                    self.deletion
+                        .setup(self.directory, entry, next, options.confirm_delete);
+                    if !options.confirm_delete {
+                        return Ok(Action::Delete);
+                    }
                 }
             }
 
@@ -1351,6 +1385,34 @@ impl Browser {
                 Style::Default,
             );
         }
+        if self.deletion.is_confirming() {
+            self.deletion.draw_confirm(buffer, tree, scheme);
+        }
+    }
+
+    /// Delete the entry of the deletion that [`Action::Delete`] started, `delete` in `delete.zig`.
+    /// `events` gets the deletion before each entry that it deletes, and with `true` whenever it
+    /// waits for a key, to draw it and to give it keys. The cursor then goes to the entry after
+    /// the deleted one, or stays on the entry if it is still in the tree. Call
+    /// [`Browser::load_directory`] next, as `main.zig` does.
+    pub fn delete(&mut self, tree: &mut Tree, events: &mut dyn FnMut(&mut Deletion, &Tree, bool)) {
+        // Without an entry to select, the cursor stays on the name of the deleted entry, which is
+        // no longer listed, so the view puts it on the first row.
+        if let Some(entry) = self.deletion.run(tree, events) {
+            self.views.entry(self.path.clone()).or_default().cursor =
+                Some(tree.name(entry).to_vec());
+        }
+    }
+
+    /// List the open directory again after its entries changed, `loadDir` in `browser.zig`, and
+    /// restore its view. `loading` gets the screen while the entries are listed.
+    pub fn load_directory(
+        &mut self,
+        tree: &Tree,
+        options: &BrowserOptions,
+        loading: &mut dyn FnMut(&Loading<'_>),
+    ) {
+        self.load(tree, options, loading);
     }
 }
 

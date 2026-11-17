@@ -52,7 +52,7 @@ pub struct Config {
     pub export_block_size: Option<usize>,
     pub scan_ui: Option<ScanUi>,
     /// The options of the browser, of which the config sets the listing, the columns,
-    /// `--confirm-quit`, and `--color`.
+    /// `--confirm-quit`, `--confirm-delete`, `--delete-command`, and `--color`.
     ///
     /// `imported`, `can_delete`, `can_shell`, `can_refresh`, `thousands_separator`, and `extended`
     /// describe the session, not the config. They keep their defaults here until `run` sets them,
@@ -61,8 +61,6 @@ pub struct Config {
     pub can_delete: Option<bool>,
     pub can_shell: Option<bool>,
     pub can_refresh: Option<bool>,
-    pub confirm_delete: bool,
-    pub delete_command: Vec<u8>,
 }
 
 impl Default for Config {
@@ -84,8 +82,6 @@ impl Default for Config {
             can_delete: None,
             can_shell: None,
             can_refresh: None,
-            confirm_delete: true,
-            delete_command: Vec::new(),
         }
     }
 }
@@ -229,9 +225,11 @@ impl Config {
             }
             Arg::Long(b"confirm-quit") => self.browser.confirm_quit = true,
             Arg::Long(b"no-confirm-quit") => self.browser.confirm_quit = false,
-            Arg::Long(b"confirm-delete") => self.confirm_delete = true,
-            Arg::Long(b"no-confirm-delete") => self.confirm_delete = false,
-            Arg::Long(b"delete-command") => self.delete_command = args.value()?.to_vec(),
+            Arg::Long(b"confirm-delete") => self.browser.confirm_delete = true,
+            Arg::Long(b"no-confirm-delete") => self.browser.confirm_delete = false,
+            Arg::Long(b"delete-command") => {
+                self.browser.delete_command = args.value()?.to_vec();
+            }
             Arg::Long(b"color") => {
                 self.browser.color = match args.value()? {
                     b"off" => ColorScheme::Off,

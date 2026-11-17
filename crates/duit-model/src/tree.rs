@@ -467,6 +467,18 @@ impl Tree {
         }
     }
 
+    /// Zero `id` as [`Tree::zero_stats`] does, with `directory` as its parent, and take it out of
+    /// the entries of `directory`, where it follows `previous`, or is the first entry when
+    /// `previous` is `None`.
+    pub fn remove(&mut self, directory: DirectoryId, previous: Option<EntryId>, id: EntryId) {
+        self.zero_stats(id, Some(directory));
+        let next = self.entries[id.0].next;
+        match previous {
+            Some(previous) => self.entries[previous.0].next = next,
+            None => self.directories[directory.0].sub = next,
+        }
+    }
+
     /// Take every hard link at or below `id` out of the accounting, in the order of the tree.
     fn remove_links(&mut self, id: EntryId) {
         let mut stack = vec![id];

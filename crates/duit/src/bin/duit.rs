@@ -21,7 +21,7 @@ use duit_format::{
 };
 use duit_model::{MemorySink, Sink, Tree, TreeError};
 use duit_scan::{ScanError, ScanOptions, scan};
-use duit_tui::{Action, Browser, BrowserOptions, InitError, Input, Loading, Ui};
+use duit_tui::{Action, Browser, BrowserOptions, Deletion, InitError, Input, Loading, Ui};
 
 /// The terminal sequence that clears from the cursor to the end of the screen. ncdu writes it to
 /// standard error before an error message and at the end of a scan, to clear a progress line.
@@ -323,12 +323,14 @@ fn browse(
     let mut height = 0;
     let mut draw = true;
     let mut block = true;
+    let mut drawn = Instant::now();
     loop {
         if draw {
             ui.draw(|frame| {
                 height = frame.area().height;
                 browser.draw(frame, &tree, &options);
             });
+            drawn = Instant::now();
             draw = false;
         }
         match ui.getch(block) {
@@ -355,6 +357,32 @@ fn browse(
                         let mut command = Command::new(shell);
                         command.current_dir(OsStr::from_bytes(browser.path()));
                         ui.run_command(&mut command, false).map_err(init_error)?;
+                        draw = true;
+                        block = true;
+                    }
+                    Ok(Action::Delete) => {
+                        let mut delete = Delete {
+                            ui: &mut ui,
+                            options: &options,
+                            update_delay,
+                            drawn,
+                            exit: None,
+                        };
+                        browser.delete(&mut tree, &mut |deletion, tree, block| {
+                            delete.handle_event(deletion, tree, block);
+                        });
+                        if let Some(exit) = delete.exit {
+                            ui.deinit();
+                            return exit;
+                        }
+                        let mut load = Load::new(&mut ui, update_delay);
+                        browser.load_directory(&tree, &options, &mut |loading| {
+                            load.report(loading);
+                        });
+                        if let Some(exit) = load.finish() {
+                            ui.deinit();
+                            return exit;
+                        }
                         draw = true;
                         block = true;
                     }
@@ -458,6 +486,56 @@ impl<'a> Load<'a> {
             self.drop_keys();
         }
         self.exit
+    }
+}
+
+/// A deletion that the browser runs, as `delete.zig` calls `handleEvent` in `main.zig` before each
+/// entry that it deletes and while it waits for a key in its error window. The window is drawn
+/// when the deletion waits, and else once `update_delay` has passed since the screen was drawn.
+/// The keys that wait then go to the deletion while it runs. Ctrl-C aborts it, and duit ends.
+struct Delete<'a> {
+    ui: &'a mut Ui,
+    options: &'a BrowserOptions,
+    update_delay: Duration,
+    drawn: Instant,
+    /// How duit ends once the deletion is aborted, after Ctrl-C or an error reading the keys.
+    exit: Option<Result<ExitCode, Vec<u8>>>,
+}
+
+impl Delete<'_> {
+    fn handle_event(&mut self, deletion: &mut Deletion, tree: &Tree, block: bool) {
+        // shortcut: keys are read only when the window is drawn, because `getch` without `block`
+        // waits up to 1 ms. Read them before each entry once it returns at once.
+        if !block && self.drawn.elapsed() <= self.update_delay {
+            return;
+        }
+        self.draw(deletion, tree);
+        let mut block = block;
+        while deletion.is_active() {
+            match self.ui.getch(block) {
+                Ok(Some(Input::Key(key))) => deletion.key_input(key),
+                Ok(Some(Input::Resize)) => {
+                    self.draw(deletion, tree);
+                    continue;
+                }
+                Ok(Some(Input::Interrupt)) => {
+                    self.exit = Some(Ok(ExitCode::FAILURE));
+                    deletion.abort();
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    self.exit = Some(Err(input_error(&error)));
+                    deletion.abort();
+                }
+            }
+            block = false;
+        }
+    }
+
+    fn draw(&mut self, deletion: &Deletion, tree: &Tree) {
+        self.ui
+            .draw(|frame| deletion.draw(frame, tree, self.options));
+        self.drawn = Instant::now();
     }
 }
 
