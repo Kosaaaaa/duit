@@ -20,7 +20,7 @@ fn is_bad_char(byte: u8) -> bool {
 
 /// Convert `input` to valid, mostly printable UTF-8. Control characters and bytes that are not
 /// valid UTF-8 become `\x##`. Non-printable Unicode characters are not escaped.
-pub fn to_utf8(input: &[u8]) -> Cow<'_, str> {
+pub(crate) fn to_utf8(input: &[u8]) -> Cow<'_, str> {
     if !input.iter().copied().any(is_bad_char)
         && let Ok(valid) = str::from_utf8(input)
     {
@@ -53,7 +53,7 @@ fn char_width(character: char) -> usize {
 
 /// Shorten `input` to fit in `max_width` columns. A string that is too long keeps a prefix and a
 /// suffix with `...` in between.
-pub fn shorten(input: &str, max_width: usize) -> Cow<'_, str> {
+pub(crate) fn shorten(input: &str, max_width: usize) -> Cow<'_, str> {
     if max_width < 4 {
         return Cow::Borrowed("...");
     }
@@ -94,7 +94,7 @@ pub fn shorten(input: &str, max_width: usize) -> Cow<'_, str> {
 /// A size in a human-readable form: a [`fmt5dec`] number and a unit. The two take 8 columns
 /// together with SI units, or 9 with binary units.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FmtSize {
+pub(crate) struct FmtSize {
     /// The number, as `###.#`.
     pub number: String,
     /// The unit with its leading spaces, as `" XB"` or `" XiB"`.
@@ -103,7 +103,7 @@ pub struct FmtSize {
 
 impl FmtSize {
     /// Format `value` bytes, in powers of 1000 if `si` is set and powers of 1024 otherwise.
-    pub fn new(value: u64, si: bool) -> Self {
+    pub(crate) fn new(value: u64, si: bool) -> Self {
         let (unit, multiplier, divisor) = if si {
             if value < 1000 {
                 ("  B", 10, 1)
@@ -513,7 +513,7 @@ pub(crate) fn draw_size(
 }
 
 /// Format `value` in full, with `separator` between groups of three digits.
-pub fn format_number(value: u64, separator: &str) -> String {
+pub(crate) fn format_number(value: u64, separator: &str) -> String {
     let digits = value.to_string();
     let mut output = String::with_capacity(digits.len() * (1 + separator.len()));
     for (index, digit) in digits.chars().enumerate() {
@@ -527,7 +527,7 @@ pub fn format_number(value: u64, separator: &str) -> String {
 
 /// Format the file type and the permission bits of `mode` in 10 columns, as `ls -l` does. The
 /// file types have the values of POSIX, which Linux and macOS share.
-pub fn format_mode(mode: u16) -> String {
+pub(crate) fn format_mode(mode: u16) -> String {
     let file_type = match mode & 0o170_000 {
         0o040_000 => 'd',
         0o100_000 => '-',
