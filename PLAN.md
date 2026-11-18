@@ -225,12 +225,13 @@ panic. Done.
 
 ### M3: Browser
 
-- The in-memory tree (`mem_sink.zig`, `mem_src.zig`, and the tree in `model.zig`), with hard link
-  accounting and size aggregation. The browser is its first consumer.
+- The in-memory tree (`mem_sink.zig` and the tree in `model.zig`), with hard link accounting and
+  size aggregation. The browser is its first consumer.
 - A read-only UI over the in-memory tree and over a binary export: navigation, sorting, columns,
   info, help, quit, colors, and every display flag.
 
 Done when the snapshot tests pass and a manual side-by-side checklist against ncdu is complete.
+Done.
 
 ### M4: Actions
 
@@ -242,7 +243,8 @@ Done when every flag in `ncdu.1` and every key works. This is parity.
 
 ### M5: Performance
 
-Scan threads (`-t`), the memory layout decision, and benchmarks.
+Scan threads (`-t`), the memory layout decision, and benchmarks. A JSON export (`-o`) of a scan with
+more than one thread is written from the in-memory tree after the scan, which needs `mem_src.zig`.
 
 Done when scan time and peak memory are at or below ncdu's, or the gap is documented.
 
