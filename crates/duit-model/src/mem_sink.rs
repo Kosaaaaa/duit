@@ -1,7 +1,7 @@
 use std::io;
 
 use crate::tree::{DirectoryId, EntryExtended, FileKind, Tree, add_blocks};
-use crate::{EntryType, Extended, Sink, Special, Stat};
+use crate::{EntryType, Sink, Special, Stat};
 
 /// A [`Sink`] that builds a [`Tree`] in memory, with the totals of each directory.
 ///
@@ -66,10 +66,7 @@ impl MemorySink {
 
     /// The extended information to keep for an entry with `stat`.
     fn extended_of(&self, stat: &Stat) -> Option<EntryExtended> {
-        (self.extended && stat.extended != Extended::default()).then(|| EntryExtended {
-            extended: stat.extended,
-            latest_mtime: stat.extended.mtime.unwrap_or(0),
-        })
+        EntryExtended::of(stat, self.extended)
     }
 
     /// Count an entry with `stat` in the totals of `directory`. The sizes of a hard link are left

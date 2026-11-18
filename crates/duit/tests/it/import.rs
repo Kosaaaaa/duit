@@ -11,7 +11,10 @@ use tempfile::TempDir;
 
 #[cfg(feature = "test-ncdu")]
 use crate::{assert_ncdu, ncdu, render_as_duit};
-use crate::{duit, render, table, text};
+use crate::{
+    binary_file, binary_frames, block_start, duit, index_block, item, reference, render, table,
+    text,
+};
 
 /// An export with every kind of entry, extended fields, and a name that is not UTF-8.
 const EXPORT: &[u8] = b"[1,2,{\"progname\":\"ncdu\",\"progver\":\"2.9.2\",\"timestamp\":1},
@@ -640,61 +643,9 @@ fn binary_blocks() {
     }
 }
 
-/// A binary export with one data block per entry of `blocks`, each holding the CBOR items of that
-/// block, and an index block that ends with the reference of the root.
-fn binary_file(blocks: &[&[u8]], root: u64) -> Vec<u8> {
-    let frames: Vec<Vec<u8>> = blocks
-        .iter()
-        .map(|block| zstd::bulk::compress(block, 3).expect("block is compressed"))
-        .collect();
-    let frames: Vec<&[u8]> = frames.iter().map(Vec::as_slice).collect();
-    binary_frames(&frames, root)
-}
-
-/// A binary export of data blocks that hold `frames`, as [`binary_file`] writes it.
-fn binary_frames(frames: &[&[u8]], root: u64) -> Vec<u8> {
-    let mut export = b"\xbfncduEX1".to_vec();
-    let mut index = Vec::new();
-    for (number, frame) in frames.iter().enumerate() {
-        let header = u32::try_from(12 + frame.len())
-            .expect("block fits")
-            .to_be_bytes();
-        let number = u32::try_from(number).expect("number fits").to_be_bytes();
-        let block = [&header[..], &number, frame, &header].concat();
-        let position = (u64::try_from(export.len()).expect("offset fits") << 24)
-            | u64::try_from(block.len()).expect("length fits");
-        index.extend_from_slice(&position.to_be_bytes());
-        export.extend_from_slice(&block);
-    }
-    index.extend_from_slice(&root.to_be_bytes());
-    [export, index_block(&index)].concat()
-}
-
-/// An index block that holds `entries`, the positions of the data blocks and the root reference.
-fn index_block(entries: &[u8]) -> Vec<u8> {
-    let length = u32::try_from(8 + entries.len()).expect("index fits");
-    let header = (0x1000_0000 | length).to_be_bytes();
-    [&header[..], entries, &header].concat()
-}
-
-/// A CBOR map of an item with `fields`, of indefinite length as ncdu writes it.
-fn item(fields: &[u8]) -> Vec<u8> {
-    [b"\xbf", fields, b"\xff"].concat()
-}
-
 /// An item of a directory named `r` with `fields`.
 fn directory_item(fields: &[u8]) -> Vec<u8> {
     item(&[b"\x00\x00\x01\x41r", fields].concat())
-}
-
-/// A field `key` that refers to the first item of block `number`, as an unsigned integer.
-fn reference(key: u8, number: u8) -> [u8; 6] {
-    [key, 0x1a, number, 0, 0, 0]
-}
-
-/// The reference of the first item of block `number`.
-fn block_start(number: u8) -> u64 {
-    u64::from(number) << 24
 }
 
 /// A file named `f`.

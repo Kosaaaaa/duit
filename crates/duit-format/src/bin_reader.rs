@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 use std::io::{self, Read, Seek, SeekFrom};
 
-use duit_model::{EntryType, Sink, Special, Stat};
+use duit_model::{
+    DirectoryId, EntryExtended, EntryType, Extended, FileKind, Sink, Special, Stat, Tree, TreeError,
+};
 use zstd::zstd_safe;
 
 use crate::bin_format::{
@@ -77,6 +79,52 @@ struct Item {
     previous: Option<u64>,
     /// The last entry of a directory.
     last_entry: Option<u64>,
+}
+
+/// The fields of an item as the browser reads it, which [`parse_listed`] parses.
+struct ListedItem {
+    kind: ItemType,
+    name: Vec<u8>,
+    /// The sizes, which are the totals of the export for a directory, the device of a directory,
+    /// the inode and the link count of a hard link, and the extended information.
+    stat: Stat,
+    /// The number of entries below a directory, and the sizes of its hard links that are shared,
+    /// as the export stores them.
+    items: u32,
+    shared_blocks: u64,
+    shared_size: u64,
+    /// The `rderr` field of a directory, which is true when the directory could not be read
+    /// completely, and false when an entry below it could not be read.
+    read_error: bool,
+    sub_error: bool,
+    /// The entry before this one in its directory.
+    previous: Option<u64>,
+    /// The last entry of a directory.
+    last_entry: Option<u64>,
+}
+
+/// A directory of a binary export and its entries, as [`BinaryReader::read_directory`] reads them
+/// for the browser.
+#[derive(Debug)]
+pub struct Listing {
+    /// The directory and its entries, with the totals, item counts, and shared sizes that the
+    /// export stores for each directory rather than totals of the tree. The subdirectories have no
+    /// entries.
+    pub tree: Tree,
+    /// The directory, the one in the tree without a parent.
+    pub directory: DirectoryId,
+    /// The subdirectories, `dir_refs` in `browser.zig`, sorted by [`DirectoryId`].
+    pub directories: Vec<ListedDirectory>,
+}
+
+/// A subdirectory of a [`Listing`].
+#[derive(Debug, Clone, Copy)]
+pub struct ListedDirectory {
+    pub id: DirectoryId,
+    /// The reference of its item, which [`BinaryReader::read_directory`] reads it from.
+    pub itemref: u64,
+    /// Whether it has no entries, which the tree of the listing does not hold.
+    pub empty: bool,
 }
 
 /// A directory whose entries are being read.
@@ -193,8 +241,68 @@ impl<R: Read + Seek> BinaryReader<R> {
         Ok(())
     }
 
-    /// The reference of the root, which ends the index.
-    fn root(&self) -> u64 {
+    /// Read the directory at `itemref` and its entries into a [`Listing`], as the browser opens a
+    /// directory: `get` in `bin_reader.zig` on the directory, then on each of its entries as
+    /// `loadDir` in `browser.zig` follows them, from the last one. `None` if the item is not a
+    /// directory. With `extended`, an entry keeps its extended information, as with `-e`.
+    ///
+    /// An entry that is reached a second time in the same directory is an error, so that
+    /// references in a cycle end.
+    pub fn read_directory(
+        &mut self,
+        itemref: u64,
+        extended: bool,
+    ) -> Result<Option<Listing>, BinaryImportError> {
+        let directory = self.read_listed(itemref)?;
+        if directory.kind != ItemType::Stat(EntryType::Directory) {
+            return Ok(None);
+        }
+        let mut entries = Vec::new();
+        let mut visited = HashSet::new();
+        let mut next = directory.last_entry;
+        while let Some(entry) = next {
+            if !visited.insert(entry) {
+                return Err(BinaryImportError::Corrupt { itemref: entry });
+            }
+            let item = self.read_listed(entry)?;
+            next = item.previous;
+            entries.push((entry, item));
+        }
+
+        let mut tree = Tree::default();
+        let id = add_listed_directory(&mut tree, None, &directory, extended)
+            .map_err(|_| BinaryImportError::Corrupt { itemref })?;
+        let mut directories = Vec::new();
+        // Each entry that the tree adds comes first, so the last entry is added last.
+        for (entry, item) in entries.iter().rev() {
+            let kind = match item.kind {
+                ItemType::Stat(EntryType::Directory) => {
+                    let subdirectory = add_listed_directory(&mut tree, Some(id), item, extended)
+                        .map_err(|_| BinaryImportError::Corrupt { itemref: *entry })?;
+                    directories.push(ListedDirectory {
+                        id: subdirectory,
+                        itemref: *entry,
+                        empty: item.last_entry.is_none(),
+                    });
+                    continue;
+                }
+                ItemType::Stat(EntryType::Regular) => FileKind::Regular,
+                ItemType::Stat(EntryType::NonRegular) => FileKind::NonRegular,
+                ItemType::Stat(EntryType::HardLink) => FileKind::HardLink,
+                ItemType::Special(special) => FileKind::Special(special),
+            };
+            let entry_extended = EntryExtended::of(&item.stat, extended);
+            tree.create(id, kind, &item.stat, entry_extended, &item.name);
+        }
+        Ok(Some(Listing {
+            tree,
+            directory: id,
+            directories,
+        }))
+    }
+
+    /// The reference of the root, which ends the index, `getRoot` in `bin_reader.zig`.
+    pub fn root(&self) -> u64 {
         self.index
             .last_chunk::<8>()
             .map_or(0, |root| u64::from_be_bytes(*root))
@@ -207,6 +315,19 @@ impl<R: Read + Seek> BinaryReader<R> {
         device: u64,
         item: &mut Item,
     ) -> Result<(), BinaryImportError> {
+        let data = self.item_data(itemref)?;
+        parse_item(data, itemref, device, item).ok_or(BinaryImportError::Corrupt { itemref })
+    }
+
+    /// Read the item at `itemref` as the browser reads it.
+    fn read_listed(&mut self, itemref: u64) -> Result<ListedItem, BinaryImportError> {
+        let data = self.item_data(itemref)?;
+        parse_listed(data, itemref).ok_or(BinaryImportError::Corrupt { itemref })
+    }
+
+    /// The decompressed data of the block of `itemref`, from the item to the end of the block,
+    /// `readItem` in `bin_reader.zig`.
+    fn item_data(&mut self, itemref: u64) -> Result<&[u8], BinaryImportError> {
         let corrupt = || BinaryImportError::Corrupt { itemref };
         // A reference has 56 bits.
         let number = u32::try_from(itemref >> 24).map_err(|_| corrupt())?;
@@ -215,7 +336,6 @@ impl<R: Read + Seek> BinaryReader<R> {
         block
             .get(offset..)
             .filter(|data| !data.is_empty())
-            .and_then(|data| parse_item(data, itemref, device, item))
             .ok_or_else(corrupt)
     }
 
@@ -309,23 +429,14 @@ fn read_at(input: &mut (impl Read + Seek), buffer: &mut [u8], offset: u64) -> io
     input.read_exact(buffer)
 }
 
-/// Parse the item at `itemref` from `data`, which starts with it, into `item`, with `device` as
-/// the device of its directory. `None` if it is not valid.
-///
-/// The fields are read in order, so a later field overrides an earlier one with the same key.
-/// Unknown keys are skipped, and so are the fields that only the browser reads, such as the
-/// totals of a directory.
-fn parse_item(data: &[u8], itemref: u64, device: u64, item: &mut Item) -> Option<()> {
-    item.stat = Stat {
-        device,
-        ..Stat::default()
-    };
-    item.name.clear();
-    item.read_error = false;
-    item.previous = None;
-    item.last_entry = None;
-    let mut has_type = false;
-
+/// Call `field` with the key and the value of each field of the item that starts `data`, in
+/// order, `ItemParser` in `bin_reader.zig`. A field whose key the format does not use is skipped,
+/// and `field` reads or skips the content of each value it gets. `None` if the item is not a valid
+/// map, or if `field` returns `None`.
+fn fields<'a>(
+    data: &'a [u8],
+    mut field: impl FnMut(&mut Cbor<'a>, ItemKey, Value) -> Option<()>,
+) -> Option<()> {
     let mut cbor = Cbor { buffer: data };
     let head = cbor.next()?;
     if head.major != Major::Map {
@@ -335,7 +446,7 @@ fn parse_item(data: &[u8], itemref: u64, device: u64, item: &mut Item) -> Option
     let mut keys_left = (!head.indefinite).then_some(head.argument);
     loop {
         let key = match &mut keys_left {
-            Some(0) => break,
+            Some(0) => return Some(()),
             Some(left) => {
                 *left -= 1;
                 cbor.next()?
@@ -343,7 +454,7 @@ fn parse_item(data: &[u8], itemref: u64, device: u64, item: &mut Item) -> Option
             None => {
                 let key = cbor.next()?;
                 if key.is_break() {
-                    break;
+                    return Some(());
                 }
                 key
             }
@@ -355,43 +466,189 @@ fn parse_item(data: &[u8], itemref: u64, device: u64, item: &mut Item) -> Option
             continue;
         }
         let value = cbor.next()?;
+        match ItemKey::from_u64(key.argument) {
+            Some(key) => field(&mut cbor, key, value)?,
+            None => cbor.skip(value)?,
+        }
+    }
+}
+
+/// Parse the item at `itemref` from `data`, which starts with it, into `item`, with `device` as
+/// the device of its directory, `readFields` in `bin_reader.zig`. `None` if it is not valid.
+///
+/// The fields are read in order, so a later field overrides an earlier one with the same key.
+/// The fields that only the browser reads, such as the totals of a directory, are skipped.
+fn parse_item(data: &[u8], itemref: u64, device: u64, item: &mut Item) -> Option<()> {
+    item.stat = Stat {
+        device,
+        ..Stat::default()
+    };
+    item.name.clear();
+    item.read_error = false;
+    item.previous = None;
+    item.last_entry = None;
+    let mut has_type = false;
+    fields(data, |cbor, key, value| {
         let stat = &mut item.stat;
         let extended = &mut stat.extended;
-        match ItemKey::from_u64(key.argument) {
-            Some(ItemKey::Type) => {
+        match key {
+            ItemKey::Type => {
                 item.kind = item_type(i32::try_from(value.integer()?).ok()?);
                 has_type = true;
             }
-            Some(ItemKey::Name) => {
+            ItemKey::Name => {
                 let name = cbor.bytes(value)?;
                 item.name.clear();
                 item.name.extend_from_slice(name);
             }
-            Some(ItemKey::Prev) => item.previous = Some(value.itemref(itemref)?),
-            Some(ItemKey::Asize) => stat.size = value.unsigned()?,
-            Some(ItemKey::Dsize) => stat.blocks = value.unsigned::<u64>()? / 512,
-            Some(ItemKey::Dev) => stat.device = value.unsigned()?,
-            Some(ItemKey::Rderr) => item.read_error = value.is_true(),
-            Some(ItemKey::Sub) => item.last_entry = Some(value.itemref(itemref)?),
-            Some(ItemKey::Ino) => stat.inode = value.unsigned()?,
-            Some(ItemKey::Nlink) => {
-                stat.link_count = value.unsigned::<u32>().filter(|&count| count < 1 << 31)?;
-            }
-            Some(ItemKey::Uid) => extended.uid = Some(value.unsigned()?),
-            Some(ItemKey::Gid) => extended.gid = Some(value.unsigned()?),
-            Some(ItemKey::Mode) => extended.mode = Some(value.unsigned()?),
-            Some(ItemKey::Mtime) => extended.mtime = Some(value.unsigned()?),
-            Some(
-                ItemKey::Cumasize
-                | ItemKey::Cumdsize
-                | ItemKey::Shrasize
-                | ItemKey::Shrdsize
-                | ItemKey::Items,
-            )
-            | None => cbor.skip(value)?,
+            ItemKey::Prev => item.previous = Some(value.itemref(itemref)?),
+            ItemKey::Asize => stat.size = value.unsigned()?,
+            ItemKey::Dsize => stat.blocks = value.unsigned::<u64>()? / 512,
+            ItemKey::Dev => stat.device = value.unsigned()?,
+            ItemKey::Rderr => item.read_error = value.is_true(),
+            ItemKey::Sub => item.last_entry = Some(value.itemref(itemref)?),
+            ItemKey::Ino => stat.inode = value.unsigned()?,
+            ItemKey::Nlink => stat.link_count = link_count(value)?,
+            ItemKey::Uid => extended.uid = Some(value.unsigned()?),
+            ItemKey::Gid => extended.gid = Some(value.unsigned()?),
+            ItemKey::Mode => extended.mode = Some(value.unsigned()?),
+            ItemKey::Mtime => extended.mtime = Some(value.unsigned()?),
+            ItemKey::Cumasize
+            | ItemKey::Cumdsize
+            | ItemKey::Shrasize
+            | ItemKey::Shrdsize
+            | ItemKey::Items => cbor.skip(value)?,
         }
-    }
+        Some(())
+    })?;
     (has_type && !item.name.is_empty()).then_some(())
+}
+
+/// The link count of the value of an `nlink` field, which ncdu reads as a 31-bit integer.
+fn link_count(value: Value) -> Option<u32> {
+    value.unsigned::<u32>().filter(|&count| count < 1 << 31)
+}
+
+/// Parse the item at `itemref` from `data`, which starts with it, as the browser reads it, `get`
+/// in `bin_reader.zig`. `None` if it is not valid.
+///
+/// As in ncdu, the fields are read twice: once for the type, the name, and the extended
+/// information, and once for the fields that the type has. A directory has the totals of the
+/// export rather than its own sizes, and the fields that its type does not have are skipped.
+fn parse_listed(data: &[u8], itemref: u64) -> Option<ListedItem> {
+    let mut kind = None;
+    let mut name: &[u8] = b"";
+    let mut extended = Extended::default();
+    fields(data, |cbor, key, value| {
+        match key {
+            ItemKey::Type => kind = Some(item_type(i32::try_from(value.integer()?).ok()?)),
+            ItemKey::Name => name = cbor.bytes(value)?,
+            ItemKey::Uid => extended.uid = Some(value.unsigned()?),
+            ItemKey::Gid => extended.gid = Some(value.unsigned()?),
+            ItemKey::Mode => extended.mode = Some(value.unsigned()?),
+            ItemKey::Mtime => extended.mtime = Some(value.unsigned()?),
+            ItemKey::Prev
+            | ItemKey::Asize
+            | ItemKey::Dsize
+            | ItemKey::Dev
+            | ItemKey::Rderr
+            | ItemKey::Cumasize
+            | ItemKey::Cumdsize
+            | ItemKey::Shrasize
+            | ItemKey::Shrdsize
+            | ItemKey::Items
+            | ItemKey::Sub
+            | ItemKey::Ino
+            | ItemKey::Nlink => cbor.skip(value)?,
+        }
+        Some(())
+    })?;
+    let kind = kind.filter(|_| !name.is_empty())?;
+    let directory = kind == ItemType::Stat(EntryType::Directory);
+    let link = kind == ItemType::Stat(EntryType::HardLink);
+    let mut item = ListedItem {
+        kind,
+        name: name.to_vec(),
+        stat: Stat {
+            extended,
+            ..Stat::default()
+        },
+        items: 0,
+        shared_blocks: 0,
+        shared_size: 0,
+        read_error: false,
+        sub_error: false,
+        previous: None,
+        last_entry: None,
+    };
+    fields(data, |cbor, key, value| {
+        let stat = &mut item.stat;
+        match key {
+            ItemKey::Prev => item.previous = Some(value.itemref(itemref)?),
+            ItemKey::Asize if !directory => stat.size = value.unsigned()?,
+            ItemKey::Dsize if !directory => stat.blocks = value.unsigned::<u64>()? / 512,
+            ItemKey::Rderr if directory => {
+                if value.is_true() {
+                    item.read_error = true;
+                } else {
+                    item.sub_error = true;
+                }
+            }
+            ItemKey::Dev if directory => stat.device = value.unsigned()?,
+            ItemKey::Cumasize => stat.size = value.unsigned()?,
+            ItemKey::Cumdsize => stat.blocks = value.unsigned::<u64>()? / 512,
+            ItemKey::Shrasize if directory => item.shared_size = value.unsigned()?,
+            ItemKey::Shrdsize if directory => {
+                item.shared_blocks = value.unsigned::<u64>()? / 512;
+            }
+            ItemKey::Items if directory => {
+                item.items = u32::try_from(value.unsigned::<u64>()?).unwrap_or(u32::MAX);
+            }
+            ItemKey::Sub if directory => item.last_entry = Some(value.itemref(itemref)?),
+            ItemKey::Ino if link => stat.inode = value.unsigned()?,
+            ItemKey::Nlink if link => stat.link_count = link_count(value)?,
+            ItemKey::Type
+            | ItemKey::Name
+            | ItemKey::Asize
+            | ItemKey::Dsize
+            | ItemKey::Dev
+            | ItemKey::Rderr
+            | ItemKey::Shrasize
+            | ItemKey::Shrdsize
+            | ItemKey::Items
+            | ItemKey::Sub
+            | ItemKey::Ino
+            | ItemKey::Nlink
+            | ItemKey::Uid
+            | ItemKey::Gid
+            | ItemKey::Mode
+            | ItemKey::Mtime => cbor.skip(value)?,
+        }
+        Some(())
+    })?;
+    Some(item)
+}
+
+/// Add the directory of `item` to `parent` in `tree`, or as a directory without a parent, with the
+/// totals that the export stores.
+fn add_listed_directory(
+    tree: &mut Tree,
+    parent: Option<DirectoryId>,
+    item: &ListedItem,
+    extended: bool,
+) -> Result<DirectoryId, TreeError> {
+    let device = tree.device_id(item.stat.device)?;
+    let entry_extended = EntryExtended::of(&item.stat, extended);
+    let id = tree.create_directory(parent, device, &item.stat, entry_extended, &item.name);
+    tree.set_totals(
+        id,
+        item.items,
+        item.shared_blocks,
+        item.shared_size,
+        item.read_error,
+        item.sub_error,
+    );
+    Ok(id)
 }
 
 /// The item type of the value of the `type` field. An unknown type is a pattern if it is negative

@@ -47,8 +47,8 @@ impl From<TreeError> for io::Error {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EntryId(usize);
 
-/// The identifier of a [`Directory`] in its [`Tree`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// The identifier of a [`Directory`] in its [`Tree`], in the order the tree creates directories.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DirectoryId(usize);
 
 /// The identifier of a [`Link`] in its [`Tree`].
@@ -140,9 +140,24 @@ pub struct EntryExtended {
     pub latest_mtime: u64,
 }
 
+impl EntryExtended {
+    /// The extended information to keep for an entry with `stat`, with `-e` (`extended`), and
+    /// when `stat` has any.
+    pub fn of(stat: &Stat, extended: bool) -> Option<Self> {
+        (extended && stat.extended != Extended::default()).then(|| Self {
+            extended: stat.extended,
+            latest_mtime: stat.extended.mtime.unwrap_or(0),
+        })
+    }
+}
+
 /// A directory tree in memory. Entries refer to each other by identifier, and each identifier is
 /// only valid for the tree that returned it.
-#[derive(Debug, Default)]
+///
+/// A [`crate::MemorySink`] builds a tree with the totals of each directory. The browser reads a
+/// binary export into a tree of one directory and its entries at a time, with the totals that the
+/// export stores, through [`Tree::create_directory`] and [`Tree::create`].
+#[derive(Debug, Default, Clone)]
 pub struct Tree {
     entries: Vec<Entry>,
     directories: Vec<Directory>,
@@ -248,7 +263,7 @@ impl Tree {
     }
 
     /// The identifier of `device`, which is new for a device that the tree does not have yet.
-    pub(crate) fn device_id(&mut self, device: u64) -> Result<DeviceId, TreeError> {
+    pub fn device_id(&mut self, device: u64) -> Result<DeviceId, TreeError> {
         match self.device_ids.entry(device) {
             MapEntry::Occupied(occupied) => Ok(*occupied.get()),
             MapEntry::Vacant(vacant) => {
@@ -264,7 +279,7 @@ impl Tree {
 
     /// Add the directory `name` with the sizes of `stat` to `parent`, or as a directory without
     /// a parent when `parent` is `None`.
-    pub(crate) fn create_directory(
+    pub fn create_directory(
         &mut self,
         parent: Option<DirectoryId>,
         device: DeviceId,
@@ -294,7 +309,7 @@ impl Tree {
     /// Add the entry `name` with the sizes of `stat` to `parent`. A hard link gets the inode and
     /// the link count of `stat`, and joins the links to the same inode, whose sizes are then
     /// left out of the totals until [`Tree::add_all_stats`].
-    pub(crate) fn create(
+    pub fn create(
         &mut self,
         parent: DirectoryId,
         kind: FileKind,
@@ -363,6 +378,26 @@ impl Tree {
 
     pub(crate) fn directory_mut(&mut self, id: DirectoryId) -> &mut Directory {
         &mut self.directories[id.0]
+    }
+
+    /// Set the totals of `id` that a binary export stores, for a directory that is read without
+    /// the entries below it. The `parent` of a directory stays out of reach, as every walk up the
+    /// tree needs it to be acyclic.
+    pub fn set_totals(
+        &mut self,
+        id: DirectoryId,
+        items: u32,
+        shared_blocks: u64,
+        shared_size: u64,
+        read_error: bool,
+        sub_error: bool,
+    ) {
+        let directory = &mut self.directories[id.0];
+        directory.items = items;
+        directory.shared_blocks = shared_blocks;
+        directory.shared_size = shared_size;
+        directory.read_error = read_error;
+        directory.sub_error = sub_error;
     }
 
     pub(crate) fn extended_mut(&mut self, id: EntryId) -> Option<&mut EntryExtended> {
@@ -631,7 +666,7 @@ impl Tree {
 
 /// What [`Tree::create`] adds: any entry that is not a directory.
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum FileKind {
+pub enum FileKind {
     HardLink,
     Regular,
     NonRegular,
