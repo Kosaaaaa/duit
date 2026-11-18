@@ -111,8 +111,27 @@ enum State {
     Main,
     /// The confirmation of `--confirm-quit`.
     Quit,
+    /// The help window, which shows [`Help`].
+    Help,
     /// The info window, which shows [`Info`].
     Info,
+}
+
+/// A tab of the help window.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum HelpTab {
+    #[default]
+    Keys,
+    Format,
+    About,
+}
+
+/// The help window, `help` in `browser.zig`. It opens again on the tab it was closed on.
+#[derive(Debug, Default)]
+struct Help {
+    tab: HelpTab,
+    /// The index of the first key on the keys tab.
+    offset: usize,
 }
 
 /// A tab of the info window. Only a hard link has the links tab.
@@ -179,6 +198,7 @@ pub struct Browser {
     parents: Vec<DirectoryId>,
     state: State,
     info: Info,
+    help: Help,
 }
 
 /// Whether ncdu shows `kind` as a directory, with a `/` in front of the name: a directory, also
@@ -401,6 +421,7 @@ impl Browser {
             parents: iter::successors(Some(directory), |&id| tree.directory(id).parent).collect(),
             state: State::Main,
             info: Info::default(),
+            help: Help::default(),
         };
         browser.parents.reverse();
         browser.load(tree, options);
@@ -614,6 +635,47 @@ impl Browser {
         }
     }
 
+    /// Handle `key` in the help window, `help.keyInput` in `browser.zig`. A key that is not one
+    /// of the window closes it. The keys tab starts at the top again when the tab changes or the
+    /// window closes.
+    fn help_key_input(&mut self, key: Key) {
+        let help = &mut self.help;
+        let tab = help.tab;
+        match key {
+            Key::Char('1') => help.tab = HelpTab::Keys,
+            Key::Char('2') => help.tab = HelpTab::Format,
+            Key::Char('3') => help.tab = HelpTab::About,
+            Key::Char('h') | Key::Left => {
+                help.tab = match help.tab {
+                    HelpTab::About => HelpTab::Format,
+                    HelpTab::Keys | HelpTab::Format => HelpTab::Keys,
+                };
+            }
+            Key::Char('l') | Key::Right => {
+                help.tab = match help.tab {
+                    HelpTab::Keys => HelpTab::Format,
+                    HelpTab::Format | HelpTab::About => HelpTab::About,
+                };
+            }
+            Key::Char('j' | ' ') | Key::Down | Key::PageDown => {
+                let max = match help.tab {
+                    HelpTab::Keys => HELP_KEYS.len() - HELP_KEY_LINES,
+                    HelpTab::Format | HelpTab::About => 0,
+                };
+                if help.offset < max {
+                    help.offset += 1;
+                }
+            }
+            Key::Char('k') | Key::Up | Key::PageUp => help.offset = help.offset.saturating_sub(1),
+            Key::Char(_) | Key::Enter | Key::Backspace | Key::Home | Key::End | Key::Other => {
+                self.state = State::Main;
+            }
+        }
+        if help.tab != tab || self.state != State::Help {
+            help.offset = 0;
+        }
+    }
+
     /// Sort by `column`: in `default_order` when it is another column than before, and in the
     /// other order when it is the same, `sortToggle` in `browser.zig`.
     fn sort_toggle(
@@ -663,6 +725,10 @@ impl Browser {
                 self.state = State::Main;
                 return key == Key::Char('y') || key == Key::Char('Y');
             }
+            State::Help => {
+                self.help_key_input(key);
+                return false;
+            }
             State::Info => {
                 if self.info_key_input(tree, options, key, height) {
                     return false;
@@ -682,8 +748,9 @@ impl Browser {
                     self.set_info(tree, item, Tab::Info);
                 }
             }
-            // The help window, refresh, shell, and delete.
-            Key::Char('?' | 'r' | 'b' | 'd') => {}
+            Key::Char('?') => self.state = State::Help,
+            // Refresh, shell, and delete.
+            Key::Char('r' | 'b' | 'd') => {}
 
             Key::Char('n') => {
                 self.sort_toggle(tree, options, SortColumn::Name, SortOrder::Ascending);
@@ -896,6 +963,7 @@ impl Browser {
                 let x = window.text(buffer, 2, x, "N", BOLD);
                 window.text(buffer, 2, x, ")", PLAIN);
             }
+            State::Help => self.help.draw(buffer),
             State::Info => {
                 if let Some(&Some(entry)) = self.items.get(self.cursor) {
                     self.info.draw(buffer, tree, options, entry);
@@ -903,6 +971,131 @@ impl Browser {
             }
         }
     }
+}
+
+/// The keys of the browser and what they do, on the keys tab of the help window.
+const HELP_KEYS: [(&str, &str); 20] = [
+    ("up, k", "Move cursor up"),
+    ("down, j", "Move cursor down"),
+    ("right/enter", "Open selected directory"),
+    ("left, <, h", "Open parent directory"),
+    ("n", "Sort by name (ascending/descending)"),
+    ("s", "Sort by size (ascending/descending)"),
+    ("C", "Sort by items (ascending/descending)"),
+    ("M", "Sort by mtime (-e flag)"),
+    ("d", "Delete selected file or directory"),
+    ("t", "Toggle dirs before files when sorting"),
+    ("g", "Show percentage and/or graph"),
+    ("u", "Show/hide hard link shared sizes"),
+    ("a", "Toggle between apparent size and disk usage"),
+    ("c", "Toggle display of child item counts"),
+    ("m", "Toggle display of latest mtime (-e flag)"),
+    ("e", "Show/hide hidden or excluded files"),
+    ("i", "Show information about selected item"),
+    ("r", "Recalculate the current directory"),
+    ("b", "Spawn shell in current directory"),
+    ("q", "Quit ncdu"),
+];
+
+/// The number of keys that the keys tab shows at a time.
+const HELP_KEY_LINES: usize = 10;
+
+/// The flags in front of the entries of the listing, on the format tab of the help window.
+const HELP_FLAGS: [(&str, &str); 8] = [
+    ("!", "An error occurred while reading this directory"),
+    (".", "An error occurred while reading a subdirectory"),
+    ("<", "File or directory is excluded from the statistics"),
+    ("e", "Empty directory"),
+    (">", "Directory was on another filesystem"),
+    ("@", "This is not a file nor a dir (symlink, socket, ...)"),
+    ("^", "Excluded Linux pseudo-filesystem"),
+    ("H", "Same file was already counted (hard link)"),
+];
+
+/// The rows of the logo on the about tab, one bit per column, of which bits 28 down to 1 are drawn
+/// and a set bit is drawn in reverse video.
+const HELP_LOGO: [u32; 5] = [
+    0b1_1111_1001_1111_0000_0011_0011_0011,
+    0b1_1001_1001_1000_0000_0011_0011_0011,
+    0b1_1001_1001_1000_0011_1111_0011_0011,
+    0b1_1001_1001_1000_0011_0011_0011_0011,
+    0b1_1001_1001_1111_0011_1111_0011_1111,
+];
+
+impl Help {
+    /// Draw the window over the listing with its current tab.
+    fn draw(&self, buffer: &mut Buffer) {
+        let window = Window::new(buffer, 15, 60, "ncdu help");
+        window.tab(buffer, 30, self.tab == HelpTab::Keys, "1", "Keys");
+        window.tab(buffer, 39, self.tab == HelpTab::Format, "2", "Format");
+        window.tab(buffer, 50, self.tab == HelpTab::About, "3", "About");
+
+        let x = window.text(buffer, 13, 42, "Press ", PLAIN);
+        let x = window.text(buffer, 13, x, "q", BOLD);
+        window.text(buffer, 13, x, " to close", PLAIN);
+
+        match self.tab {
+            HelpTab::Keys => self.draw_keys(&window, buffer),
+            HelpTab::Format => draw_help_format(&window, buffer),
+            HelpTab::About => draw_help_about(&window, buffer),
+        }
+    }
+
+    /// Draw the keys from `offset`, right aligned, with what they do.
+    fn draw_keys(&self, window: &Window, buffer: &mut Buffer) {
+        let lines = HELP_KEYS.iter().skip(self.offset).take(HELP_KEY_LINES);
+        for (row, &(key, description)) in (2..).zip(lines) {
+            let column = 13u16.saturating_sub(u16::try_from(key.len()).unwrap_or(13));
+            let x = window.text(buffer, row, column, key, BOLD);
+            window.text(buffer, row, x, &format!(" {description}"), PLAIN);
+        }
+        if self.offset < HELP_KEYS.len() - HELP_KEY_LINES {
+            window.text(buffer, 12, 25, "-- more --", PLAIN);
+        }
+    }
+}
+
+/// Draw the format of a row of the listing, and the flags in front of the entries.
+fn draw_help_format(window: &Window, buffer: &mut Buffer) {
+    window.text(buffer, 2, 3, "X  [size] [graph] [file or directory]", BOLD);
+    window.text(
+        buffer,
+        3,
+        4,
+        "The X is only present in the following cases:",
+        PLAIN,
+    );
+    for (row, &(flag, description)) in (5..).zip(HELP_FLAGS.iter()) {
+        let x = window.text(buffer, row, 4, flag, PLAIN);
+        window.text(buffer, row, x, &format!(" {description}"), PLAIN);
+    }
+}
+
+/// Draw the logo, the name, the version, and the author. The version is that of duit, as in the
+/// header of the browser.
+fn draw_help_about(window: &Window, buffer: &mut Buffer) {
+    for (row, line) in (3..).zip(HELP_LOGO) {
+        for (column, bit) in (12..).zip((1..=28).rev()) {
+            let style = if line & (1 << bit) > 0 {
+                REVERSE
+            } else {
+                PLAIN
+            };
+            window.text(buffer, row, column, " ", style);
+        }
+    }
+    window.text(buffer, 3, 43, "NCurses", PLAIN);
+    window.text(buffer, 4, 43, "Disk", PLAIN);
+    window.text(buffer, 5, 43, "Usage", PLAIN);
+    window.text(buffer, 7, 43, env!("CARGO_PKG_VERSION"), PLAIN);
+    window.text(
+        buffer,
+        9,
+        11,
+        "Written by Yorhel <projects@yorhel.nl>",
+        PLAIN,
+    );
+    window.text(buffer, 10, 16, "https://dev.yorhel.nl/ncdu", PLAIN);
 }
 
 /// The width of the info window.

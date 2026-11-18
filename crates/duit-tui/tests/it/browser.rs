@@ -1777,3 +1777,300 @@ fn info_keys() {
         tab(&[Key::Char('2')])
     );
 }
+
+/// `?` opens the help window on the keys tab, with the first 10 keys and a mark that there are
+/// more.
+#[test]
+fn help() {
+    let tree = tree_of(SOURCE, false);
+    let keys = [Key::Char('?')];
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 18)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "   16.0 Ki┌── ncdu help ────────────────1:Keys───2:Format───3:About──┐          "
+    "!   4.0 Ki│                                                          │          "
+    "e   4.0 Ki│       up, k Move cursor up                               │          "
+    "    4.0 Ki│     down, j Move cursor down                             │          "
+    "H   4.0 Ki│ right/enter Open selected directory                      │          "
+    "    0.0   │  left, <, h Open parent directory                        │          "
+    "    0.0   │           n Sort by name (ascending/descending)          │          "
+    "    0.0   │           s Sort by size (ascending/descending)          │rol \x01 é"
+    "@   0.0   │           C Sort by items (ascending/descending)         │          "
+    "^   0.0   │           M Sort by mtime (-e flag)                      │          "
+    "<   0.0   │           d Delete selected file or directory            │          "
+    ">   0.0   │           t Toggle dirs before files when sorting        │          "
+    "    0.0   │                        -- more --                        │          "
+    "          │                                         Press q to close │          "
+    "          └──────────────────────────────────────────────────────────┘          "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRR...BBBBBBBBBBB................#RRRRR...B..........B.........RRRRRRRRRR
+    ................................................................................
+    ..................BBBBB.........................................................
+    ................BBBBBBB.........................................................
+    ............BBBBBBBBBBB.........................................................
+    .............BBBBBBBBBB.........................................................
+    ......................B.........................................................
+    ......................B.........................................................
+    ......................B.........................................................
+    ......................B.........................................................
+    ......................B.........................................................
+    ......................B.........................................................
+    ................................................................................
+    ..........................................................B.....................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// The keys tab scrolls one line at a time, and stops at the last key.
+#[test]
+fn help_scroll() {
+    let tree = tree_of(SOURCE, false);
+    let keys = [&[Key::Char('?')], &[Key::Char('j'); 11][..]].concat();
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 18)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "   16.0 Ki┌── ncdu help ────────────────1:Keys───2:Format───3:About──┐          "
+    "!   4.0 Ki│                                                          │          "
+    "e   4.0 Ki│           g Show percentage and/or graph                 │          "
+    "    4.0 Ki│           u Show/hide hard link shared sizes             │          "
+    "H   4.0 Ki│           a Toggle between apparent size and disk usage  │          "
+    "    0.0   │           c Toggle display of child item counts          │          "
+    "    0.0   │           m Toggle display of latest mtime (-e flag)     │          "
+    "    0.0   │           e Show/hide hidden or excluded files           │rol \x01 é"
+    "@   0.0   │           i Show information about selected item         │          "
+    "^   0.0   │           r Recalculate the current directory            │          "
+    "<   0.0   │           b Spawn shell in current directory             │          "
+    ">   0.0   │           q Quit ncdu                                    │          "
+    "    0.0   │                                                          │          "
+    "          │                                         Press q to close │          "
+    "          └──────────────────────────────────────────────────────────┘          "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRR...BBBBBBBBBBB................#RRRRR...B..........B.........RRRRRRRRRR
+    ................................................................................
+    ......................B.........................................................
+    ......................B.........................................................
+    ......................B.........................................................
+    ......................B.........................................................
+    ......................B.........................................................
+    ......................B.........................................................
+    ......................B.........................................................
+    ......................B.........................................................
+    ......................B.........................................................
+    ......................B.........................................................
+    ................................................................................
+    ..........................................................B.....................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// The format tab explains the flags in front of the entries.
+#[test]
+fn help_format() {
+    let tree = tree_of(SOURCE, false);
+    let keys = [Key::Char('?'), Key::Char('2')];
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 18)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "   16.0 Ki┌── ncdu help ────────────────1:Keys───2:Format───3:About──┐          "
+    "!   4.0 Ki│                                                          │          "
+    "e   4.0 Ki│  X  [size] [graph] [file or directory]                   │          "
+    "    4.0 Ki│   The X is only present in the following cases:          │          "
+    "H   4.0 Ki│                                                          │          "
+    "    0.0   │   ! An error occurred while reading this directory       │          "
+    "    0.0   │   . An error occurred while reading a subdirectory       │          "
+    "    0.0   │   < File or directory is excluded from the statistics    │rol \x01 é"
+    "@   0.0   │   e Empty directory                                      │          "
+    "^   0.0   │   > Directory was on another filesystem                  │          "
+    "<   0.0   │   @ This is not a file nor a dir (symlink, socket, ...)  │          "
+    ">   0.0   │   ^ Excluded Linux pseudo-filesystem                     │          "
+    "    0.0   │   H Same file was already counted (hard link)            │          "
+    "          │                                         Press q to close │          "
+    "          └──────────────────────────────────────────────────────────┘          "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRR...BBBBBBBBBBB................B........#RRRRRRR...B.........RRRRRRRRRR
+    ................................................................................
+    .............BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB..............................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ..........................................................B.....................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// The about tab draws the logo in reverse video, and the version of duit.
+#[test]
+fn help_about() {
+    let tree = tree_of(SOURCE, false);
+    let keys = [Key::Char('?'), Key::Char('3')];
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 18)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "   16.0 Ki┌── ncdu help ────────────────1:Keys───2:Format───3:About──┐          "
+    "!   4.0 Ki│                                                          │          "
+    "e   4.0 Ki│                                                          │          "
+    "    4.0 Ki│                                          NCurses         │          "
+    "H   4.0 Ki│                                          Disk            │          "
+    "    0.0   │                                          Usage           │          "
+    "    0.0   │                                                          │          "
+    "    0.0   │                                          0.0.1           │rol \x01 é"
+    "@   0.0   │                                                          │          "
+    "^   0.0   │          Written by Yorhel <projects@yorhel.nl>          │          "
+    "<   0.0   │               https://dev.yorhel.nl/ncdu                 │          "
+    ">   0.0   │                                                          │          "
+    "    0.0   │                                                          │          "
+    "          │                                         Press q to close │          "
+    "          └──────────────────────────────────────────────────────────┘          "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRR...BBBBBBBBBBB................B........B..........#RRRRRR...RRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ......................RRRRRR..RRRRR......RR..RR..R..............................
+    ......................RR..RR..RR.........RR..RR..R..............................
+    ......................RR..RR..RR.....RRRRRR..RR..R..............................
+    ......................RR..RR..RR.....RR..RR..RR..R..............................
+    ......................RR..RR..RRRRR..RRRRRR..RRRRR..............................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ..........................................................B.....................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// The keys of the help window, which takes every key, and `?` in the info window.
+#[test]
+fn help_keys() {
+    let tree = tree_of(SOURCE, false);
+    let screen_of = |keys: &[Key]| screen(&tree, root(&tree), &imported(), keys, (80, 18));
+    let (help, i, j, k) = (Key::Char('?'), Key::Char('i'), Key::Down, Key::Up);
+    let tab = |key: char| [help, Key::Char(key)];
+
+    // Any key other than those of the window closes it, and the listing does not see it.
+    assert_ne!(screen_of(&[help]), screen_of(&[]));
+    for key in [
+        Key::Char('q'),
+        help,
+        i,
+        Key::Enter,
+        Key::Backspace,
+        Key::Home,
+        Key::End,
+        Key::Other,
+    ] {
+        assert_eq!(screen_of(&[help, key]), screen_of(&[]), "{key:?}");
+    }
+    // `q` does not quit, and does not ask to.
+    let mut options = imported();
+    let mut browser = Browser::new(&tree, root(&tree), &options);
+    browser.key_input(&tree, &mut options, help, 18);
+    assert!(!browser.key_input(&tree, &mut options, Key::Char('q'), 18));
+    let confirm = BrowserOptions {
+        confirm_quit: true,
+        ..imported()
+    };
+    assert_eq!(
+        screen(
+            &tree,
+            root(&tree),
+            &confirm,
+            &[help, Key::Char('q')],
+            (80, 18)
+        ),
+        screen_of(&[])
+    );
+    // The tabs switch with `1`, `2`, and `3`, and with `h` or left and `l` or right.
+    assert_ne!(screen_of(&tab('2')), screen_of(&[help]));
+    assert_ne!(screen_of(&tab('3')), screen_of(&tab('2')));
+    assert_eq!(
+        screen_of(&[&tab('3')[..], &[Key::Char('1')]].concat()),
+        screen_of(&[help])
+    );
+    assert_eq!(screen_of(&[help, Key::Char('l')]), screen_of(&tab('2')));
+    assert_eq!(
+        screen_of(&[help, Key::Right, Key::Right]),
+        screen_of(&tab('3'))
+    );
+    assert_eq!(
+        screen_of(&[help, Key::Char('l'), Key::Char('l'), Key::Char('l')]),
+        screen_of(&tab('3'))
+    );
+    assert_eq!(
+        screen_of(&[&tab('3')[..], &[Key::Char('h')]].concat()),
+        screen_of(&tab('2'))
+    );
+    assert_eq!(
+        screen_of(&[&tab('3')[..], &[Key::Left, Key::Left]].concat()),
+        screen_of(&[help])
+    );
+    assert_eq!(screen_of(&[help, Key::Char('h')]), screen_of(&[help]));
+    // Space, `j`, down, and page down scroll the keys tab down one line, and `k`, up, and page up
+    // scroll it up.
+    let scrolled = screen_of(&[help, j]);
+    assert_ne!(scrolled, screen_of(&[help]));
+    assert_eq!(screen_of(&[help, Key::Char('j')]), scrolled);
+    assert_eq!(screen_of(&[help, Key::Char(' ')]), scrolled);
+    assert_eq!(screen_of(&[help, Key::PageDown]), scrolled);
+    assert_eq!(screen_of(&[help, j, j, Key::Char('k')]), scrolled);
+    assert_eq!(screen_of(&[help, j, j, k]), scrolled);
+    assert_eq!(screen_of(&[help, j, j, Key::PageUp]), scrolled);
+    assert_eq!(screen_of(&[help, k]), screen_of(&[help]));
+    // The other tabs do not scroll.
+    assert_eq!(
+        screen_of(&[&tab('2')[..], &[j]].concat()),
+        screen_of(&tab('2'))
+    );
+    assert_eq!(
+        screen_of(&[&tab('3')[..], &[j, k]].concat()),
+        screen_of(&tab('3'))
+    );
+    // A key that keeps the tab keeps the scroll position, and one that changes the tab or closes
+    // the window starts at the top again.
+    assert_eq!(screen_of(&[help, j, Key::Char('1')]), scrolled);
+    assert_eq!(screen_of(&[help, j, Key::Char('h')]), scrolled);
+    assert_eq!(screen_of(&[help, j, Key::Left]), scrolled);
+    assert_eq!(
+        screen_of(&[help, j, Key::Char('2'), Key::Char('1')]),
+        screen_of(&[help])
+    );
+    assert_eq!(
+        screen_of(&[help, j, Key::Char('q'), help]),
+        screen_of(&[help])
+    );
+    // The window opens again on the tab it was closed on.
+    assert_eq!(
+        screen_of(&[&tab('2')[..], &[Key::Char('q'), help]].concat()),
+        screen_of(&tab('2'))
+    );
+    // `?` in the info window replaces it with the help window, and closing that one shows the
+    // listing.
+    assert_eq!(screen_of(&[i, help]), screen_of(&[help]));
+    assert_eq!(screen_of(&[i, help, Key::Char('q')]), screen_of(&[]));
+    // The info window keeps the cursor of the links tab while the help window is open.
+    let link = [j, j, j, j, i, Key::Char('2'), j];
+    assert_eq!(
+        screen_of(&[&link[..], &[help, Key::Char('q'), i, Key::Char('2')]].concat()),
+        screen_of(&link)
+    );
+}
