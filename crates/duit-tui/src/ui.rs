@@ -147,6 +147,11 @@ impl FmtSize {
 
 /// Text in the `default` style of ncdu's `off` color scheme.
 pub(crate) const PLAIN: Style = Style::new();
+/// The `bold`, `box_title` and `key` styles of ncdu's `off` color scheme.
+pub(crate) const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
+/// The box of a [`Window`]. It clears the attributes of the screen below it, as ncurses replaces
+/// them when it draws the box in the `default` style.
+const CLEAR: Style = Style::new().remove_modifier(Modifier::all());
 /// The header, the footer, and the cursor row, which ncdu's `off` color scheme draws in reverse
 /// video.
 pub(crate) const REVERSE: Style = Style::new().add_modifier(Modifier::REVERSED);
@@ -174,6 +179,57 @@ pub(crate) fn draw_line(
 ) {
     let line: String = iter::repeat_n(character, length.into()).collect();
     draw_text(buffer, x, y, &line, style);
+}
+
+/// A box with a border and a title in the center of the screen, `ui.Box` in `ui.zig`.
+pub(crate) struct Window {
+    x: u16,
+    y: u16,
+}
+
+impl Window {
+    /// Draw a box of `width` by `height` in the center of `buffer`, with `title` in its top border.
+    /// A box smaller than 6 by 3 has no border, and its content is drawn over the screen.
+    pub(crate) fn new(buffer: &mut Buffer, height: u16, width: u16, title: &str) -> Self {
+        let window = Self {
+            x: (buffer.area.width / 2).saturating_sub(width / 2),
+            y: (buffer.area.height / 2).saturating_sub(height / 2),
+        };
+        if width < 6 || height < 3 {
+            return window;
+        }
+        for row in 0..height {
+            let (left, fill, right) = match row {
+                0 => ('┌', '─', '┐'),
+                _ if row == height - 1 => ('└', '─', '┘'),
+                _ => ('│', ' ', '│'),
+            };
+            window.text(buffer, row, 0, &left.to_string(), CLEAR);
+            window.text(
+                buffer,
+                row,
+                1,
+                &fill.to_string().repeat((width - 2).into()),
+                CLEAR,
+            );
+            window.text(buffer, row, width - 1, &right.to_string(), CLEAR);
+        }
+        window.text(buffer, 0, 3, &format!(" {title} "), BOLD);
+        window
+    }
+
+    /// Draw `text` at `column` of `row` inside the box, and return the column of the box after it.
+    pub(crate) fn text(
+        &self,
+        buffer: &mut Buffer,
+        row: u16,
+        column: u16,
+        text: &str,
+        style: Style,
+    ) -> u16 {
+        let x = self.x.saturating_add(column);
+        draw_text(buffer, x, self.y.saturating_add(row), text, style).saturating_sub(self.x)
+    }
 }
 
 /// Draw `value` bytes as a human-readable size, as [`FmtSize`] formats it, and return the column
