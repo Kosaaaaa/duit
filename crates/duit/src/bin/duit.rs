@@ -4,6 +4,7 @@ use std::env;
 use std::ffi::{CStr, CString, OsStr};
 use std::fs::{self, File};
 use std::io::{self, IsTerminal, Read, Write};
+use std::mem;
 use std::num::NonZero;
 use std::os::fd::AsFd;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -19,11 +20,13 @@ use duit_format::{
     BINARY_SIGNATURE, BinaryExport, BinaryExportError, BinaryImportError, BinaryOpenError,
     BinaryReader, ImportError, JsonExport, JsonExportError, import,
 };
-use duit_model::{MemorySink, Producer, Progress, ProgressSink, Sink, Tree, TreeError};
+use duit_model::{
+    DirectoryId, MemorySink, Producer, Progress, ProgressSink, Sink, Tree, TreeError,
+};
 use duit_scan::{ScanError, ScanOptions, scan};
 use duit_tui::{
-    Action, Browser, BrowserOptions, Console, Deletion, InitError, Input, Loading, ScanScreen,
-    ScanState, Ui,
+    Action, Browser, BrowserOptions, Console, Deletion, InitError, Input, Loading, ScanKey,
+    ScanScreen, ScanState, Ui,
 };
 
 /// The terminal sequence that clears from the cursor to the end of the screen. ncdu writes it to
@@ -244,7 +247,7 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
             if quit_after_scan {
                 return Ok(ExitCode::SUCCESS);
             }
-            return browse(None, options, config.update_delay, |options, loading| {
+            return browse(None, options, &config, |options, loading| {
                 Browser::open(reader, options, loading)
             });
         }
@@ -262,12 +265,9 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
         let Some(root) = tree.root() else {
             return Ok(ExitCode::SUCCESS);
         };
-        return browse(
-            progress.ui.take(),
-            options,
-            config.update_delay,
-            |options, loading| Ok(Some((Browser::new(&tree, root, options, loading), tree))),
-        );
+        return browse(progress.ui.take(), options, &config, |options, loading| {
+            Ok(Some((Browser::new(&tree, root, options, loading), tree)))
+        });
     };
 
     let out: Box<dyn Write> = if export_path == b"-" {
@@ -318,11 +318,12 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
 /// waiting before it draws again. As in ncdu, the browser is opened once the terminal is, so that
 /// the root of a binary export is read then, and `open` gives `None` for a root that is not a
 /// directory. While the browser lists a directory, [`Load`] draws the loading screen after
-/// `update_delay`. The browser draws on `ui` if the progress of `-2` took over the terminal.
+/// `update_delay`. The browser draws on `ui` if the progress of `-2` took over the terminal. A
+/// refresh scans with the options of `config`.
 fn browse(
     ui: Option<Ui>,
     mut options: BrowserOptions,
-    update_delay: Duration,
+    config: &Config,
     open: impl FnOnce(
         &BrowserOptions,
         &mut dyn FnMut(&Loading<'_>),
@@ -332,6 +333,7 @@ fn browse(
         Some(ui) => ui,
         None => Ui::init(!io::stdin().is_terminal()).map_err(init_error)?,
     };
+    let update_delay = config.update_delay;
     let mut load = Load::new(&mut ui, update_delay);
     let opened = open(&options, &mut |loading| load.report(loading));
     if let Some(exit) = load.finish() {
@@ -389,6 +391,23 @@ fn browse(
                         draw = true;
                         block = true;
                     }
+                    Ok(Action::Refresh) => {
+                        let directory = browser.directory();
+                        ui = match refresh(ui, &mut tree, directory, &options, config, drawn) {
+                            Ok(ui) => ui,
+                            Err(exit) => return exit,
+                        };
+                        let mut load = Load::new(&mut ui, update_delay);
+                        browser.load_directory(&tree, &options, &mut |loading| {
+                            load.report(loading);
+                        });
+                        if let Some(exit) = load.finish() {
+                            ui.deinit();
+                            return exit;
+                        }
+                        draw = true;
+                        block = true;
+                    }
                     Ok(Action::Delete) => {
                         let mut delete = Delete {
                             ui: &mut ui,
@@ -436,6 +455,49 @@ fn browse(
             }
         }
     }
+}
+
+/// Scan `directory` of `tree` again into the tree, the `.refresh` state of the loop in `main.zig`,
+/// and return `ui`, or how duit ends. The progress is drawn on the full screen of `ui` whatever
+/// `-0` and `-1` say, as ncdu sets `scan_ui` to `.full` before it starts the browser. A directory
+/// that cannot be opened leaves its entries as they were, and shows an error until a key is
+/// pressed. The update delay runs from `drawn`, when the browser was drawn, as ncdu keeps one timer
+/// for every screen.
+fn refresh(
+    ui: Ui,
+    tree: &mut Tree,
+    directory: DirectoryId,
+    options: &BrowserOptions,
+    config: &Config,
+    drawn: Instant,
+) -> Result<Ui, Result<ExitCode, Vec<u8>>> {
+    let mut path = Vec::new();
+    tree.format_path(directory, true, &mut path);
+    path.push(0);
+    // A name with a NUL byte, which only an import has, ends the path there, as for ncdu.
+    let path = CStr::from_bytes_until_nul(&path).unwrap_or_default();
+    let mut progress = ScanProgress::new(ScanUi::Full, config.update_delay, options, false);
+    progress.ui = Some(ui);
+    progress.drawn = drawn;
+    let memory = MemorySink::refresh(mem::take(tree), directory, config.extended);
+    let mut report = |state: &Progress| progress.report(state);
+    let mut sink = ProgressSink::new(memory, Producer::Scan, &mut report);
+    let scanned = scan(&mut sink, path, scan_options(config), &config.exclude);
+    let memory = sink.into_inner();
+    // duit ends after an abort, and the tree with it.
+    if let Some(exit) = progress.exit.take() {
+        return Err(exit);
+    }
+    if let Err(ScanError::Sink(error)) = &scanned {
+        return Err(Err(writing(error)));
+    }
+    *tree = progress.finish(memory)?;
+    if scanned.is_err() {
+        progress.wait(&ScanState::Error {
+            path: path.to_bytes(),
+        })?;
+    }
+    progress.ui.take().ok_or(Ok(ExitCode::FAILURE))
 }
 
 /// The message that ncdu exits with when it cannot take over the terminal.
@@ -682,14 +744,8 @@ fn fill<C: Consumer>(
     );
     // Arguments are C strings and cannot hold a NUL byte.
     let path = CString::new(path).map_err(|_| Err(opening_directory("Unexpected")))?;
-    let options = ScanOptions {
-        same_filesystem: config.same_filesystem,
-        follow_symlinks: config.follow_symlinks,
-        exclude_kernfs: config.exclude_kernfs,
-        exclude_caches: config.exclude_caches,
-    };
     let mut sink = ProgressSink::new(consumer, Producer::Scan, &mut report);
-    let scanned = scan(&mut sink, &path, options, &config.exclude);
+    let scanned = scan(&mut sink, &path, scan_options(config), &config.exclude);
     let consumer = sink.into_inner();
     if let Some(exit) = progress.exit.take() {
         consumer.discard();
@@ -708,6 +764,16 @@ fn fill<C: Consumer>(
     }
     progress.clear();
     Ok(output)
+}
+
+/// The options of a scan, from `config`.
+fn scan_options(config: &Config) -> ScanOptions {
+    ScanOptions {
+        same_filesystem: config.same_filesystem,
+        follow_symlinks: config.follow_symlinks,
+        exclude_kernfs: config.exclude_kernfs,
+        exclude_caches: config.exclude_caches,
+    }
 }
 
 /// The progress of a scan or an import, which `handleEvent` in `main.zig` draws with `draw` in
@@ -758,13 +824,17 @@ impl ScanProgress {
     /// Handle an event of the scan or the import, which has reported `progress`, and fail to stop
     /// it once duit is to end.
     fn report(&mut self, progress: &Progress) -> io::Result<()> {
-        let state = ScanState::Running {
-            files: progress.files(),
-            bytes: progress.bytes(),
-            directory: progress.directory(),
-            last_error: progress.last_error(),
-        };
-        self.handle_event(&state, false);
+        if progress.zeroing() {
+            self.handle_event(&ScanState::Zeroing, true);
+        } else {
+            let state = ScanState::Running {
+                files: progress.files(),
+                bytes: progress.bytes(),
+                directory: progress.directory(),
+                last_error: progress.last_error(),
+            };
+            self.handle_event(&state, false);
+        }
         match self.exit {
             Some(_) => Err(io::Error::other("duit ends")),
             None => Ok(()),
@@ -815,13 +885,40 @@ impl ScanProgress {
         while exit.is_none() {
             match ui.getch(false) {
                 Ok(Some(Input::Key(key))) => match screen.key_input(state, key, options) {
-                    Some(Action::Quit) => *exit = Some(Ok(ExitCode::SUCCESS)),
-                    Some(Action::Browse | Action::Shell | Action::Delete) | None => {}
+                    Some(ScanKey::Quit) => *exit = Some(Ok(ExitCode::SUCCESS)),
+                    Some(ScanKey::Close) | None => {}
                 },
                 Ok(Some(Input::Resize)) => ui.draw(|frame| screen.draw(frame, state, options)),
                 Ok(Some(Input::Interrupt)) => *exit = Some(Ok(ExitCode::FAILURE)),
                 Ok(None) => break,
                 Err(error) => *exit = Some(Err(input_error(&error))),
+            }
+        }
+    }
+
+    /// Draw `state` on the full screen that the progress took over, and wait for the key that
+    /// closes it, as `main.zig` calls `handleEvent` until the error of a refresh is closed. Fails
+    /// with how duit ends after Ctrl-C or an error reading the keys.
+    fn wait(&mut self, state: &ScanState<'_>) -> Result<(), Result<ExitCode, Vec<u8>>> {
+        let Self {
+            options,
+            screen,
+            ui: Some(ui),
+            ..
+        } = self
+        else {
+            return Ok(());
+        };
+        loop {
+            ui.draw(|frame| screen.draw(frame, state, options));
+            match ui.getch(true) {
+                Ok(Some(Input::Key(key))) => match screen.key_input(state, key, options) {
+                    Some(ScanKey::Close) => return Ok(()),
+                    Some(ScanKey::Quit) | None => {}
+                },
+                Ok(Some(Input::Resize) | None) => {}
+                Ok(Some(Input::Interrupt)) => return Err(Ok(ExitCode::FAILURE)),
+                Err(error) => return Err(Err(input_error(&error))),
             }
         }
     }

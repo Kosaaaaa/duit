@@ -58,4 +58,10 @@ pub trait Sink {
         directory: Self::Directory,
         parent: Option<&mut Self::Directory>,
     ) -> io::Result<()>;
+
+    /// Whether [`Sink::create_root`] clears the counts of a large directory first, which the
+    /// progress shows, as a refresh into memory does.
+    fn zeroing(&self) -> bool {
+        false
+    }
 }

@@ -4,7 +4,8 @@ use std::io;
 
 use duit_format::import;
 use duit_model::{
-    DirectoryId, EntryId, EntryKind, EntryType, Extended, MemorySink, Sink, Special, Stat, Tree,
+    DirectoryId, EntryId, EntryKind, EntryType, Extended, MemoryDirectory, MemorySink, Sink,
+    Special, Stat, Tree,
 };
 use insta::assert_snapshot;
 
@@ -502,5 +503,201 @@ fn zero_stats_links() {
         "c" hard link {asize: 0, blocks: 0, ino: 2, nlink: 2}
         "b" hard link {asize: 0, blocks: 0, ino: 1, nlink: 2}
       "a" hard link {asize: 0, blocks: 0, ino: 1, nlink: 2}
+    "#);
+}
+
+/// Scan `directory` of `tree` again with the entries that `build` adds, as a refresh does.
+fn refresh(
+    tree: Tree,
+    directory: DirectoryId,
+    extended: bool,
+    build: impl FnOnce(&mut MemorySink) -> io::Result<()>,
+) -> Tree {
+    let mut sink = MemorySink::refresh(tree, directory, extended);
+    build(&mut sink).expect("entries are added");
+    sink.finish()
+}
+
+/// `/root/sub` before a refresh, below `/root` with a file of its own.
+fn before_refresh(sink: &mut MemorySink) -> io::Result<()> {
+    let mut root = sink.create_root(b"/root", &directory(1))?;
+    sink.add_stat(&mut root, b"a", &file(1, 1))?;
+    let mut sub = sink.add_directory(&mut root, b"sub", &directory(1))?;
+    sink.add_stat(&mut sub, b"keep", &file(2, 1))?;
+    sink.add_stat(&mut sub, b"gone", &file(3, 1))?;
+    sink.add_stat(&mut sub, b"grow", &file(4, 1))?;
+    sink.add_stat(&mut sub, b"swap", &file(5, 1))?;
+    let mut nested = sink.add_directory(&mut sub, b"nested", &directory(1))?;
+    sink.add_stat(&mut nested, b"old", &file(6, 1))?;
+    sink.finish_directory(nested, Some(&mut sub))?;
+    sink.finish_directory(sub, Some(&mut root))?;
+    sink.finish_directory(root, None)
+}
+
+/// The entries of `/root/sub` after the refresh, in the order of `readdir`: `gone` and
+/// `nested/old` are gone, `grow` grew, `swap` is a directory now, and `added` and `nested/new` are
+/// new.
+fn after_refresh(sink: &mut MemorySink, sub: &mut MemoryDirectory) -> io::Result<()> {
+    sink.add_stat(sub, b"keep", &file(2, 1))?;
+    sink.add_stat(sub, b"grow", &file(40, 2))?;
+    let mut swap = sink.add_directory(sub, b"swap", &directory(1))?;
+    sink.add_stat(&mut swap, b"inside", &file(7, 1))?;
+    sink.finish_directory(swap, Some(sub))?;
+    let mut nested = sink.add_directory(sub, b"nested", &directory(1))?;
+    sink.add_stat(&mut nested, b"new", &file(8, 1))?;
+    sink.finish_directory(nested, Some(sub))?;
+    sink.add_stat(sub, b"added", &file(9, 1))
+}
+
+/// A refresh of a directory keeps the entries that it finds again by name, in their place, as
+/// `getEntry` in `mem_sink.zig` does, adds the new ones first, and drops the ones that are gone. A
+/// file that became a directory is a new entry. Every directory then has the totals of a scan of
+/// the new tree, the root above the directory too.
+#[test]
+fn refresh_entries() {
+    let tree = build(false, before_refresh);
+    let root = root(&tree);
+    let sub = find_directory(&tree, root, b"sub");
+    let nested = find_directory(&tree, sub, b"nested");
+    let keep = find(&tree, sub, b"keep");
+    let swap = find(&tree, sub, b"swap");
+    let tree = refresh(tree, sub, false, |sink| {
+        let mut directory = sink.create_root(b"/root/sub", &directory(1))?;
+        after_refresh(sink, &mut directory)?;
+        sink.finish_directory(directory, None)
+    });
+    let fresh = build(false, |sink| {
+        let mut root = sink.create_root(b"/root", &directory(1))?;
+        sink.add_stat(&mut root, b"a", &file(1, 1))?;
+        let mut sub = sink.add_directory(&mut root, b"sub", &directory(1))?;
+        after_refresh(sink, &mut sub)?;
+        sink.finish_directory(sub, Some(&mut root))?;
+        sink.finish_directory(root, None)
+    });
+    assert_eq!(totals(&tree), totals(&fresh));
+    assert_eq!(find_directory(&tree, root, b"sub"), sub);
+    assert_eq!(find_directory(&tree, sub, b"nested"), nested);
+    assert_eq!(find(&tree, sub, b"keep"), keep);
+    assert_ne!(find(&tree, sub, b"swap"), swap);
+    assert_snapshot!(render(&tree), @r#"
+    "/root" directory {asize: 16451, blocks: 39, items: 9, dev: 1}
+      "sub" directory {asize: 12354, blocks: 30, items: 7, dev: 1}
+        "added" regular {asize: 9, blocks: 1}
+        "swap" directory {asize: 4103, blocks: 9, items: 1, dev: 1}
+          "inside" regular {asize: 7, blocks: 1}
+        "nested" directory {asize: 4104, blocks: 9, items: 1, dev: 1}
+          "new" regular {asize: 8, blocks: 1}
+        "grow" regular {asize: 40, blocks: 2}
+        "keep" regular {asize: 2, blocks: 1}
+      "a" regular {asize: 1, blocks: 1}
+    "#);
+}
+
+/// A refreshed entry keeps its place only if it is of the same kind: a directory, a hard link, or
+/// any other entry, which turns into a special entry or back. It loses its extended fields when the
+/// new stat has none, and is a new entry when the new stat has them and it has none.
+#[test]
+fn refresh_kinds() {
+    let dated = |mtime| Stat {
+        extended: Extended {
+            mtime: Some(mtime),
+            ..Extended::default()
+        },
+        ..file(1, 1)
+    };
+    let tree = build(true, |sink| {
+        let mut root = sink.create_root(b"/root", &directory(1))?;
+        sink.add_stat(&mut root, b"plain", &file(1, 1))?;
+        sink.add_stat(&mut root, b"dated", &dated(100))?;
+        sink.add_stat(&mut root, b"excluded", &file(1, 1))?;
+        sink.add_special(&mut root, b"unreadable", Special::ReadError)?;
+        sink.add_stat(&mut root, b"link", &link(1, 10))?;
+        sink.finish_directory(root, None)
+    });
+    let root = root(&tree);
+    let tree = refresh(tree, root, true, |sink| {
+        let mut root = sink.create_root(b"/root", &directory(1))?;
+        sink.add_stat(&mut root, b"plain", &dated(200))?;
+        sink.add_stat(&mut root, b"dated", &file(1, 1))?;
+        sink.add_special(&mut root, b"excluded", Special::Pattern)?;
+        let fifo = Stat {
+            entry_type: EntryType::NonRegular,
+            ..Stat::default()
+        };
+        sink.add_stat(&mut root, b"unreadable", &fifo)?;
+        sink.add_stat(&mut root, b"link", &file(10, 1))?;
+        sink.finish_directory(root, None)
+    });
+    assert_snapshot!(render(&tree), @r#"
+    "/root" directory {asize: 4108, blocks: 11, items: 5, dev: 1}
+      "link" regular {asize: 10, blocks: 1}
+      "plain" regular {asize: 1, blocks: 1, mtime: 200, latest_mtime: 200}
+      "unreadable" non-regular {asize: 0, blocks: 0}
+      "excluded" Pattern {asize: 0, blocks: 0}
+      "dated" regular {asize: 1, blocks: 1}
+    "#);
+}
+
+/// A refresh of a directory with a hard link to an inode that has another link outside of it
+/// counts the inode once again, so nothing changes. Once the link is gone, the other one keeps the
+/// link count that it had and is shared, as `removeLink` in `model.zig` notes: a refresh cannot
+/// tell a removed link from one that is still there.
+#[test]
+fn refresh_links() {
+    let tree = build(false, |sink| {
+        let mut root = sink.create_root(b"/root", &directory(1))?;
+        sink.add_stat(&mut root, b"a", &link(1, 10))?;
+        let mut sub = sink.add_directory(&mut root, b"sub", &directory(1))?;
+        sink.add_stat(&mut sub, b"b", &link(1, 10))?;
+        sink.add_stat(&mut sub, b"c", &link(2, 20))?;
+        sink.add_stat(&mut sub, b"d", &link(2, 20))?;
+        sink.finish_directory(sub, Some(&mut root))?;
+        sink.finish_directory(root, None)
+    });
+    let before = render(&tree);
+    let sub = find_directory(&tree, root(&tree), b"sub");
+    let tree = refresh(tree, sub, false, |sink| {
+        let mut sub = sink.create_root(b"/root/sub", &directory(1))?;
+        sink.add_stat(&mut sub, b"b", &link(1, 10))?;
+        sink.add_stat(&mut sub, b"c", &link(2, 20))?;
+        sink.add_stat(&mut sub, b"d", &link(2, 20))?;
+        sink.finish_directory(sub, None)
+    });
+    assert_eq!(render(&tree), before);
+    let tree = refresh(tree, sub, false, |sink| {
+        let mut sub = sink.create_root(b"/root/sub", &directory(1))?;
+        sink.add_stat(&mut sub, b"c", &link(2, 20))?;
+        sink.add_stat(&mut sub, b"d", &link(2, 20))?;
+        sink.finish_directory(sub, None)
+    });
+    assert_snapshot!(render(&tree), @r#"
+    "/root" directory {asize: 8222, blocks: 18, items: 4, dev: 1, shared_asize: 10, shared_blocks: 1}
+      "sub" directory {asize: 4116, blocks: 9, items: 2, dev: 1}
+        "d" hard link {asize: 20, blocks: 1, ino: 2, nlink: 2}
+        "c" hard link {asize: 20, blocks: 1, ino: 2, nlink: 2}
+      "a" hard link {asize: 10, blocks: 1, ino: 1, nlink: 2}
+    "#);
+}
+
+/// A refresh whose directory cannot be opened adds nothing, and the tree is finished anyway, as
+/// `scan` in `scan.zig` defers `done`. The directory was not cleared, so the directories above it
+/// count its totals twice, as in ncdu.
+#[test]
+fn refresh_error() {
+    let tree = build(false, |sink| {
+        let mut root = sink.create_root(b"/root", &directory(1))?;
+        sink.add_stat(&mut root, b"g", &file(50_000, 100))?;
+        let mut sub = sink.add_directory(&mut root, b"sub", &directory(1))?;
+        sink.add_stat(&mut sub, b"f", &file(100_000, 200))?;
+        sink.finish_directory(sub, Some(&mut root))?;
+        sink.finish_directory(root, None)
+    });
+    let sub = find_directory(&tree, root(&tree), b"sub");
+    let tree = refresh(tree, sub, false, |_| Ok(()));
+    assert_snapshot!(render(&tree), @r#"
+    "/root" directory {asize: 262288, blocks: 524, items: 5, dev: 1}
+      "sub" directory {asize: 104096, blocks: 208, items: 1, dev: 1}
+        "f" regular {asize: 100000, blocks: 200}
+      "g" regular {asize: 50000, blocks: 100}
     "#);
 }

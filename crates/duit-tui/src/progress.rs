@@ -4,7 +4,7 @@ use std::time::Duration;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 
-use crate::browser::{Action, BrowserOptions};
+use crate::browser::BrowserOptions;
 use crate::terminal::Key;
 use crate::ui::{FmtSize, Style, Window, shorten, to_utf8};
 
@@ -26,6 +26,15 @@ pub enum ScanState<'a> {
     Error { path: &'a [u8] },
     /// The scan or the import is done.
     Done,
+}
+
+/// What the main loop does after a key on the scan screen, from [`ScanScreen::key_input`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanKey {
+    /// Abort the scan and quit.
+    Quit,
+    /// Close the error of a refresh and keep browsing.
+    Close,
 }
 
 /// The progress lines of `-1` on standard error, `drawConsole` in `sink.zig`.
@@ -199,22 +208,22 @@ impl ScanScreen {
         }
     }
 
-    /// Handle `key` in `state`, `keyInput` in `sink.zig`. Returns [`Action::Quit`] once the scan is
-    /// aborted, and [`Action::Browse`] once the error of a refresh is closed.
+    /// Handle `key` in `state`, `keyInput` in `sink.zig`. Returns [`ScanKey::Quit`] once the scan is
+    /// aborted, and [`ScanKey::Close`] once the error of a refresh is closed.
     pub fn key_input(
         &mut self,
         state: &ScanState<'_>,
         key: Key,
         options: &BrowserOptions,
-    ) -> Option<Action> {
+    ) -> Option<ScanKey> {
         match state {
             ScanState::Running { .. } => match key {
                 Key::Char('q') if options.confirm_quit => {
                     self.confirming_quit = !self.confirming_quit;
                     None
                 }
-                Key::Char('q') => Some(Action::Quit),
-                Key::Char('y' | 'Y') if self.confirming_quit => Some(Action::Quit),
+                Key::Char('q') => Some(ScanKey::Quit),
+                Key::Char('y' | 'Y') if self.confirming_quit => Some(ScanKey::Quit),
                 Key::Char('y' | 'Y') => None,
                 Key::Char(_)
                 | Key::Enter
@@ -232,8 +241,8 @@ impl ScanScreen {
                     None
                 }
             },
-            ScanState::Error { .. } => Some(Action::Browse),
-            ScanState::Zeroing | ScanState::CountingHardLinks | ScanState::Done => None,
+            ScanState::Error { .. } => Some(ScanKey::Close),
+            ScanState::Zeroing | ScanState::CountingHardLinks { .. } | ScanState::Done => None,
         }
     }
 }

@@ -1452,6 +1452,30 @@ fn refresh_disabled_imported() {
     "#);
 }
 
+/// `r` asks the main loop to scan the open directory again, which [`Browser::directory`] gives.
+#[test]
+fn refresh() {
+    let mut tree = tree_of(SOURCE, false);
+    let mut options = BrowserOptions::default();
+    let mut browser = Browser::new(&tree, root(&tree), &options, &mut |_| {});
+    let mut action = |browser: &mut Browser, tree: &mut Tree, key| {
+        browser
+            .key_input(tree, &mut options, key, 12, &mut |_| {})
+            .expect("key is handled")
+    };
+    assert_eq!(
+        action(&mut browser, &mut tree, Key::Char('r')),
+        Action::Refresh
+    );
+    assert_eq!(browser.directory(), root(&tree));
+    assert_eq!(action(&mut browser, &mut tree, Key::Enter), Action::Browse);
+    assert_eq!(
+        action(&mut browser, &mut tree, Key::Char('r')),
+        Action::Refresh
+    );
+    assert_eq!(browser.directory(), subdirectory(&tree, b"src"));
+}
+
 /// Refreshing a scan is disabled with `--disable-refresh`.
 #[test]
 fn refresh_disabled() {

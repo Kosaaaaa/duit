@@ -11,7 +11,9 @@ use std::time::{Duration, SystemTime};
 
 #[cfg(feature = "test-ncdu")]
 use duit_format::JsonExport;
-use duit_model::{EntryType, Extended, Sink, Special, Stat};
+use duit_model::{
+    DirectoryId, EntryKind, EntryType, Extended, MemorySink, Sink, Special, Stat, Tree,
+};
 use duit_scan::{ExcludePatterns, ScanOptions, scan};
 use insta::assert_snapshot;
 use tempfile::TempDir;
@@ -522,4 +524,133 @@ fn ncdu() {
         },
         &[b"excluded", b"*.d/", anchored.as_bytes()],
     );
+}
+
+/// The tree of a scan of `fixture` into memory.
+fn scan_tree(fixture: &Fixture) -> Tree {
+    let mut memory = MemorySink::new(false);
+    scan(
+        &mut memory,
+        &fixture.c_path(),
+        ScanOptions::default(),
+        &ExcludePatterns::default(),
+    )
+    .expect("scan succeeds");
+    memory.finish()
+}
+
+/// Scan the directory at `path`, by names from the root, of `tree` again into it, as a refresh
+/// does.
+fn refresh_tree(tree: Tree, path: &[&[u8]]) -> Tree {
+    let mut directory = tree.root().expect("tree has a root");
+    for name in path {
+        directory = tree
+            .entries(directory)
+            .find_map(|entry| match tree.entry(entry).kind {
+                EntryKind::Directory(child) if tree.name(entry) == *name => Some(child),
+                EntryKind::Directory(_)
+                | EntryKind::HardLink(_)
+                | EntryKind::Regular
+                | EntryKind::NonRegular
+                | EntryKind::Special(_) => None,
+            })
+            .expect("directory exists");
+    }
+    let mut full_path = Vec::new();
+    tree.format_path(directory, true, &mut full_path);
+    let full_path = CString::new(full_path).expect("path has no NUL byte");
+    let mut memory = MemorySink::refresh(tree, directory, false);
+    scan(
+        &mut memory,
+        &full_path,
+        ScanOptions::default(),
+        &ExcludePatterns::default(),
+    )
+    .expect("scan succeeds");
+    memory.finish()
+}
+
+/// Every entry of `tree` below the root by path, sorted, with its kind, its sizes, and the
+/// totals of a directory or the link count of a hard link.
+fn summary(tree: &Tree) -> Vec<String> {
+    fn walk(tree: &Tree, directory: DirectoryId, path: &str, lines: &mut Vec<String>) {
+        let data = tree.directory(directory);
+        let entry = tree.entry(data.entry);
+        lines.push(format!(
+            "{path}/ asize={} blocks={} items={} shared_asize={} shared_blocks={} errors={} {}",
+            entry.size,
+            entry.blocks,
+            data.items,
+            data.shared_size,
+            data.shared_blocks,
+            data.read_error,
+            data.sub_error,
+        ));
+        for id in tree.entries(directory) {
+            let path = format!("{path}/{}", name(tree.name(id)));
+            let entry = tree.entry(id);
+            match entry.kind {
+                EntryKind::Directory(child) => walk(tree, child, &path, lines),
+                EntryKind::HardLink(link) => lines.push(format!(
+                    "{path} link asize={} blocks={} nlink={}",
+                    entry.size,
+                    entry.blocks,
+                    tree.link(link).link_count
+                )),
+                kind @ (EntryKind::Regular | EntryKind::NonRegular | EntryKind::Special(_)) => {
+                    lines.push(format!(
+                        "{path} {kind:?} asize={} blocks={}",
+                        entry.size, entry.blocks
+                    ));
+                }
+            }
+        }
+    }
+    let mut lines = Vec::new();
+    walk(tree, tree.root().expect("tree has a root"), "", &mut lines);
+    lines.sort();
+    lines
+}
+
+/// A refresh of `top/sub` after a file was added, one removed, one grown, one replaced by a
+/// directory, and the entries of a subdirectory changed, gives the totals of a new scan, in the
+/// directories above it too.
+#[test]
+fn refresh() {
+    let fixture = Fixture::new();
+    fixture.write("other", &[0; 3000]);
+    fixture.write("top/sub/keep", &[0; 5000]);
+    fixture.write("top/sub/gone", &[0; 7000]);
+    fixture.write("top/sub/grow", &[0; 100]);
+    fixture.write("top/sub/swap", &[0; 9000]);
+    fixture.write("top/sub/nested/old", &[0; 11_000]);
+    let tree = scan_tree(&fixture);
+
+    fs::remove_file(fixture.path("top/sub/gone")).expect("file is removed");
+    fixture.write("top/sub/grow", &[0; 20_000]);
+    fs::remove_file(fixture.path("top/sub/swap")).expect("file is removed");
+    fixture.write("top/sub/swap/inside", &[0; 13_000]);
+    fs::remove_file(fixture.path("top/sub/nested/old")).expect("file is removed");
+    fixture.write("top/sub/nested/new", &[0; 15_000]);
+    fixture.write("top/sub/added", &[0; 17_000]);
+    let refreshed = refresh_tree(tree, &[b"top", b"sub"]);
+    assert_eq!(summary(&refreshed), summary(&scan_tree(&fixture)));
+}
+
+/// A refresh of a directory with hard links, to each other and to a file outside of it, gives
+/// the link counts and shared sizes of a new scan.
+#[test]
+fn refresh_hard_links() {
+    let fixture = Fixture::new();
+    fixture.write("outside", &[0; 5000]);
+    fixture.write("sub/first", &[0; 7000]);
+    fixture.hard_link("sub/inside", "outside");
+    fixture.hard_link("sub/second", "sub/first");
+    fixture.write("sub/third", &[0; 9000]);
+    let tree = scan_tree(&fixture);
+    fixture.hard_link("sub/fourth", "sub/third");
+    let refreshed = refresh_tree(tree, &[b"sub"]);
+    assert_eq!(summary(&refreshed), summary(&scan_tree(&fixture)));
+    let refreshed = refresh_tree(refreshed, &[]);
+    assert_eq!(summary(&refreshed), summary(&scan_tree(&fixture)));
 }
