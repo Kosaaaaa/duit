@@ -168,6 +168,14 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
   `execve` rejects with `ENOEXEC` is run by `/bin/sh`, at least on macOS, where ncdu shows
   `Invalid executable`. An empty `NCDU_SHELL` fails with `No such file or directory`, where Zig
   tries each `PATH` directory itself and ncdu shows `Access denied`.
+- **Deleting: a name with a NUL byte is an error, unlike ncdu.** Only an import can give a name a
+  NUL byte. ncdu 2.9.2 reads each name up to its first NUL byte (`model.zig:90-97`), so `deleteItem`
+  (`delete.zig:45-72`) removes the file or directory with the shorter name, which is another entry
+  or one that is not in the tree. duit passes the whole name to `unlinkat` and `openat`, which fail
+  with `EINVAL`, and shows `Unexpected` for a file and `BadPathName` for a directory. Removing the
+  shorter name would delete what the user did not confirm. Refreshing a directory and running
+  `--delete-command` cut the path at its first NUL byte, which gives ncdu's path when that byte is
+  in the last name of the path.
 - **Panics: the terminal is restored from the panic hook.** The release profile uses
   `panic = "abort"`, so `Drop` guards do not run.
 - **`unsafe`: `#[expect(unsafe_code)]` plus a `SAFETY` comment.** The workspace lint warns on
