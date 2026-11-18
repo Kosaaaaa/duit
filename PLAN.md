@@ -252,7 +252,7 @@ Done.
 - Refresh, delete with confirmation and `--delete-command`, and shell.
 - Read-only modes (`-r`, `-rr`) and the enable and disable flags.
 
-Done when every flag in `ncdu.1` and every key works. This is parity.
+Done when every flag in `ncdu.1` and every key works. This is parity. Done.
 
 ### M5: Performance
 
