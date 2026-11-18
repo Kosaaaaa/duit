@@ -38,6 +38,7 @@ pub struct Console {
 }
 
 impl Console {
+    /// Progress lines for a standard error that takes ANSI escapes when `ansi` is set.
     pub fn new(ansi: bool) -> Self {
         Self { ansi, lines: 0 }
     }
@@ -91,6 +92,7 @@ pub struct ScanScreen {
 }
 
 impl ScanScreen {
+    /// A progress screen that animates when `update_delay` is under 1 s.
     pub fn new(update_delay: Duration) -> Self {
         Self {
             animate: update_delay < Duration::from_secs(1),

@@ -90,6 +90,7 @@ pub struct ProgressSink<'a, S> {
 }
 
 impl<'a, S: Sink> ProgressSink<'a, S> {
+    /// A sink in front of `sink` that passes the progress of `producer` to `handle_event`.
     pub fn new(
         sink: S,
         producer: Producer,
