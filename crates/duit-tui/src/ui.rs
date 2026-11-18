@@ -7,7 +7,8 @@ use std::iter;
 use std::mem::MaybeUninit;
 
 use ratatui::buffer::Buffer;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Color::{Black, Blue, Cyan, Gray, Green, Magenta, Red, Reset, Yellow};
+use ratatui::style::{Color, Modifier, Style as StyleAttr};
 use unicode_width::UnicodeWidthChar;
 
 use crate::util::fmt5dec;
@@ -19,7 +20,7 @@ fn is_bad_char(byte: u8) -> bool {
 
 /// Convert `input` to valid, mostly printable UTF-8. Control characters and bytes that are not
 /// valid UTF-8 become `\x##`. Non-printable Unicode characters are not escaped.
-pub fn to_utf8(input: &[u8]) -> Cow<'_, str> {
+pub(crate) fn to_utf8(input: &[u8]) -> Cow<'_, str> {
     if !input.iter().copied().any(is_bad_char)
         && let Ok(valid) = str::from_utf8(input)
     {
@@ -52,7 +53,7 @@ fn char_width(character: char) -> usize {
 
 /// Shorten `input` to fit in `max_width` columns. A string that is too long keeps a prefix and a
 /// suffix with `...` in between.
-pub fn shorten(input: &str, max_width: usize) -> Cow<'_, str> {
+pub(crate) fn shorten(input: &str, max_width: usize) -> Cow<'_, str> {
     if max_width < 4 {
         return Cow::Borrowed("...");
     }
@@ -93,7 +94,7 @@ pub fn shorten(input: &str, max_width: usize) -> Cow<'_, str> {
 /// A size in a human-readable form: a [`fmt5dec`] number and a unit. The two take 8 columns
 /// together with SI units, or 9 with binary units.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FmtSize {
+pub(crate) struct FmtSize {
     /// The number, as `###.#`.
     pub number: String,
     /// The unit with its leading spaces, as `" XB"` or `" XiB"`.
@@ -102,7 +103,7 @@ pub struct FmtSize {
 
 impl FmtSize {
     /// Format `value` bytes, in powers of 1000 if `si` is set and powers of 1024 otherwise.
-    pub fn new(value: u64, si: bool) -> Self {
+    pub(crate) fn new(value: u64, si: bool) -> Self {
         let (unit, multiplier, divisor) = if si {
             if value < 1000 {
                 ("  B", 10, 1)
@@ -145,23 +146,232 @@ impl FmtSize {
     }
 }
 
-/// Text in the `default` style of ncdu's `off` color scheme.
-pub(crate) const PLAIN: Style = Style::new();
-/// The `bold`, `box_title` and `key` styles of ncdu's `off` color scheme.
-pub(crate) const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
-/// The box of a [`Window`]. It clears the attributes of the screen below it, as ncurses replaces
-/// them when it draws the box in the `default` style.
-const CLEAR: Style = Style::new().remove_modifier(Modifier::all());
-/// The header, the footer, and the cursor row, which ncdu's `off` color scheme draws in reverse
-/// video.
-pub(crate) const REVERSE: Style = Style::new().add_modifier(Modifier::REVERSED);
-/// The bold text of the header and the footer.
-pub(crate) const BOLD_REVERSE: Style =
-    Style::new().add_modifier(Modifier::REVERSED.union(Modifier::BOLD));
+/// The color scheme, `--color`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorScheme {
+    Off,
+    Dark,
+    DarkBackground,
+}
+
+/// The styles that ncdu draws with, `Style` in `ui.zig`. Each [`ColorScheme`] gives them their
+/// colors and attributes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Style {
+    Default,
+    Bold,
+    BoldHd,
+    BoxTitle,
+    /// The header and the footer.
+    Hd,
+    Sel,
+    Num,
+    NumHd,
+    NumSel,
+    Key,
+    KeyHd,
+    Dir,
+    DirSel,
+    Flag,
+    FlagSel,
+    Graph,
+    GraphSel,
+}
+
+/// The colors and attributes of a [`Style`] in one [`ColorScheme`], as `StyleAttr` in `ui.zig`.
+/// The colors are those of ncurses: [`Color::Reset`] is the default color of the terminal, and
+/// [`Color::Gray`] is `COLOR_WHITE`.
+///
+/// The result replaces the colors and every attribute of a cell, as ncurses `attr_set` does,
+/// rather than adding to them.
+const fn attr(fg: Color, bg: Color, modifier: Modifier) -> StyleAttr {
+    StyleAttr::new()
+        .fg(fg)
+        .bg(bg)
+        .remove_modifier(Modifier::all())
+        .add_modifier(modifier)
+}
+
+/// A [`Style`] in each [`ColorScheme`], `StyleDef` in `ui.zig`.
+struct StyleDef {
+    off: StyleAttr,
+    dark: StyleAttr,
+    dark_background: StyleAttr,
+}
+
+impl Style {
+    /// The definition of the style in each color scheme, the `styles` table of `ui.zig`.
+    const fn definition(self) -> StyleDef {
+        const NONE: Modifier = Modifier::empty();
+        const BOLD: Modifier = Modifier::BOLD;
+        const REVERSE: Modifier = Modifier::REVERSED;
+        const BOLD_REVERSE: Modifier = Modifier::BOLD.union(Modifier::REVERSED);
+        match self {
+            Self::Default => StyleDef {
+                off: attr(Reset, Reset, NONE),
+                dark: attr(Reset, Reset, NONE),
+                dark_background: attr(Gray, Black, NONE),
+            },
+            Self::Bold => StyleDef {
+                off: attr(Reset, Reset, BOLD),
+                dark: attr(Reset, Reset, BOLD),
+                dark_background: attr(Gray, Black, BOLD),
+            },
+            Self::BoldHd => StyleDef {
+                off: attr(Reset, Reset, BOLD_REVERSE),
+                dark: attr(Black, Cyan, BOLD),
+                dark_background: attr(Black, Cyan, BOLD),
+            },
+            Self::BoxTitle => StyleDef {
+                off: attr(Reset, Reset, BOLD),
+                dark: attr(Blue, Reset, BOLD),
+                dark_background: attr(Blue, Black, BOLD),
+            },
+            Self::Hd => StyleDef {
+                off: attr(Reset, Reset, REVERSE),
+                dark: attr(Black, Cyan, NONE),
+                dark_background: attr(Black, Cyan, NONE),
+            },
+            Self::Sel => StyleDef {
+                off: attr(Reset, Reset, REVERSE),
+                dark: attr(Gray, Green, BOLD),
+                dark_background: attr(Gray, Green, BOLD),
+            },
+            Self::Num => StyleDef {
+                off: attr(Reset, Reset, NONE),
+                dark: attr(Yellow, Reset, BOLD),
+                dark_background: attr(Yellow, Black, BOLD),
+            },
+            Self::NumHd => StyleDef {
+                off: attr(Reset, Reset, REVERSE),
+                dark: attr(Yellow, Cyan, BOLD),
+                dark_background: attr(Yellow, Cyan, BOLD),
+            },
+            Self::NumSel => StyleDef {
+                off: attr(Reset, Reset, REVERSE),
+                dark: attr(Yellow, Green, BOLD),
+                dark_background: attr(Yellow, Green, BOLD),
+            },
+            Self::Key => StyleDef {
+                off: attr(Reset, Reset, BOLD),
+                dark: attr(Yellow, Reset, BOLD),
+                dark_background: attr(Yellow, Black, BOLD),
+            },
+            Self::KeyHd => StyleDef {
+                off: attr(Reset, Reset, BOLD_REVERSE),
+                dark: attr(Yellow, Cyan, BOLD),
+                dark_background: attr(Yellow, Cyan, BOLD),
+            },
+            Self::Dir => StyleDef {
+                off: attr(Reset, Reset, NONE),
+                dark: attr(Blue, Reset, BOLD),
+                dark_background: attr(Blue, Black, BOLD),
+            },
+            Self::DirSel => StyleDef {
+                off: attr(Reset, Reset, REVERSE),
+                dark: attr(Blue, Green, BOLD),
+                dark_background: attr(Blue, Green, BOLD),
+            },
+            Self::Flag => StyleDef {
+                off: attr(Reset, Reset, NONE),
+                dark: attr(Red, Reset, NONE),
+                dark_background: attr(Red, Black, NONE),
+            },
+            Self::FlagSel => StyleDef {
+                off: attr(Reset, Reset, REVERSE),
+                dark: attr(Red, Green, NONE),
+                dark_background: attr(Red, Green, NONE),
+            },
+            Self::Graph => StyleDef {
+                off: attr(Reset, Reset, NONE),
+                dark: attr(Magenta, Reset, NONE),
+                dark_background: attr(Magenta, Black, NONE),
+            },
+            Self::GraphSel => StyleDef {
+                off: attr(Reset, Reset, REVERSE),
+                dark: attr(Magenta, Green, NONE),
+                dark_background: attr(Magenta, Green, NONE),
+            },
+        }
+    }
+}
+
+impl ColorScheme {
+    /// The colors and attributes of `style` in this scheme, `style` in `ui.zig`.
+    pub(crate) const fn style(self, style: Style) -> StyleAttr {
+        let definition = style.definition();
+        match self {
+            Self::Off => definition.off,
+            Self::Dark => definition.dark,
+            Self::DarkBackground => definition.dark_background,
+        }
+    }
+}
+
+/// The background that a [`Style`] is drawn on, `Bg` in `ui.zig`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Bg {
+    Default,
+    /// The header and the footer.
+    Hd,
+    /// The cursor row.
+    Sel,
+}
+
+impl Bg {
+    /// The style that draws the foreground of `style` on this background. ncdu combines the header
+    /// and the cursor row only with the foregrounds that have a style on them, and other pairs keep
+    /// the style as it is.
+    pub(crate) const fn fg(self, style: Style) -> Style {
+        match (self, style) {
+            (Self::Hd, Style::Default) => Style::Hd,
+            (Self::Hd, Style::Key) => Style::KeyHd,
+            (Self::Hd, Style::Num) => Style::NumHd,
+            (Self::Sel, Style::Default) => Style::Sel,
+            (Self::Sel, Style::Num) => Style::NumSel,
+            (Self::Sel, Style::Dir) => Style::DirSel,
+            (Self::Sel, Style::Flag) => Style::FlagSel,
+            (Self::Sel, Style::Graph) => Style::GraphSel,
+            (Self::Default, style)
+            | (
+                Self::Hd,
+                style @ (Style::Bold
+                | Style::BoldHd
+                | Style::BoxTitle
+                | Style::Hd
+                | Style::Sel
+                | Style::NumHd
+                | Style::NumSel
+                | Style::KeyHd
+                | Style::Dir
+                | Style::DirSel
+                | Style::Flag
+                | Style::FlagSel
+                | Style::Graph
+                | Style::GraphSel),
+            )
+            | (
+                Self::Sel,
+                style @ (Style::Bold
+                | Style::BoldHd
+                | Style::BoxTitle
+                | Style::Hd
+                | Style::Sel
+                | Style::NumHd
+                | Style::NumSel
+                | Style::Key
+                | Style::KeyHd
+                | Style::DirSel
+                | Style::FlagSel
+                | Style::GraphSel),
+            ) => style,
+        }
+    }
+}
 
 /// Draw `text` at column `x` of row `y` in `style`, cut off at the right edge, and return the
 /// column after it. Rows outside of `buffer` are skipped.
-pub(crate) fn draw_text(buffer: &mut Buffer, x: u16, y: u16, text: &str, style: Style) -> u16 {
+pub(crate) fn draw_text(buffer: &mut Buffer, x: u16, y: u16, text: &str, style: StyleAttr) -> u16 {
     if y >= buffer.area.bottom() {
         return x;
     }
@@ -175,7 +385,7 @@ pub(crate) fn draw_line(
     y: u16,
     character: char,
     length: u16,
-    style: Style,
+    style: StyleAttr,
 ) {
     let line: String = iter::repeat_n(character, length.into()).collect();
     draw_text(buffer, x, y, &line, style);
@@ -185,15 +395,23 @@ pub(crate) fn draw_line(
 pub(crate) struct Window {
     x: u16,
     y: u16,
+    scheme: ColorScheme,
 }
 
 impl Window {
     /// Draw a box of `width` by `height` in the center of `buffer`, with `title` in its top border.
     /// A box smaller than 6 by 3 has no border, and its content is drawn over the screen.
-    pub(crate) fn new(buffer: &mut Buffer, height: u16, width: u16, title: &str) -> Self {
+    pub(crate) fn new(
+        buffer: &mut Buffer,
+        scheme: ColorScheme,
+        height: u16,
+        width: u16,
+        title: &str,
+    ) -> Self {
         let window = Self {
             x: (buffer.area.width / 2).saturating_sub(width / 2),
             y: (buffer.area.height / 2).saturating_sub(height / 2),
+            scheme,
         };
         if width < 6 || height < 3 {
             return window;
@@ -204,21 +422,22 @@ impl Window {
                 _ if row == height - 1 => ('└', '─', '┘'),
                 _ => ('│', ' ', '│'),
             };
-            window.text(buffer, row, 0, &left.to_string(), CLEAR);
+            window.text(buffer, row, 0, &left.to_string(), Style::Default);
             window.text(
                 buffer,
                 row,
                 1,
                 &fill.to_string().repeat((width - 2).into()),
-                CLEAR,
+                Style::Default,
             );
-            window.text(buffer, row, width - 1, &right.to_string(), CLEAR);
+            window.text(buffer, row, width - 1, &right.to_string(), Style::Default);
         }
-        window.text(buffer, 0, 3, &format!(" {title} "), BOLD);
+        window.text(buffer, 0, 3, &format!(" {title} "), Style::BoxTitle);
         window
     }
 
-    /// Draw `text` at `column` of `row` inside the box, and return the column of the box after it.
+    /// Draw `text` at `column` of `row` inside the box in `style`, and return the column of the box
+    /// after it.
     pub(crate) fn text(
         &self,
         buffer: &mut Buffer,
@@ -228,11 +447,41 @@ impl Window {
         style: Style,
     ) -> u16 {
         let x = self.x.saturating_add(column);
-        draw_text(buffer, x, self.y.saturating_add(row), text, style).saturating_sub(self.x)
+        let y = self.y.saturating_add(row);
+        draw_text(buffer, x, y, text, self.scheme.style(style)).saturating_sub(self.x)
     }
 
-    /// Draw the tab `label` at `column` of the top border, after the `key` that selects it, in
-    /// reverse video when it is `selected`, `Box.tab` in `ui.zig`.
+    /// Draw `value` bytes as a human-readable size at `column` of `row`, as [`draw_size`] does, and
+    /// return the column of the box after it.
+    pub(crate) fn size(
+        &self,
+        buffer: &mut Buffer,
+        row: u16,
+        column: u16,
+        value: u64,
+        si: bool,
+    ) -> u16 {
+        let (x, y) = (self.x.saturating_add(column), self.y.saturating_add(row));
+        draw_size(buffer, x, y, value, si, self.scheme, Bg::Default).saturating_sub(self.x)
+    }
+
+    /// Draw `value` in full at `column` of `row` in [`Style::Num`], with `separator` between groups
+    /// of three digits, and return the column of the box after it, as `addnum` in `ui.zig`.
+    pub(crate) fn number(
+        &self,
+        buffer: &mut Buffer,
+        row: u16,
+        column: u16,
+        value: u64,
+        separator: &str,
+    ) -> u16 {
+        let (x, y) = (self.x.saturating_add(column), self.y.saturating_add(row));
+        let number = format_number(value, separator);
+        draw_text(buffer, x, y, &number, self.scheme.style(Style::Num)).saturating_sub(self.x)
+    }
+
+    /// Draw the tab `label` at `column` of the top border, after the `key` that selects it, on the
+    /// background of the header when it is `selected`, `Box.tab` in `ui.zig`.
     pub(crate) fn tab(
         &self,
         buffer: &mut Buffer,
@@ -241,33 +490,30 @@ impl Window {
         key: &str,
         label: &str,
     ) {
-        let (key_style, style) = if selected {
-            (BOLD_REVERSE, REVERSE)
-        } else {
-            (BOLD, PLAIN)
-        };
-        let x = self.text(buffer, 0, column, key, key_style);
-        self.text(buffer, 0, x, &format!(":{label}"), style);
+        let bg = if selected { Bg::Hd } else { Bg::Default };
+        let x = self.text(buffer, 0, column, key, bg.fg(Style::Key));
+        self.text(buffer, 0, x, &format!(":{label}"), bg.fg(Style::Default));
     }
 }
 
-/// Draw `value` bytes as a human-readable size, as [`FmtSize`] formats it, and return the column
-/// after it.
+/// Draw `value` bytes as a human-readable size on `bg`, the number in [`Style::Num`] and the unit
+/// in [`Style::Default`], and return the column after it, `addsize` in `ui.zig`.
 pub(crate) fn draw_size(
     buffer: &mut Buffer,
     x: u16,
     y: u16,
     value: u64,
     si: bool,
-    style: Style,
+    scheme: ColorScheme,
+    bg: Bg,
 ) -> u16 {
     let size = FmtSize::new(value, si);
-    let x = draw_text(buffer, x, y, &size.number, style);
-    draw_text(buffer, x, y, size.unit, style)
+    let x = draw_text(buffer, x, y, &size.number, scheme.style(bg.fg(Style::Num)));
+    draw_text(buffer, x, y, size.unit, scheme.style(bg.fg(Style::Default)))
 }
 
 /// Format `value` in full, with `separator` between groups of three digits.
-pub fn format_number(value: u64, separator: &str) -> String {
+pub(crate) fn format_number(value: u64, separator: &str) -> String {
     let digits = value.to_string();
     let mut output = String::with_capacity(digits.len() * (1 + separator.len()));
     for (index, digit) in digits.chars().enumerate() {
@@ -281,7 +527,7 @@ pub fn format_number(value: u64, separator: &str) -> String {
 
 /// Format the file type and the permission bits of `mode` in 10 columns, as `ls -l` does. The
 /// file types have the values of POSIX, which Linux and macOS share.
-pub fn format_mode(mode: u16) -> String {
+pub(crate) fn format_mode(mode: u16) -> String {
     let file_type = match mode & 0o170_000 {
         0o040_000 => 'd',
         0o100_000 => '-',

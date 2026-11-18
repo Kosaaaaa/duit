@@ -8,12 +8,12 @@ use std::iter;
 use duit_model::{DirectoryId, Entry, EntryId, EntryKind, LinkId, Special, Tree};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
-use ratatui::style::Style;
+use ratatui::style::Style as StyleAttr;
 
 use crate::terminal::Key;
 use crate::ui::{
-    BOLD, BOLD_REVERSE, FmtSize, PLAIN, REVERSE, Window, draw_line, draw_size, draw_text,
-    format_mode, format_number, format_timestamp, shorten, to_utf8,
+    Bg, ColorScheme, Style, Window, draw_line, draw_size, draw_text, format_mode, format_number,
+    format_timestamp, shorten, to_utf8,
 };
 use crate::util::{fmt5dec, strnatcmp};
 
@@ -78,6 +78,8 @@ pub struct BrowserOptions {
     pub extended: bool,
     /// Ask before quitting, `--confirm-quit`.
     pub confirm_quit: bool,
+    /// The color scheme, `--color`.
+    pub color: ColorScheme,
 }
 
 impl Default for BrowserOptions {
@@ -101,6 +103,7 @@ impl Default for BrowserOptions {
             thousands_separator: ",".to_string(),
             extended: false,
             confirm_quit: false,
+            color: ColorScheme::Off,
         }
     }
 }
@@ -393,15 +396,20 @@ fn tab_of_key(key: Key) -> Option<Tab> {
     }
 }
 
-/// Format the item count `count` of a directory in 6 columns.
-fn format_item_count(count: u32, separator: &str) -> String {
+/// Format the item count `count` of a directory in 6 columns: the text before the number, the
+/// number, and its unit.
+fn format_item_count(count: u32, separator: &str) -> (&'static str, String, &'static str) {
     match count {
-        0..1000 => format!("  {count:>4}"),
-        1000..10_000 => format!(" {}", format_number(count.into(), separator)),
-        10_000..100_000 => format_number(count.into(), separator),
-        100_000..999_950 => format!("{}k", fmt5dec(u64::from(count + 50) / 100)),
-        999_950..999_950_000 => format!("{}M", fmt5dec(u64::from(count + 50_000) / 100_000)),
-        999_950_000.. => "  > 1G".to_string(),
+        0..1000 => ("", format!("  {count:>4}"), ""),
+        1000..10_000 => (
+            "",
+            format!(" {}", format_number(count.into(), separator)),
+            "",
+        ),
+        10_000..100_000 => ("", format_number(count.into(), separator), ""),
+        100_000..999_950 => ("", fmt5dec(u64::from(count + 50) / 100), "k"),
+        999_950..999_950_000 => ("", fmt5dec(u64::from(count + 50_000) / 100_000), "M"),
+        999_950_000.. => ("  > ", "1".to_string(), "G"),
     }
 }
 
@@ -853,8 +861,12 @@ impl Browser {
         let buffer = frame.buffer_mut();
         let directory = tree.directory(self.directory);
         let directory_entry = tree.entry(directory.entry);
+        let scheme = options.color;
+        let style = |style| scheme.style(style);
 
-        draw_line(buffer, 0, 0, ' ', width, REVERSE);
+        // ncurses erases the screen to the background of the `default` style before each frame.
+        buffer.set_style(buffer.area, style(Style::Default));
+        draw_line(buffer, 0, 0, ' ', width, style(Style::Hd));
         let x = draw_text(
             buffer,
             0,
@@ -864,10 +876,10 @@ impl Browser {
                 env!("CARGO_PKG_VERSION"),
                 " ~ Use the arrow keys to navigate, press "
             ),
-            REVERSE,
+            style(Style::Hd),
         );
-        let x = draw_text(buffer, x, 0, "?", BOLD_REVERSE);
-        draw_text(buffer, x, 0, " for help", REVERSE);
+        let x = draw_text(buffer, x, 0, "?", style(Style::KeyHd));
+        draw_text(buffer, x, 0, " for help", style(Style::Hd));
         let mode = if options.imported {
             Some("[imported]")
         } else if !options.can_delete {
@@ -876,20 +888,20 @@ impl Browser {
             None
         };
         if let Some(mode) = mode {
-            draw_text(buffer, width.saturating_sub(10), 0, mode, REVERSE);
+            draw_text(buffer, width.saturating_sub(10), 0, mode, style(Style::Hd));
         }
 
-        draw_line(buffer, 0, 1, '-', width, PLAIN);
+        draw_line(buffer, 0, 1, '-', width, style(Style::Default));
         let path = to_utf8(&self.path);
-        let x = draw_text(buffer, 3, 1, " ", PLAIN);
+        let x = draw_text(buffer, 3, 1, " ", style(Style::Default));
         let x = draw_text(
             buffer,
             x,
             1,
             &shorten(&path, width.saturating_sub(5).into()),
-            PLAIN,
+            style(Style::Dir),
         );
-        draw_text(buffer, x, 1, " ", PLAIN);
+        draw_text(buffer, x, 1, " ", style(Style::Default));
 
         let rows = usize::from(height.saturating_sub(3));
         if self.cursor < self.top {
@@ -907,63 +919,89 @@ impl Browser {
                 x: 0,
                 width,
                 item: self.items[index],
-                style: if index == self.cursor { REVERSE } else { PLAIN },
+                bg: if index == self.cursor {
+                    Bg::Sel
+                } else {
+                    Bg::Default
+                },
+                number_style: false,
             };
             row.draw(buffer);
         }
 
         let footer = height.saturating_sub(1);
-        draw_line(buffer, 0, footer, ' ', width, REVERSE);
+        draw_line(buffer, 0, footer, ' ', width, style(Style::Hd));
         let (disk_usage_style, apparent_size_style) = if options.show_blocks {
-            (BOLD_REVERSE, REVERSE)
+            (Style::BoldHd, Style::Hd)
         } else {
-            (REVERSE, BOLD_REVERSE)
+            (Style::Hd, Style::BoldHd)
         };
         let x = draw_text(
             buffer,
             0,
             footer,
             if options.show_blocks { "*" } else { " " },
-            REVERSE,
+            style(Style::Hd),
         );
-        let x = draw_text(buffer, x, footer, "Total disk usage: ", disk_usage_style);
+        let x = draw_text(
+            buffer,
+            x,
+            footer,
+            "Total disk usage: ",
+            style(disk_usage_style),
+        );
         let x = draw_size(
             buffer,
             x,
             footer,
             blocks_to_size(directory_entry.blocks),
             options.si,
-            REVERSE,
+            scheme,
+            Bg::Hd,
         );
         let x = draw_text(
             buffer,
             x,
             footer,
             if options.show_blocks { "   " } else { "  *" },
-            apparent_size_style,
+            style(apparent_size_style),
         );
-        let x = draw_text(buffer, x, footer, "Apparent size: ", apparent_size_style);
-        let x = draw_size(buffer, x, footer, directory_entry.size, options.si, REVERSE);
-        let x = draw_text(buffer, x, footer, "   Items: ", REVERSE);
+        let x = draw_text(
+            buffer,
+            x,
+            footer,
+            "Apparent size: ",
+            style(apparent_size_style),
+        );
+        let x = draw_size(
+            buffer,
+            x,
+            footer,
+            directory_entry.size,
+            options.si,
+            scheme,
+            Bg::Hd,
+        );
+        let x = draw_text(buffer, x, footer, "   Items: ", style(Style::Hd));
         draw_text(
             buffer,
             x,
             footer,
             &format_number(directory.items.into(), &options.thousands_separator),
-            REVERSE,
+            style(Bg::Hd.fg(Style::Num)),
         );
 
         match self.state {
             State::Main => {}
             State::Quit => {
-                let window = Window::new(buffer, 4, 22, "Confirm quit");
-                let x = window.text(buffer, 2, 2, "Really quit? (", PLAIN);
-                let x = window.text(buffer, 2, x, "y", BOLD);
-                let x = window.text(buffer, 2, x, "/", PLAIN);
-                let x = window.text(buffer, 2, x, "N", BOLD);
-                window.text(buffer, 2, x, ")", PLAIN);
+                let window = Window::new(buffer, scheme, 4, 22, "Confirm quit");
+                let x = window.text(buffer, 2, 2, "Really quit? (", Style::Default);
+                let x = window.text(buffer, 2, x, "y", Style::Key);
+                let x = window.text(buffer, 2, x, "/", Style::Default);
+                let x = window.text(buffer, 2, x, "N", Style::Key);
+                window.text(buffer, 2, x, ")", Style::Default);
             }
-            State::Help => self.help.draw(buffer),
+            State::Help => self.help.draw(buffer, scheme),
             State::Info => {
                 if let Some(&Some(entry)) = self.items.get(self.cursor) {
                     self.info.draw(buffer, tree, options, entry);
@@ -1024,15 +1062,15 @@ const HELP_LOGO: [u32; 5] = [
 
 impl Help {
     /// Draw the window over the listing with its current tab.
-    fn draw(&self, buffer: &mut Buffer) {
-        let window = Window::new(buffer, 15, 60, "ncdu help");
+    fn draw(&self, buffer: &mut Buffer, scheme: ColorScheme) {
+        let window = Window::new(buffer, scheme, 15, 60, "ncdu help");
         window.tab(buffer, 30, self.tab == HelpTab::Keys, "1", "Keys");
         window.tab(buffer, 39, self.tab == HelpTab::Format, "2", "Format");
         window.tab(buffer, 50, self.tab == HelpTab::About, "3", "About");
 
-        let x = window.text(buffer, 13, 42, "Press ", PLAIN);
-        let x = window.text(buffer, 13, x, "q", BOLD);
-        window.text(buffer, 13, x, " to close", PLAIN);
+        let x = window.text(buffer, 13, 42, "Press ", Style::Default);
+        let x = window.text(buffer, 13, x, "q", Style::Key);
+        window.text(buffer, 13, x, " to close", Style::Default);
 
         match self.tab {
             HelpTab::Keys => self.draw_keys(&window, buffer),
@@ -1046,28 +1084,34 @@ impl Help {
         let lines = HELP_KEYS.iter().skip(self.offset).take(HELP_KEY_LINES);
         for (row, &(key, description)) in (2..).zip(lines) {
             let column = 13u16.saturating_sub(u16::try_from(key.len()).unwrap_or(13));
-            let x = window.text(buffer, row, column, key, BOLD);
-            window.text(buffer, row, x, &format!(" {description}"), PLAIN);
+            let x = window.text(buffer, row, column, key, Style::Key);
+            window.text(buffer, row, x, &format!(" {description}"), Style::Default);
         }
         if self.offset < HELP_KEYS.len() - HELP_KEY_LINES {
-            window.text(buffer, 12, 25, "-- more --", PLAIN);
+            window.text(buffer, 12, 25, "-- more --", Style::Default);
         }
     }
 }
 
 /// Draw the format of a row of the listing, and the flags in front of the entries.
 fn draw_help_format(window: &Window, buffer: &mut Buffer) {
-    window.text(buffer, 2, 3, "X  [size] [graph] [file or directory]", BOLD);
+    window.text(
+        buffer,
+        2,
+        3,
+        "X  [size] [graph] [file or directory]",
+        Style::Bold,
+    );
     window.text(
         buffer,
         3,
         4,
         "The X is only present in the following cases:",
-        PLAIN,
+        Style::Default,
     );
     for (row, &(flag, description)) in (5..).zip(HELP_FLAGS.iter()) {
-        let x = window.text(buffer, row, 4, flag, PLAIN);
-        window.text(buffer, row, x, &format!(" {description}"), PLAIN);
+        let x = window.text(buffer, row, 4, flag, Style::Flag);
+        window.text(buffer, row, x, &format!(" {description}"), Style::Default);
     }
 }
 
@@ -1077,25 +1121,25 @@ fn draw_help_about(window: &Window, buffer: &mut Buffer) {
     for (row, line) in (3..).zip(HELP_LOGO) {
         for (column, bit) in (12..).zip((1..=28).rev()) {
             let style = if line & (1 << bit) > 0 {
-                REVERSE
+                Style::Sel
             } else {
-                PLAIN
+                Style::Default
             };
             window.text(buffer, row, column, " ", style);
         }
     }
-    window.text(buffer, 3, 43, "NCurses", PLAIN);
-    window.text(buffer, 4, 43, "Disk", PLAIN);
-    window.text(buffer, 5, 43, "Usage", PLAIN);
-    window.text(buffer, 7, 43, env!("CARGO_PKG_VERSION"), PLAIN);
+    window.text(buffer, 3, 43, "NCurses", Style::Default);
+    window.text(buffer, 4, 43, "Disk", Style::Default);
+    window.text(buffer, 5, 43, "Usage", Style::Default);
+    window.text(buffer, 7, 43, env!("CARGO_PKG_VERSION"), Style::Num);
     window.text(
         buffer,
         9,
         11,
         "Written by Yorhel <projects@yorhel.nl>",
-        PLAIN,
+        Style::Default,
     );
-    window.text(buffer, 10, 16, "https://dev.yorhel.nl/ncdu", PLAIN);
+    window.text(buffer, 10, 16, "https://dev.yorhel.nl/ncdu", Style::Default);
 }
 
 /// The width of the info window.
@@ -1126,7 +1170,7 @@ impl Info {
                     })
             }
         };
-        let window = Window::new(buffer, height, INFO_WIDTH, "Item info");
+        let window = Window::new(buffer, options.color, height, INFO_WIDTH, "Item info");
         if link.is_some() {
             window.tab(buffer, INFO_WIDTH - 19, self.tab == Tab::Info, "1", "Info");
             window.tab(
@@ -1144,13 +1188,13 @@ impl Info {
         }
 
         let row = height - 2;
-        let x = window.text(buffer, row, INFO_WIDTH - 30, "Press ", PLAIN);
-        let x = window.text(buffer, row, x, "i", BOLD);
-        window.text(buffer, row, x, " to close this window", PLAIN);
+        let x = window.text(buffer, row, INFO_WIDTH - 30, "Press ", Style::Default);
+        let x = window.text(buffer, row, x, "i", Style::Key);
+        window.text(buffer, row, x, " to close this window", Style::Default);
     }
 
     /// Draw the paths of the links to the inode on the rows of a window of `height`, the selected
-    /// one in reverse video and the one of the entry marked with `*`, and the number of the
+    /// one in [`Style::Sel`] and the one of the entry marked with `*`, and the number of the
     /// selected one.
     fn draw_links(&mut self, window: &Window, buffer: &mut Buffer, tree: &Tree, height: u16) {
         let rows = usize::from(height.saturating_sub(4));
@@ -1166,9 +1210,9 @@ impl Info {
             .take(rows)
         {
             let style = if index == self.links_index {
-                REVERSE
+                Style::Sel
             } else {
-                PLAIN
+                Style::Default
             };
             let mark = if Some(tree.link(link).entry) == self.entry {
                 "*"
@@ -1181,7 +1225,7 @@ impl Info {
             window.text(buffer, row, x, &path, style);
         }
         let position = format!("{:>3}/{}", self.links_index + 1, links.len());
-        window.text(buffer, height - 2, 4, &position, PLAIN);
+        window.text(buffer, height - 2, 4, &position, Style::Default);
     }
 }
 
@@ -1196,46 +1240,49 @@ fn draw_info_tab(
 ) {
     let data = tree.entry(entry);
     let extended = tree.extended(entry);
+    let separator = &options.thousands_separator;
     let mut row = 2;
-    let x = window.text(buffer, row, 3, "Name: ", BOLD);
+    let x = window.text(buffer, row, 3, "Name: ", Style::Bold);
     let name = shorten(&to_utf8(tree.name(entry)), usize::from(INFO_WIDTH - 11)).into_owned();
-    window.text(buffer, row, x, &name, PLAIN);
+    window.text(buffer, row, x, &name, Style::Default);
     row += 1;
 
     if let Some(extended) = extended {
         let extended = extended.extended;
         let mut x = 3;
         if let Some(mode) = extended.mode {
-            x = window.text(buffer, row, x, "Mode: ", BOLD);
-            x = window.text(buffer, row, x, &format_mode(mode), PLAIN);
+            x = window.text(buffer, row, x, "Mode: ", Style::Bold);
+            x = window.text(buffer, row, x, &format_mode(mode), Style::Default);
         }
         if let Some(uid) = extended.uid {
-            x = window.text(buffer, row, x, "  UID: ", BOLD);
-            x = window.text(buffer, row, x, &format!("{uid:<6}"), PLAIN);
+            x = window.text(buffer, row, x, "  UID: ", Style::Bold);
+            x = window.text(buffer, row, x, &format!("{uid:<6}"), Style::Default);
         }
         if let Some(gid) = extended.gid {
-            x = window.text(buffer, row, x, " GID: ", BOLD);
-            window.text(buffer, row, x, &format!("{gid:<6}"), PLAIN);
+            x = window.text(buffer, row, x, " GID: ", Style::Bold);
+            window.text(buffer, row, x, &format!("{gid:<6}"), Style::Default);
         }
     } else {
-        let x = window.text(buffer, row, 3, "Type: ", BOLD);
+        let x = window.text(buffer, row, 3, "Type: ", Style::Bold);
         let kind = match data.kind {
             EntryKind::Directory(_) => "Directory",
             EntryKind::NonRegular => "Other",
             EntryKind::Regular | EntryKind::HardLink(_) => "File",
             EntryKind::Special(_) => "Excluded",
         };
-        window.text(buffer, row, x, kind, PLAIN);
+        window.text(buffer, row, x, kind, Style::Default);
     }
     row += 1;
 
     if let Some(extended) = extended
         && extended.extended.mtime.is_some()
     {
-        let x = window.text(buffer, row, 3, "Last modified: ", BOLD);
-        let mtime = format_timestamp(extended.latest_mtime)
-            .unwrap_or_else(|| "            invalid mtime".to_string());
-        window.text(buffer, row, x, &mtime, PLAIN);
+        let x = window.text(buffer, row, 3, "Last modified: ", Style::Bold);
+        if let Some(mtime) = format_timestamp(extended.latest_mtime) {
+            window.text(buffer, row, x, &mtime, Style::Num);
+        } else {
+            window.text(buffer, row, x, "            invalid mtime", Style::Default);
+        }
         row += 1;
     }
 
@@ -1244,16 +1291,20 @@ fn draw_info_tab(
     let sizes = |buffer: &mut Buffer, row: &mut u16, label: &str, size: u64, shared: u64| {
         let mut size_row = |label: &str, style, size| {
             let x = window.text(buffer, *row, 3, label, style);
-            let formatted = FmtSize::new(size, options.si);
-            let number = format_number(size, &options.thousands_separator);
-            let text = format!("{}{} ({number})", formatted.number, formatted.unit);
-            window.text(buffer, *row, x, &text, PLAIN);
+            let x = window.size(buffer, *row, x, size, options.si);
+            let x = window.text(buffer, *row, x, " (", Style::Default);
+            let x = window.number(buffer, *row, x, size, separator);
+            window.text(buffer, *row, x, ")", Style::Default);
             *row += 1;
         };
-        size_row(label, BOLD, size);
+        size_row(label, Style::Bold, size);
         if shared > 0 {
-            size_row("     > shared: ", PLAIN, shared);
-            size_row("     > unique: ", PLAIN, size.saturating_sub(shared));
+            size_row("     > shared: ", Style::Default, shared);
+            size_row(
+                "     > unique: ",
+                Style::Default,
+                size.saturating_sub(shared),
+            );
         }
     };
     let directory = directory_of(data).map(|id| tree.directory(id));
@@ -1270,19 +1321,17 @@ fn draw_info_tab(
     sizes(buffer, &mut row, "Apparent size: ", data.size, shared_size);
 
     if let Some(directory) = directory {
-        let x = window.text(buffer, row, 3, "    Sub items: ", BOLD);
-        let items = format_number(directory.items.into(), &options.thousands_separator);
-        window.text(buffer, row, x, &items, PLAIN);
+        let x = window.text(buffer, row, 3, "    Sub items: ", Style::Bold);
+        window.number(buffer, row, x, directory.items.into(), separator);
         row += 1;
     }
 
     if let EntryKind::HardLink(link) = data.kind {
         let link = tree.link(link);
-        let x = window.text(buffer, row, 3, "   Link count: ", BOLD);
-        let link_count = format_number(link.link_count.into(), &options.thousands_separator);
-        window.text(buffer, row, x, &link_count, PLAIN);
-        let x = window.text(buffer, row, 23, "  Inode: ", BOLD);
-        window.text(buffer, row, x, &link.inode.to_string(), PLAIN);
+        let x = window.text(buffer, row, 3, "   Link count: ", Style::Bold);
+        window.number(buffer, row, x, link.link_count.into(), separator);
+        let x = window.text(buffer, row, 23, "  Inode: ", Style::Bold);
+        window.text(buffer, row, x, &link.inode.to_string(), Style::Default);
     }
 }
 
@@ -1298,8 +1347,11 @@ struct Row<'a> {
     width: u16,
     /// The entry, or `None` for the row of the parent directory.
     item: Option<EntryId>,
-    /// [`REVERSE`] on the cursor row, and [`PLAIN`] on the others.
-    style: Style,
+    /// [`Bg::Sel`] on the cursor row, and [`Bg::Default`] on the others.
+    bg: Bg,
+    /// The item count left [`Style::Num`] set, which ncdu draws the next text without its own
+    /// style in.
+    number_style: bool,
 }
 
 impl Row<'_> {
@@ -1308,9 +1360,18 @@ impl Row<'_> {
         self.width.saturating_sub(self.x)
     }
 
+    /// The colors and attributes of the foreground `style` on the background of the row.
+    fn style(&self, style: Style) -> StyleAttr {
+        self.options.color.style(self.bg.fg(style))
+    }
+
     fn draw(mut self, buffer: &mut Buffer) {
-        if self.style == REVERSE {
-            draw_line(buffer, self.x, self.y, ' ', self.width, self.style);
+        match self.bg {
+            Bg::Sel => {
+                let style = self.style(Style::Default);
+                draw_line(buffer, self.x, self.y, ' ', self.width, style);
+            }
+            Bg::Default | Bg::Hd => {}
         }
         self.flag(buffer);
         self.size(buffer);
@@ -1346,7 +1407,7 @@ impl Row<'_> {
             EntryKind::NonRegular => "@",
             EntryKind::Regular | EntryKind::Special(Special::ReadError) => return,
         };
-        draw_text(buffer, x, self.y, flag, self.style);
+        draw_text(buffer, x, self.y, flag, self.style(Style::Flag));
     }
 
     fn size(&mut self, buffer: &mut Buffer) {
@@ -1379,14 +1440,15 @@ impl Row<'_> {
             shared = size.saturating_sub(shared);
         }
 
-        let x = draw_size(buffer, x, self.y, size, options.si, self.style);
+        let (scheme, bg) = (options.color, self.bg);
+        let x = draw_size(buffer, x, self.y, size, options.si, scheme, bg);
         if shared_column && shared > 0 {
             let label = match options.shared_column {
                 SharedColumn::Unique => " U ",
                 SharedColumn::Shared | SharedColumn::Off => " S ",
             };
-            let x = draw_text(buffer, x, self.y, label, self.style);
-            draw_size(buffer, x, self.y, shared, options.si, self.style);
+            let x = draw_text(buffer, x, self.y, label, self.style(Style::Flag));
+            draw_size(buffer, x, self.y, shared, options.si, scheme, bg);
         }
     }
 
@@ -1409,7 +1471,7 @@ impl Row<'_> {
             .tree
             .entry(self.tree.directory(self.browser.directory).entry);
 
-        let mut text = String::from("[");
+        let mut x = draw_text(buffer, x, self.y, "[", self.style(Style::Default));
         if options.show_percent {
             let (mut number, mut total) = if options.show_blocks {
                 (entry.blocks, directory.blocks)
@@ -1422,11 +1484,17 @@ impl Row<'_> {
                 total >>= 10;
             }
             let permille = ((number * 1000).saturating_add(total / 2) / total.max(1)).min(1000);
-            text.push_str(&fmt5dec(permille));
-            text.push('%');
+            x = draw_text(
+                buffer,
+                x,
+                self.y,
+                &fmt5dec(permille),
+                self.style(Style::Num),
+            );
+            x = draw_text(buffer, x, self.y, "%", self.style(Style::Default));
         }
         if options.show_graph && options.show_percent {
-            text.push(' ');
+            x = draw_text(buffer, x, self.y, " ", self.style(Style::Default));
         }
         if options.show_graph {
             let bar_size = u64::from(bar_size);
@@ -1440,9 +1508,10 @@ impl Row<'_> {
                 number *= bar_size;
             }
             let per_block = max / bar_size;
+            let mut bar = String::new();
             for _ in 0..bar_size {
                 let eighths = (number.saturating_mul(8) / per_block).min(8);
-                text.push(
+                bar.push(
                     match options.graph_style {
                         GraphStyle::Hash => [' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', '#'],
                         GraphStyle::HalfBlock => [' ', ' ', ' ', ' ', '▌', '▌', '▌', '▌', '█'],
@@ -1451,9 +1520,9 @@ impl Row<'_> {
                 );
                 number = number.saturating_sub(per_block);
             }
+            x = draw_text(buffer, x, self.y, &bar, self.style(Style::Graph));
         }
-        text.push(']');
-        draw_text(buffer, x, self.y, &text, self.style);
+        draw_text(buffer, x, self.y, "]", self.style(Style::Default));
     }
 
     fn items(&mut self, buffer: &mut Buffer) {
@@ -1468,11 +1537,13 @@ impl Row<'_> {
         else {
             return;
         };
-        let count = format_item_count(
-            self.tree.directory(directory).items,
-            &self.options.thousands_separator,
-        );
-        draw_text(buffer, x, self.y, &count, self.style);
+        let count = self.tree.directory(directory).items;
+        let (before, number, unit) = format_item_count(count, &self.options.thousands_separator);
+        let x = draw_text(buffer, x, self.y, before, self.style(Style::Default));
+        let x = draw_text(buffer, x, self.y, &number, self.style(Style::Num));
+        draw_text(buffer, x, self.y, unit, self.style(Style::Default));
+        // ncdu sets the style of the number last for a count below 1000.
+        self.number_style = count < 1000;
     }
 
     fn mtime(&mut self, buffer: &mut Buffer) {
@@ -1485,30 +1556,43 @@ impl Row<'_> {
         let entry = self
             .item
             .unwrap_or(self.tree.directory(self.browser.directory).entry);
-        let text = match self.tree.extended(entry) {
+        let (text, style) = match self.tree.extended(entry) {
             Some(extended) if extended.extended.mtime.is_some() => {
-                format_timestamp(extended.latest_mtime)
-                    .unwrap_or_else(|| "            invalid mtime".to_string())
+                match format_timestamp(extended.latest_mtime) {
+                    Some(mtime) => (mtime, Style::Num),
+                    None => ("            invalid mtime".to_string(), Style::Default),
+                }
             }
-            Some(_) | None => "                 no mtime".to_string(),
+            Some(_) | None => {
+                let style = if self.number_style {
+                    Style::Num
+                } else {
+                    Style::Default
+                };
+                ("                 no mtime".to_string(), style)
+            }
         };
-        draw_text(buffer, x, self.y, &text, self.style);
+        draw_text(buffer, x, self.y, &text, self.style(style));
     }
 
     fn name(&self, buffer: &mut Buffer) {
         let Some(item) = self.item else {
-            draw_text(buffer, self.x, self.y, "/..", self.style);
+            draw_text(buffer, self.x, self.y, "/..", self.style(Style::Dir));
             return;
         };
-        let prefix = if is_directory(self.tree.entry(item).kind) {
-            "/"
-        } else {
-            " "
+        let kind = self.tree.entry(item).kind;
+        let style = match kind {
+            EntryKind::Directory(_) => self.style(Style::Dir),
+            EntryKind::HardLink(_)
+            | EntryKind::Regular
+            | EntryKind::NonRegular
+            | EntryKind::Special(_) => self.style(Style::Default),
         };
-        let x = draw_text(buffer, self.x, self.y, prefix, self.style);
+        let prefix = if is_directory(kind) { "/" } else { " " };
+        let x = draw_text(buffer, self.x, self.y, prefix, style);
         let name = to_utf8(self.tree.name(item));
         let width = self.remaining().saturating_sub(1);
-        draw_text(buffer, x, self.y, &shorten(&name, width.into()), self.style);
+        draw_text(buffer, x, self.y, &shorten(&name, width.into()), style);
     }
 }
 
@@ -1535,7 +1619,10 @@ mod tests {
         ];
         let formatted: Vec<String> = counts
             .into_iter()
-            .map(|count| format_item_count(count, ","))
+            .map(|count| {
+                let (before, number, unit) = format_item_count(count, ",");
+                format!("{before}{number}{unit}")
+            })
             .collect();
         assert_eq!(
             formatted,

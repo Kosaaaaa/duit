@@ -4,7 +4,7 @@
 use std::cmp::Ordering;
 
 /// Format `number` tenths as a right-aligned `###.#`, five columns wide. `number` is at most 9999.
-pub fn fmt5dec(number: u64) -> String {
+pub(crate) fn fmt5dec(number: u64) -> String {
     format!("{:>3}.{}", number / 10, number % 10)
 }
 
@@ -16,7 +16,7 @@ fn is_whitespace(byte: u8) -> bool {
 
 /// Compare `a` and `b` in natural order, where runs of digits compare as numbers. A port of
 /// `strnatcmp()` from <https://github.com/sourcefrog/natsort/>.
-pub fn strnatcmp(a: &[u8], b: &[u8]) -> Ordering {
+pub(crate) fn strnatcmp(a: &[u8], b: &[u8]) -> Ordering {
     // The algorithm reads one byte past the end, where the C string has its NUL terminator.
     let at = |string: &[u8], index: usize| string.get(index).copied().unwrap_or(0);
     let mut a_index = 0;
