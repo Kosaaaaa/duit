@@ -432,28 +432,138 @@ fn format_item_count(count: u32, separator: &str) -> (&'static str, String, &'st
     }
 }
 
+/// The screen while the browser lists a directory, which `draw` in `browser.zig` shows while
+/// `dir_loading` is set, as `loadDir` calls `handleEvent` in `main.zig` for it.
+pub struct Loading<'a> {
+    /// The path of the directory that is listed.
+    path: &'a [u8],
+    /// Whether the directory is read from a binary export.
+    from_file: bool,
+    options: &'a BrowserOptions,
+    /// The number of entries listed so far, hidden ones included.
+    count: u64,
+}
+
+impl Loading<'_> {
+    /// Draw the header, the path, no listing, and the number of entries listed so far in the
+    /// footer, on all of `frame`.
+    pub fn draw(&self, frame: &mut Frame<'_>) {
+        let (width, height) = (frame.area().width, frame.area().height);
+        let buffer = frame.buffer_mut();
+        let style = |style| self.options.color.style(style);
+        draw_header(buffer, self.path, self.from_file, self.options);
+        let footer = height.saturating_sub(1);
+        draw_line(buffer, 0, footer, ' ', width, style(Style::Hd));
+        let x = draw_text(buffer, 0, footer, " Loading... ", style(Style::Hd));
+        draw_text(
+            buffer,
+            x,
+            footer,
+            &format_number(self.count, &self.options.thousands_separator),
+            style(Bg::Hd.fg(Style::Num)),
+        );
+    }
+}
+
+/// Give `loading` the screen of `count` entries listed of the directory at `path`, at the counts
+/// where `loadDir` in `browser.zig` calls `handleEvent`: those without the bits of 1 and 64.
+fn report_loading(
+    loading: &mut dyn FnMut(&Loading<'_>),
+    path: &[u8],
+    from_file: bool,
+    options: &BrowserOptions,
+    count: u64,
+) {
+    if count & 0b100_0001 == 0 {
+        loading(&Loading {
+            path,
+            from_file,
+            options,
+            count,
+        });
+    }
+}
+
+/// Erase `buffer` and draw the first two rows of the browser in it: the header, marked `[from
+/// file]` when `from_file`, and the path `path` of the open directory.
+fn draw_header(buffer: &mut Buffer, path: &[u8], from_file: bool, options: &BrowserOptions) {
+    let width = buffer.area.width;
+    let style = |style| options.color.style(style);
+    // ncurses erases the screen to the background of the `default` style before each frame.
+    buffer.set_style(buffer.area, style(Style::Default));
+    draw_line(buffer, 0, 0, ' ', width, style(Style::Hd));
+    let x = draw_text(
+        buffer,
+        0,
+        0,
+        concat!(
+            "duit ",
+            env!("CARGO_PKG_VERSION"),
+            " ~ Use the arrow keys to navigate, press "
+        ),
+        style(Style::Hd),
+    );
+    let x = draw_text(buffer, x, 0, "?", style(Style::KeyHd));
+    draw_text(buffer, x, 0, " for help", style(Style::Hd));
+    let mode = if from_file {
+        Some("[from file]")
+    } else if options.imported {
+        Some("[imported]")
+    } else if !options.can_delete {
+        Some("[readonly]")
+    } else {
+        None
+    };
+    if let Some(mode) = mode {
+        let x = width.saturating_sub(u16::try_from(mode.len()).unwrap_or(width));
+        draw_text(buffer, x, 0, mode, style(Style::Hd));
+    }
+
+    draw_line(buffer, 0, 1, '-', width, style(Style::Default));
+    let path = to_utf8(path);
+    let x = draw_text(buffer, 3, 1, " ", style(Style::Default));
+    let x = draw_text(
+        buffer,
+        x,
+        1,
+        &shorten(&path, width.saturating_sub(5).into()),
+        style(Style::Dir),
+    );
+    draw_text(buffer, x, 1, " ", style(Style::Default));
+}
+
 impl Browser {
-    /// Open `directory` of `tree`, with the cursor on the first row.
-    pub fn new(tree: &Tree, directory: DirectoryId, options: &BrowserOptions) -> Self {
+    /// Open `directory` of `tree`, with the cursor on the first row. `loading` gets the screen
+    /// while the directory is listed.
+    pub fn new(
+        tree: &Tree,
+        directory: DirectoryId,
+        options: &BrowserOptions,
+        loading: &mut dyn FnMut(&Loading<'_>),
+    ) -> Self {
         let mut parents: Vec<DirectoryId> =
             iter::successors(Some(directory), |&id| tree.directory(id).parent).collect();
         parents.reverse();
-        Self::with_source(tree, directory, Source::Memory(parents), options)
+        Self::with_source(tree, directory, Source::Memory(parents), options, loading)
     }
 
     /// Open the root of the binary export of `reader`, `initRoot` in `browser.zig`, and return
     /// the browser with the tree of the root, which the browser replaces as it opens other
-    /// directories. `None` if the root is not a directory.
+    /// directories. `None` if the root is not a directory. `loading` gets the screen while the
+    /// root is read, whose path is its name.
     pub fn open(
         mut reader: BinaryReader<File>,
         options: &BrowserOptions,
+        loading: &mut dyn FnMut(&Loading<'_>),
     ) -> Result<Option<(Self, Tree)>, BinaryImportError> {
         let root = reader.root();
         let Some(Listing {
             tree,
             directory,
             directories,
-        }) = reader.read_directory(root, options.extended)?
+        }) = reader.read_directory(root, options.extended, &mut |name, count| {
+            report_loading(loading, name, true, options, count);
+        })?
         else {
             return Ok(None);
         };
@@ -462,16 +572,18 @@ impl Browser {
             parents: vec![root],
             directories,
         };
-        let browser = Self::with_source(&tree, directory, source, options);
+        let browser = Self::with_source(&tree, directory, source, options, &mut |_| {});
         Ok(Some((browser, tree)))
     }
 
     /// Open `directory` of `tree`, which `source` reads, with the cursor on the first row.
+    /// `loading` gets the screen while the directory is listed.
     fn with_source(
         tree: &Tree,
         directory: DirectoryId,
         source: Source,
         options: &BrowserOptions,
+        loading: &mut dyn FnMut(&Loading<'_>),
     ) -> Self {
         let mut browser = Self {
             directory,
@@ -489,7 +601,7 @@ impl Browser {
             help: Help::default(),
             message: None,
         };
-        browser.load(tree, options);
+        browser.load(tree, options, loading);
         browser
     }
 
@@ -522,8 +634,13 @@ impl Browser {
     }
 
     /// List the entries of the directory that `options` shows, then sort them, `loadDir` in
-    /// `browser.zig`.
-    fn load(&mut self, tree: &Tree, options: &BrowserOptions) {
+    /// `browser.zig`. `loading` gets the screen while the entries are listed.
+    fn load(
+        &mut self,
+        tree: &Tree,
+        options: &BrowserOptions,
+        loading: &mut dyn FnMut(&Loading<'_>),
+    ) {
         self.items.clear();
         self.max_blocks = 1;
         self.max_size = 1;
@@ -531,7 +648,9 @@ impl Browser {
         if self.depth() > 1 {
             self.items.push(None);
         }
-        for id in tree.entries(self.directory) {
+        let from_file = self.reads_file();
+        for (count, id) in (1..).zip(tree.entries(self.directory)) {
+            report_loading(loading, &self.path, from_file, options, count);
             let entry = tree.entry(id);
             self.max_blocks = self.max_blocks.max(entry.blocks);
             self.max_size = self.max_size.max(entry.size);
@@ -607,8 +726,10 @@ impl Browser {
         tree: &mut Tree,
         options: &BrowserOptions,
         directory: DirectoryId,
+        loading: &mut dyn FnMut(&Loading<'_>),
     ) -> Result<(), BinaryImportError> {
-        let name = tree.name(tree.directory(directory).entry).to_vec();
+        let mut path = self.path.clone();
+        join_path(&mut path, tree.name(tree.directory(directory).entry));
         let entered = match &mut self.source {
             Source::Memory(parents) => {
                 parents.push(directory);
@@ -627,7 +748,9 @@ impl Browser {
                     .map(|listed| listed.itemref);
                 if let Some(itemref) = itemref {
                     let listing = reader
-                        .read_directory(itemref, options.extended)?
+                        .read_directory(itemref, options.extended, &mut |_, count| {
+                            report_loading(loading, &path, true, options, count);
+                        })?
                         .ok_or(BinaryImportError::Corrupt { itemref })?;
                     *tree = listing.tree;
                     *directories = listing.directories;
@@ -638,10 +761,9 @@ impl Browser {
             }
         };
         if entered {
-            join_path(&mut self.path, &name);
+            self.path = path;
         }
-        self.load(tree, options);
-        self.state = State::Main;
+        self.load_entered(tree, options, loading);
         Ok(())
     }
 
@@ -652,10 +774,15 @@ impl Browser {
         &mut self,
         tree: &mut Tree,
         options: &BrowserOptions,
+        loading: &mut dyn FnMut(&Loading<'_>),
     ) -> Result<(), BinaryImportError> {
         if self.depth() < 2 {
             return Ok(());
         }
+        // An empty name leaves a path without a separator to cut, for example a root named `foo`
+        // with a subdirectory without a name, which a scan never gives. ncdu reaches `unreachable`
+        // there.
+        let path = dirname(&self.path).map(<[u8]>::to_vec);
         match &mut self.source {
             Source::Memory(parents) => {
                 parents.pop();
@@ -679,7 +806,10 @@ impl Browser {
                     return Ok(());
                 };
                 let listing = reader
-                    .read_directory(itemref, options.extended)?
+                    .read_directory(itemref, options.extended, &mut |_, count| {
+                        let path = path.as_deref().unwrap_or_default();
+                        report_loading(loading, path, true, options, count);
+                    })?
                     .ok_or(BinaryImportError::Corrupt { itemref })?;
                 parents.pop();
                 *tree = listing.tree;
@@ -687,14 +817,26 @@ impl Browser {
                 self.directory = listing.directory;
             }
         }
-        // An empty name leaves a path without a separator to cut, for example a root named `foo`
-        // with a subdirectory without a name, which a scan never gives. ncdu reaches `unreachable`
-        // there.
-        self.path =
-            dirname(&self.path).map_or_else(|| path_of(tree, self.directory), <[u8]>::to_vec);
-        self.load(tree, options);
-        self.state = State::Main;
+        self.path = path.unwrap_or_else(|| path_of(tree, self.directory));
+        self.load_entered(tree, options, loading);
         Ok(())
+    }
+
+    /// List the directory that [`Browser::enter_subdirectory`] or [`Browser::enter_parent`]
+    /// opened, and close any window. `loading` gets the screen while the entries are listed,
+    /// unless a binary export already reported the read as the listing.
+    fn load_entered(
+        &mut self,
+        tree: &Tree,
+        options: &BrowserOptions,
+        loading: &mut dyn FnMut(&Loading<'_>),
+    ) {
+        if self.reads_file() {
+            self.load(tree, options, &mut |_| {});
+        } else {
+            self.load(tree, options, loading);
+        }
+        self.state = State::Main;
     }
 
     /// Show the info of `item` in `tab`, or close the window when `item` is the row of the parent
@@ -735,6 +877,7 @@ impl Browser {
         options: &BrowserOptions,
         key: Key,
         height: u16,
+        loading: &mut dyn FnMut(&Loading<'_>),
     ) -> bool {
         let Some(entry) = self.info.entry else {
             return false;
@@ -757,7 +900,7 @@ impl Browser {
             {
                 let link = tree.link(link);
                 self.directory = link.parent;
-                self.load(tree, options);
+                self.load(tree, options, loading);
                 let name = tree.name(link.entry);
                 self.cursor = self
                     .items
@@ -861,15 +1004,17 @@ impl Browser {
     /// exits with.
     ///
     /// `tree` is the tree that the browser was opened with. From a binary export, the browser
-    /// replaces it with each directory that it opens.
+    /// replaces it with each directory that it opens. `loading` gets the screen while a directory
+    /// is listed.
     pub fn key_input(
         &mut self,
         tree: &mut Tree,
         options: &mut BrowserOptions,
         key: Key,
         height: u16,
+        loading: &mut dyn FnMut(&Loading<'_>),
     ) -> Result<bool, BinaryImportError> {
-        let quit = self.handle_key(tree, options, key, height);
+        let quit = self.handle_key(tree, options, key, height, loading);
         self.save_view(tree);
         quit
     }
@@ -880,6 +1025,7 @@ impl Browser {
         options: &mut BrowserOptions,
         key: Key,
         height: u16,
+        loading: &mut dyn FnMut(&Loading<'_>),
     ) -> Result<bool, BinaryImportError> {
         if self.message.take().is_some() {
             return Ok(false);
@@ -895,7 +1041,7 @@ impl Browser {
                 return Ok(false);
             }
             State::Info => {
-                if self.info_key_input(tree, options, key, height) {
+                if self.info_key_input(tree, options, key, height, loading) {
                     return Ok(false);
                 }
             }
@@ -950,7 +1096,7 @@ impl Browser {
             }
             Key::Char('e') => {
                 options.show_hidden = !options.show_hidden;
-                self.load(tree, options);
+                self.load(tree, options, loading);
                 self.state = State::Main;
             }
             Key::Char('t') => {
@@ -972,14 +1118,14 @@ impl Browser {
             Key::Enter | Key::Char('l') | Key::Right => match self.items.get(self.cursor) {
                 Some(Some(id)) => {
                     if let Some(directory) = directory_of(tree.entry(*id)) {
-                        self.enter_subdirectory(tree, options, directory)?;
+                        self.enter_subdirectory(tree, options, directory, loading)?;
                     }
                 }
-                Some(None) => self.enter_parent(tree, options)?,
+                Some(None) => self.enter_parent(tree, options, loading)?,
                 None => {}
             },
             Key::Char('h' | '<') | Key::Backspace | Key::Left => {
-                self.enter_parent(tree, options)?;
+                self.enter_parent(tree, options, loading)?;
             }
 
             Key::Char('c') => options.show_item_count = !options.show_item_count,
@@ -1035,47 +1181,7 @@ impl Browser {
         let scheme = options.color;
         let style = |style| scheme.style(style);
 
-        // ncurses erases the screen to the background of the `default` style before each frame.
-        buffer.set_style(buffer.area, style(Style::Default));
-        draw_line(buffer, 0, 0, ' ', width, style(Style::Hd));
-        let x = draw_text(
-            buffer,
-            0,
-            0,
-            concat!(
-                "duit ",
-                env!("CARGO_PKG_VERSION"),
-                " ~ Use the arrow keys to navigate, press "
-            ),
-            style(Style::Hd),
-        );
-        let x = draw_text(buffer, x, 0, "?", style(Style::KeyHd));
-        draw_text(buffer, x, 0, " for help", style(Style::Hd));
-        let mode = if self.reads_file() {
-            Some("[from file]")
-        } else if options.imported {
-            Some("[imported]")
-        } else if !options.can_delete {
-            Some("[readonly]")
-        } else {
-            None
-        };
-        if let Some(mode) = mode {
-            let x = width.saturating_sub(u16::try_from(mode.len()).unwrap_or(width));
-            draw_text(buffer, x, 0, mode, style(Style::Hd));
-        }
-
-        draw_line(buffer, 0, 1, '-', width, style(Style::Default));
-        let path = to_utf8(&self.path);
-        let x = draw_text(buffer, 3, 1, " ", style(Style::Default));
-        let x = draw_text(
-            buffer,
-            x,
-            1,
-            &shorten(&path, width.saturating_sub(5).into()),
-            style(Style::Dir),
-        );
-        draw_text(buffer, x, 1, " ", style(Style::Default));
+        draw_header(buffer, &self.path, self.reads_file(), options);
 
         let rows = usize::from(height.saturating_sub(3));
         if self.cursor < self.top {

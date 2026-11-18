@@ -37,7 +37,7 @@ fn browses(input: &[u8]) -> bool {
         if !visited.insert(itemref) {
             continue;
         }
-        match reader.read_directory(itemref, true) {
+        match reader.read_directory(itemref, true, &mut |_, _| {}) {
             Ok(Some(listing)) => {
                 directories.extend(listing.directories.iter().map(|listed| listed.itemref));
             }
@@ -61,7 +61,7 @@ fn root_listing(input: &[u8]) -> String {
     let mut reader = BinaryReader::open(Cursor::new(input)).expect("index is read");
     let root = reader.root();
     let listing = reader
-        .read_directory(root, true)
+        .read_directory(root, true, &mut |_, _| {})
         .expect("root is read")
         .expect("root is a directory");
     let Listing {

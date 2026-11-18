@@ -311,6 +311,25 @@ fn escape_then_key() {
     assert_eq!(status.code(), Some(1));
 }
 
+/// Keys that are typed while a directory is listed are dropped, as ncdu drops them once `loadDir`
+/// has listed 2 entries: the `q` after Enter on `/src` does not quit.
+#[test]
+fn keys_dropped_while_loading() {
+    let directory = fixture();
+    for export in ["tree.json", "tree.ncdu"] {
+        let pty = pty();
+        let receiver = read_output(&pty);
+        let mut child = spawn_on(&pty, directory.path(), &["-f", export]);
+        let mut output = Vec::new();
+        wait_for(&receiver, &mut output, FOOTER);
+        (&pty.master).write_all(b"\rq").expect("keys are typed");
+        // The row of the parent directory of `/src`.
+        wait_for(&receiver, &mut output, b"/..");
+        (&pty.master).write_all(b"q").expect("keys are typed");
+        assert_eq!(wait_exit(&mut child).code(), Some(0), "{export}");
+    }
+}
+
 /// With an import from standard input, duit draws on and reads keys from `/dev/tty`, its
 /// controlling terminal, and writes nothing to standard output. A binary export is read from
 /// standard input too when it is a file, which can seek.
