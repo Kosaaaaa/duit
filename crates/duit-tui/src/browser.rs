@@ -9,6 +9,7 @@ use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::style::Style;
 
+use crate::terminal::Key;
 use crate::ui::{
     BOLD, BOLD_REVERSE, PLAIN, REVERSE, Window, draw_line, draw_size, draw_text, format_number,
     format_timestamp, shorten, to_utf8,
@@ -101,24 +102,6 @@ impl Default for BrowserOptions {
             confirm_quit: false,
         }
     }
-}
-
-/// A key press, as the browser reads it from ncurses `getch`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Key {
-    /// A character key.
-    Char(char),
-    /// The Enter key, which ncurses reports as `\n`.
-    Enter,
-    Backspace,
-    Up,
-    Down,
-    Left,
-    Right,
-    Home,
-    End,
-    PageUp,
-    PageDown,
 }
 
 /// The window over the listing that takes the keys, `state` in `browser.zig`.
@@ -332,7 +315,7 @@ fn select_with_key(key: Key, index: &mut usize, length: usize, page: usize) {
         Key::End => *index = length.saturating_sub(1),
         Key::PageUp => *index = index.saturating_sub(page),
         Key::PageDown => *index = length.saturating_sub(1).min(*index + page),
-        Key::Char(_) | Key::Enter | Key::Backspace | Key::Left | Key::Right => {}
+        Key::Char(_) | Key::Enter | Key::Backspace | Key::Left | Key::Right | Key::Other => {}
     }
 }
 
@@ -611,7 +594,8 @@ impl Browser {
             | Key::Home
             | Key::End
             | Key::PageUp
-            | Key::PageDown => select_with_key(
+            | Key::PageDown
+            | Key::Other => select_with_key(
                 key,
                 &mut self.cursor,
                 self.items.len(),

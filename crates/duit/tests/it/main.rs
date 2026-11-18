@@ -5,6 +5,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::process::{Command, Output};
 
+mod browse;
 mod config;
 mod convert;
 mod export;

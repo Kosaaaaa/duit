@@ -1,7 +1,7 @@
 //! The `duit` command.
 
 use std::env;
-use std::ffi::{CString, OsStr};
+use std::ffi::{CStr, CString, OsStr};
 use std::fs::{self, File};
 use std::io::{self, IsTerminal, Read, Write};
 use std::num::NonZero;
@@ -12,14 +12,16 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use duit::{
-    Arg, Args, Config, OptionError, open_error, read_error, seek_error, stat_error, write_error,
+    Arg, Args, Config, OptionError, open_error, read_error, seek_error, stat_error, strerror,
+    write_error,
 };
 use duit_format::{
     BINARY_SIGNATURE, BinaryExport, BinaryExportError, BinaryImportError, BinaryOpenError,
     BinaryReader, ImportError, JsonExport, JsonExportError, import,
 };
-use duit_model::Sink;
+use duit_model::{MemorySink, Sink, Tree, TreeError};
 use duit_scan::{ScanError, ScanOptions, scan};
+use duit_tui::{Browser, BrowserOptions, InitError, Input, Ui};
 
 /// The terminal sequence that clears from the cursor to the end of the screen. ncdu writes it to
 /// standard error before an error message and at the end of a scan, to clear a progress line.
@@ -86,7 +88,7 @@ fn main() -> ExitCode {
     let read_config = env::args_os().all(|argument| argument != "--ignore-config");
     let arguments: Vec<Vec<u8>> = env::args_os().skip(1).map(OsStringExt::into_vec).collect();
     match run(&arguments, read_config) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(message) => {
             let _ = io::stderr().write_all(&[CLEAR_TO_END, &message].concat());
             ExitCode::FAILURE
@@ -105,6 +107,22 @@ fn set_locale() {
     }
 }
 
+/// The separator between groups of thousands in the locale, if it has one.
+#[expect(unsafe_code)]
+fn thousands_separator() -> Option<String> {
+    // SAFETY: `localeconv` returns null or a pointer to a structure that only `setlocale` and
+    // `localeconv` change, and no other thread calls them. Its `thousands_sep` is null or a C
+    // string, which is copied before the pointer is dropped.
+    let separator = unsafe {
+        let locale = libc::localeconv();
+        if locale.is_null() || (*locale).thousands_sep.is_null() {
+            return None;
+        }
+        CStr::from_ptr((*locale).thousands_sep).to_bytes().to_vec()
+    };
+    (!separator.is_empty()).then(|| String::from_utf8_lossy(&separator).into_owned())
+}
+
 /// Write `output` to standard output, ignoring errors as ncdu does for the help and the version.
 fn print(output: &[u8]) {
     let _ = io::stdout().write_all(output);
@@ -113,7 +131,7 @@ fn print(output: &[u8]) {
 /// Apply the config files if `read_config`, then parse `arguments`, which follow the program
 /// name, and run the mode they select. An error is the message to print before exiting with
 /// status 1.
-fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<(), Vec<u8>> {
+fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
     let mut config = Config::default();
     if read_config {
         config.read_config_files()?;
@@ -134,11 +152,11 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<(), Vec<u8>> {
             }
             Arg::Short(b'h' | b'?') | Arg::Long(b"help") => {
                 print(HELP.as_bytes());
-                return Ok(());
+                return Ok(ExitCode::SUCCESS);
             }
             Arg::Short(b'v' | b'V') | Arg::Long(b"version") => {
                 print(format!("duit {}\n", env!("CARGO_PKG_VERSION")).as_bytes());
-                return Ok(());
+                return Ok(ExitCode::SUCCESS);
             }
             Arg::Short(b'o') if export_json.is_some() || export_binary.is_some() => {
                 return Err(b"The -o flag can only be given once.\n".to_vec());
@@ -185,13 +203,38 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<(), Vec<u8>> {
         );
     }
 
-    // The modes that are not ported yet.
-    let Some(export_path) = export_json.or(export_binary) else {
-        return Err(b"Only an export with -o or -O is supported yet.\n".to_vec());
-    };
     if import_file.is_none() && config.threads > 1 {
         return Err(b"A scan with more than one thread is not supported yet.\n".to_vec());
     }
+
+    let Some(export_path) = export_json.or(export_binary) else {
+        let import_input = import_file.map(open_import).transpose()?;
+        let imported = import_input.is_some();
+        if let Some(ImportInput::Binary(_)) = &import_input {
+            if !quit_after_scan {
+                return Err(b"Browsing a binary export is not supported yet.\n".to_vec());
+            }
+            // ncdu opens a binary export without reading it, because the browser reads it
+            // from the file.
+            let _ = io::stderr().write_all(CLEAR_TO_END);
+            return Ok(ExitCode::SUCCESS);
+        }
+        let memory = MemorySink::new(config.extended);
+        // `fill` ends with the clear that ncdu writes when it returns after the scan, or when
+        // `ui.init` takes over the terminal.
+        let tree = fill(memory, import_input, scan_directory, &config)?;
+        if quit_after_scan {
+            return Ok(ExitCode::SUCCESS);
+        }
+        let mut options = config.browser;
+        options.imported = imported;
+        options.can_delete = config.can_delete.unwrap_or(!imported);
+        options.extended = config.extended;
+        if let Some(separator) = thousands_separator() {
+            options.thousands_separator = separator;
+        }
+        return browse(&tree, options);
+    };
 
     let out: Box<dyn Write> = if export_path == b"-" {
         Box::new(io::stdout().lock())
@@ -217,7 +260,7 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<(), Vec<u8>> {
         )
         .map_err(|error| writing(&error))?;
         let import_input = import_file.map(open_import).transpose()?;
-        return fill(export, import_input, scan_directory, &config);
+        return fill(export, import_input, scan_directory, &config).map(|()| ExitCode::SUCCESS);
     }
     // As in ncdu, the export file is created before the import is read.
     let import_input = import_file.map(open_import).transpose()?;
@@ -231,20 +274,80 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<(), Vec<u8>> {
         config.compress.then_some(config.compress_level),
     )
     .map_err(|error| writing(&error))?;
-    fill(export, import_input, scan_directory, &config)
+    fill(export, import_input, scan_directory, &config).map(|()| ExitCode::SUCCESS)
 }
 
-/// An export that an import or a scan writes into.
-trait Export: Sink {
-    /// Write the end of the export and flush it.
-    fn finish(self) -> io::Result<()>;
+/// Run the browser on `tree` until the user quits, the loop at the end of `main` in `main.zig`
+/// with `handleEvent`. Like ncdu, it handles every key that is waiting before it draws again.
+fn browse(tree: &Tree, mut options: BrowserOptions) -> Result<ExitCode, Vec<u8>> {
+    // A scan or an import that succeeds has created the root.
+    let Some(root) = tree.root() else {
+        return Ok(ExitCode::SUCCESS);
+    };
+    let mut ui = Ui::init(!io::stdin().is_terminal()).map_err(|error| match error {
+        InitError::OpenTty(error) => {
+            format!("Error opening /dev/tty: {}.\n", strerror(&error)).into_bytes()
+        }
+        InitError::Terminal(_) => b"Error initializing the terminal.\n".to_vec(),
+    })?;
+    let mut browser = Browser::new(tree, root, &options);
+    let mut height = 0;
+    let mut draw = true;
+    let mut block = true;
+    loop {
+        if draw {
+            ui.draw(|frame| {
+                height = frame.area().height;
+                browser.draw(frame, tree, &options);
+            });
+            draw = false;
+        }
+        match ui.getch(block) {
+            Ok(Some(Input::Key(key))) => {
+                if browser.key_input(tree, &mut options, key, height) {
+                    ui.deinit();
+                    return Ok(ExitCode::SUCCESS);
+                }
+                block = false;
+            }
+            Ok(Some(Input::Resize)) => draw = true,
+            Ok(Some(Input::Interrupt)) => {
+                ui.deinit();
+                return Ok(ExitCode::FAILURE);
+            }
+            Ok(None) => {
+                draw = true;
+                block = true;
+            }
+            Err(error) => {
+                ui.deinit();
+                return Err(format!(
+                    "Error reading keyboard input, assuming TTY has been lost.\n\
+                     (Potentially nonsensical error message: {})\n",
+                    strerror(&error)
+                )
+                .into_bytes());
+            }
+        }
+    }
+}
+
+/// An export or the in-memory tree, which an import or a scan writes into.
+trait Consumer: Sink {
+    /// What the consumer gives when it is complete.
+    type Output;
+
+    /// Write the end of the export and flush it, or complete the tree.
+    fn finish(self) -> io::Result<Self::Output>;
 
     /// Drop the export without writing what is still buffered, as ncdu does when it stops on an
     /// error.
     fn discard(self);
 }
 
-impl<W: Write> Export for JsonExport<W> {
+impl<W: Write> Consumer for JsonExport<W> {
+    type Output = ();
+
     fn finish(self) -> io::Result<()> {
         Self::finish(self).map(drop)
     }
@@ -254,12 +357,24 @@ impl<W: Write> Export for JsonExport<W> {
     }
 }
 
-impl<W: Write> Export for BinaryExport<W> {
+impl<W: Write> Consumer for BinaryExport<W> {
+    type Output = ();
+
     fn finish(self) -> io::Result<()> {
         Self::finish(self).map(drop)
     }
 
     /// The blocks that are full are written already, and the current one is dropped.
+    fn discard(self) {}
+}
+
+impl Consumer for MemorySink {
+    type Output = Tree;
+
+    fn finish(self) -> io::Result<Tree> {
+        Ok(Self::finish(self))
+    }
+
     fn discard(self) {}
 }
 
@@ -271,16 +386,16 @@ enum ImportInput {
     Binary(BinaryReader<File>),
 }
 
-/// Write the import of `import_input`, or else the scan of `scan_directory`, into `export`.
-fn fill<E: Export>(
-    mut export: E,
+/// Write the import of `import_input`, or else the scan of `scan_directory`, into `consumer`.
+fn fill<C: Consumer>(
+    mut consumer: C,
     import_input: Option<ImportInput>,
     scan_directory: Option<&[u8]>,
     config: &Config,
-) -> Result<(), Vec<u8>> {
+) -> Result<C::Output, Vec<u8>> {
     if let Some(import_input) = import_input {
         let failure = match import_input {
-            ImportInput::Json(input, head) => match import(&mut export, input, &head) {
+            ImportInput::Json(input, head) => match import(&mut consumer, input, &head) {
                 Ok(()) => None,
                 Err(ImportError::Input {
                     line,
@@ -292,7 +407,7 @@ fn fill<E: Export>(
                 ),
                 Err(ImportError::Sink(error)) => Some(writing(&error)),
             },
-            ImportInput::Binary(mut reader) => match reader.import(&mut export) {
+            ImportInput::Binary(mut reader) => match reader.import(&mut consumer) {
                 Ok(()) => None,
                 Err(BinaryImportError::Corrupt { itemref }) => {
                     Some(format!("Error reading item {itemref:x} from file\n").into_bytes())
@@ -315,12 +430,12 @@ fn fill<E: Export>(
         };
         // As in ncdu, which stops without flushing its buffer, a failed export writes nothing more.
         if let Some(message) = failure {
-            export.discard();
+            consumer.discard();
             return Err(message);
         }
-        export.finish().map_err(|error| writing(&error))?;
+        let output = consumer.finish().map_err(|error| writing(&error))?;
         let _ = io::stderr().write_all(CLEAR_TO_END);
-        return Ok(());
+        return Ok(output);
     }
 
     // ncdu scans the absolute path if it can resolve one.
@@ -338,18 +453,18 @@ fn fill<E: Export>(
         exclude_caches: config.exclude_caches,
     };
     // A failure at the root still ends the export, as in ncdu.
-    let root_error = match scan(&mut export, &path, options, &config.exclude) {
+    let root_error = match scan(&mut consumer, &path, options, &config.exclude) {
         Ok(()) => None,
         Err(ScanError::Stat(error)) => Some(stat_error(&error)),
         Err(ScanError::Open(error)) => Some(open_error(&error)),
         Err(ScanError::Sink(error)) => return Err(writing(&error)),
     };
-    export.finish().map_err(|error| writing(&error))?;
+    let output = consumer.finish().map_err(|error| writing(&error))?;
     if let Some(description) = root_error {
         return Err(opening_directory(description));
     }
     let _ = io::stderr().write_all(CLEAR_TO_END);
-    Ok(())
+    Ok(output)
 }
 
 /// Open the import file at `path`, or standard input for `-`, and read its first 8 bytes, which
@@ -404,6 +519,13 @@ fn opening_directory(description: &str) -> Vec<u8> {
 
 fn writing(error: &io::Error) -> Vec<u8> {
     let inner = error.get_ref();
+    if let Some(error) = inner.and_then(|error| error.downcast_ref::<TreeError>()) {
+        return match error {
+            TreeError::TooManyDevices => {
+                b"Maximum number of device identifiers exceeded.\n".to_vec()
+            }
+        };
+    }
     if let Some(error) = inner.and_then(|error| error.downcast_ref::<JsonExportError>()) {
         return match error {
             JsonExportError::PathTooLong => b"Error writing JSON export: path too long.\n".to_vec(),
