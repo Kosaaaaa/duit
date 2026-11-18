@@ -245,6 +245,7 @@ dependencies = [
  "insta",
  "libc",
  "ratatui",
+ "rustix",
  "unicode-width",
 ]
 

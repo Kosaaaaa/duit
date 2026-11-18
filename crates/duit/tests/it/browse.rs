@@ -477,7 +477,7 @@ fn quit_signal() {
     assert_eq!(status.signal(), Some(libc::SIGQUIT));
 }
 
-/// Ctrl-Z restores the terminal before it raises `SIGTSTP`, and duit takes the terminal over again
+/// Ctrl-Z restores the terminal before it sends `SIGTSTP`, and duit takes the terminal over again
 /// and draws the browser once it continues. duit runs in an orphaned process group, so the kernel
 /// discards the signal instead of stopping it.
 #[test]

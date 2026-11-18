@@ -19,6 +19,7 @@ use crossterm::terminal::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::{Frame, Terminal};
+use rustix::process::{Signal, kill_current_process_group};
 
 /// Why [`Ui::init`] failed.
 #[derive(Debug)]
@@ -163,8 +164,9 @@ impl Ui {
             }
             let input = match event::read()? {
                 // Ctrl-Z and Ctrl-\, which crossterm 0.29 reads as Ctrl-4. ncurses keeps the
-                // terminal from turning them into keys, so they raise `SIGTSTP` and `SIGQUIT`, and
-                // the `SIGTSTP` handler of ncurses restores the terminal around the suspend.
+                // terminal from turning them into keys, so the terminal sends `SIGTSTP` and
+                // `SIGQUIT` to the whole foreground process group, and the `SIGTSTP` handler of
+                // ncurses restores the terminal around the suspend.
                 Event::Key(KeyEvent {
                     code: KeyCode::Char(character @ ('z' | '4')),
                     modifiers,
@@ -173,10 +175,10 @@ impl Ui {
                 }) if kind != KeyEventKind::Release
                     && modifiers.contains(KeyModifiers::CONTROL) =>
                 {
-                    self.raise(if character == 'z' {
-                        libc::SIGTSTP
+                    self.signal_process_group(if character == 'z' {
+                        Signal::TSTP
                     } else {
-                        libc::SIGQUIT
+                        Signal::QUIT
                     })?;
                     Some(Input::Resize)
                 }
@@ -210,16 +212,16 @@ impl Ui {
         restore(self.terminal.backend_mut());
     }
 
-    /// Give the terminal back, raise `signal`, and take the terminal over again if duit continues,
-    /// as after a suspend.
-    fn raise(&mut self, signal: libc::c_int) -> io::Result<()> {
+    /// Give the terminal back, send `signal` to the process group of duit, and take the terminal
+    /// over again if duit continues, as after a suspend.
+    ///
+    /// The group gets the signal as from the terminal, so that a suspend also stops the other
+    /// processes of the job, such as the producer of `-f-`.
+    fn signal_process_group(&mut self, signal: Signal) -> io::Result<()> {
         restore(self.terminal.backend_mut());
-        #[expect(unsafe_code)]
-        // SAFETY: `raise` takes a signal number and no pointers, and a signal number that is not
-        // valid makes it fail with `EINVAL`.
-        unsafe {
-            libc::raise(signal);
-        }
+        // `kill(0, signal)` fails only for a signal that is not valid or a group that it may not
+        // signal, and duit takes the terminal over again either way.
+        let _ = kill_current_process_group(signal);
         self.terminal = enter(&self.output)
             .map_err(|(InitError::OpenTty(error) | InitError::Terminal(error))| error)?;
         Ok(())
