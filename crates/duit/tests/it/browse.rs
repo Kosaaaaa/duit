@@ -283,6 +283,34 @@ fn quit() {
     }
 }
 
+/// Refreshing, deleting, and the shell are disabled by default for an import, and `-rr` disables
+/// the shell for a scan. `b` has no message for reading from a file, so a binary export shows the
+/// same one. The needles have no spaces, because duit does not write a space that is on the screen
+/// already.
+#[test]
+fn features_disabled() {
+    let directory = fixture();
+    let cases: [(&[&str], &[u8], &[u8]); 5] = [
+        (&["-f", "tree.json"], b"r", b"--enable-refresh"),
+        (&["-f", "tree.json"], b"d", b"--enable-delete"),
+        (&["-f", "tree.json"], b"b", b"--enable-shell"),
+        (&["-f", "tree.ncdu"], b"b", b"--enable-shell"),
+        (&["-rr", "."], b"b", b"--enable-shell"),
+    ];
+    for (arguments, key, needle) in cases {
+        let pty = pty();
+        let receiver = read_output(&pty);
+        let mut child = spawn_on(&pty, directory.path(), arguments);
+        let mut output = Vec::new();
+        wait_for(&receiver, &mut output, FOOTER);
+        (&pty.master).write_all(key).expect("key is typed");
+        wait_for(&receiver, &mut output, needle);
+        // The first `q` closes the message.
+        (&pty.master).write_all(b"qq").expect("keys are typed");
+        assert_eq!(wait_exit(&mut child).code(), Some(0), "{arguments:?}");
+    }
+}
+
 /// Ctrl-C ends duit with status 1 after the terminal is restored, as ncurses does on `SIGINT`, also
 /// in the confirmation of `--confirm-quit`.
 #[test]

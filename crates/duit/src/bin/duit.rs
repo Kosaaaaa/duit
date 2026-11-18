@@ -212,7 +212,9 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
         let imported = import_input.is_some();
         let mut options = config.browser.clone();
         options.imported = imported;
+        options.can_shell = config.can_shell.unwrap_or(!imported);
         options.can_delete = config.can_delete.unwrap_or(!imported);
+        options.can_refresh = config.can_refresh.unwrap_or(!imported);
         options.extended = config.extended;
         if let Some(separator) = thousands_separator() {
             options.thousands_separator = separator;

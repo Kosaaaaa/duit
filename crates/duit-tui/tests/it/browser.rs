@@ -124,10 +124,14 @@ fn subdirectory(tree: &Tree, name: &[u8]) -> DirectoryId {
         .expect("directory exists")
 }
 
-/// The options of an import, which ncdu marks in the header.
+/// The options of an import, which ncdu marks in the header, and which disables refreshing,
+/// deleting, and the shell unless they are enabled.
 fn imported() -> BrowserOptions {
     BrowserOptions {
         imported: true,
+        can_delete: false,
+        can_shell: false,
+        can_refresh: false,
         ..BrowserOptions::default()
     }
 }
@@ -1442,6 +1446,189 @@ fn quit_keys() {
             (80, 10)
         ),
         screen(&tree, root(&tree), &options, &[], (80, 10))
+    );
+}
+
+/// Refreshing an import is disabled unless `--enable-refresh` enables it, which a message says.
+#[test]
+fn refresh_disabled_imported() {
+    let tree = tree_of(SOURCE, false);
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &[Key::Char('r')], (80, 12)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "   16.0 KiB S   4.0 KiB [###########] /src                                      "
+    "!   4.0 Ki┌── Message ───────────────────────────────────────────────┐          "
+    "e   4.0 Ki│                                                          │          "
+    "    4.0 Ki│ Refresh feature disabled.                                │          "
+    "H   4.0 Ki│ Re-run with --enable-refresh to enable this option.      │          "
+    "    0.0   │                                                          │          "
+    "    0.0   │                                Press any key to continue │          "
+    "    0.0   └──────────────────────────────────────────────────────────┘rol \x01 é"
+    "@   0.0   B             [           ]  socket                                   "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    .............BBBBBBBBB..........................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// Refreshing a scan is disabled with `--disable-refresh`.
+#[test]
+fn refresh_disabled() {
+    let tree = tree_of(SOURCE, false);
+    let options = BrowserOptions {
+        can_refresh: false,
+        ..BrowserOptions::default()
+    };
+    assert_snapshot!(screen(&tree, root(&tree), &options, &[Key::Char('r')], (80, 12)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "--- /home/user/project ---------------------------------------------------------"
+    "   16.0 KiB S   4.0 KiB [###########] /src                                      "
+    "!   4.0 Ki┌── Message ───────────────────────────────────────────────┐          "
+    "e   4.0 Ki│                                                          │          "
+    "    4.0 Ki│ Directory refresh feature disabled.                      │          "
+    "H   4.0 Ki│                                                          │          "
+    "    0.0   │                                Press any key to continue │          "
+    "    0.0   └──────────────────────────────────────────────────────────┘          "
+    "    0.0   B             [           ]  quote " backslash \...\x09 control \x01 é"
+    "@   0.0   B             [           ]  socket                                   "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    .............BBBBBBBBB..........................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// The shell is disabled with `--disable-shell`, and the message names `--enable-shell` also for a
+/// scan.
+#[test]
+fn shell_disabled() {
+    let tree = tree_of(SOURCE, false);
+    let options = BrowserOptions {
+        can_shell: false,
+        ..BrowserOptions::default()
+    };
+    assert_snapshot!(screen(&tree, root(&tree), &options, &[Key::Char('b')], (80, 12)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "--- /home/user/project ---------------------------------------------------------"
+    "   16.0 KiB S   4.0 KiB [###########] /src                                      "
+    "!   4.0 Ki┌── Message ───────────────────────────────────────────────┐          "
+    "e   4.0 Ki│                                                          │          "
+    "    4.0 Ki│ Shell feature disabled.                                  │          "
+    "H   4.0 Ki│ Re-run with --enable-shell to enable this option.        │          "
+    "    0.0   │                                                          │          "
+    "    0.0   │                                Press any key to continue │          "
+    "    0.0   └──────────────────────────────────────────────────────────┘rol \x01 é"
+    "@   0.0   B             [           ]  socket                                   "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    .............BBBBBBBBB..........................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// Deleting from an import is disabled unless `--enable-delete` enables it, which a message says.
+#[test]
+fn delete_disabled_imported() {
+    let tree = tree_of(SOURCE, false);
+    assert_snapshot!(screen(&tree, root(&tree), &imported(), &[Key::Char('d')], (80, 12)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "--- /home/user/project ---------------------------------------------------------"
+    "   16.0 KiB S   4.0 KiB [###########] /src                                      "
+    "!   4.0 Ki┌── Message ───────────────────────────────────────────────┐          "
+    "e   4.0 Ki│                                                          │          "
+    "    4.0 Ki│ File deletion is disabled.                               │          "
+    "H   4.0 Ki│ Re-run with --enable-delete to enable this option.       │          "
+    "    0.0   │                                                          │          "
+    "    0.0   │                                Press any key to continue │          "
+    "    0.0   └──────────────────────────────────────────────────────────┘rol \x01 é"
+    "@   0.0   B             [           ]  socket                                   "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    .............BBBBBBBBB..........................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// Deleting from a scan is disabled with `--disable-delete`, also on the row of the parent
+/// directory. In a root without entries, `d` does nothing.
+#[test]
+fn delete_disabled() {
+    let tree = tree_of(SOURCE, false);
+    let options = BrowserOptions {
+        can_delete: false,
+        ..BrowserOptions::default()
+    };
+    let keys = [Key::Down, Key::Down, Key::Enter, Key::Char('d')];
+    assert_snapshot!(screen(&tree, root(&tree), &options, &keys, (80, 12)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [readonly]"
+    "--- /home/user/project/empty ---------------------------------------------------"
+    "                          /..                                                   "
+    "          ┌── Message ───────────────────────────────────────────────┐          "
+    "          │                                                          │          "
+    "          │ File deletion is disabled.                               │          "
+    "          │                                                          │          "
+    "          │                                Press any key to continue │          "
+    "          └──────────────────────────────────────────────────────────┘          "
+    "                                                                                "
+    "                                                                                "
+    "*Total disk usage:   4.0 KiB   Apparent size:   4.0 KiB   Items: 0              "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    .............BBBBBBBBB..........................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+    let empty = tree_of(
+        br#"[1,2,{"progname":"ncdu","progver":"2.9.2"},[{"name":"/empty"}]]"#,
+        false,
+    );
+    assert_eq!(
+        screen(&empty, root(&empty), &options, &[Key::Char('d')], (80, 12)),
+        screen(&empty, root(&empty), &options, &[], (80, 12))
     );
 }
 
