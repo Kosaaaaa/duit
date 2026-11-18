@@ -20,8 +20,9 @@ pub enum ScanState<'a> {
     },
     /// A refresh clears the counts of the directory that it scans again, `zeroing`.
     Zeroing,
-    /// The tree in memory adds the sizes of its hard links.
-    CountingHardLinks,
+    /// The tree in memory adds the sizes of its hard links, and is `done` with that many of `total`
+    /// inodes, which are shown once `total` is not 0.
+    CountingHardLinks { done: usize, total: usize },
     /// A refresh could not open the directory at `path`, and waits for a key, `err`.
     Error { path: &'a [u8] },
     /// The scan or the import is done.
@@ -78,8 +79,12 @@ impl Console {
                 );
                 self.lines += 2;
             }
-            ScanState::CountingHardLinks => {
-                output.push_str("Counting hardlinks...\n");
+            ScanState::CountingHardLinks { done, total } => {
+                output.push_str("Counting hardlinks...");
+                if total > 0 {
+                    let _ = write!(output, " {done} / {total}");
+                }
+                output.push('\n');
                 self.lines += 1;
             }
             ScanState::Zeroing | ScanState::Error { .. } | ScanState::Done => {}
@@ -128,9 +133,17 @@ impl ScanScreen {
                 let window = Window::new(buffer, scheme, 4, width, "Initializing");
                 window.text(buffer, 2, 2, "Clearing directory counts...", Style::Default);
             }
-            ScanState::CountingHardLinks => {
+            ScanState::CountingHardLinks { done, total } => {
                 let window = Window::new(buffer, scheme, 4, width, "Finalizing");
-                window.text(buffer, 2, 2, "Counting hardlinks... ", Style::Default);
+                let x = window.text(buffer, 2, 2, "Counting hardlinks... ", Style::Default);
+                if total > 0 {
+                    let separator = &options.thousands_separator;
+                    let done = u64::try_from(done).unwrap_or(u64::MAX);
+                    let x = window.number(buffer, 2, x, done, separator);
+                    let x = window.text(buffer, 2, x, " / ", Style::Default);
+                    let total = u64::try_from(total).unwrap_or(u64::MAX);
+                    window.number(buffer, 2, x, total, separator);
+                }
             }
             ScanState::Error { path } => {
                 let window = Window::new(buffer, scheme, 6, width, "Scan error");
@@ -287,19 +300,25 @@ mod tests {
                 directory: Some(b"/root/sub"),
                 last_error: None,
             },
-            ScanState::CountingHardLinks,
+            ScanState::CountingHardLinks { done: 0, total: 0 },
+            ScanState::CountingHardLinks {
+                done: 64,
+                total: 1234,
+            },
             ScanState::Done,
         ];
         assert_snapshot!(draws(&mut Console::new(true), &states, false), @r"
         1 files /   4.0 KiB\n  #1: /root\n
         ^[[1F^[[2K^[[1F^[[2K1234 files /   1.0 GiB\n  #1: /root/sub\n
         ^[[1F^[[2K^[[1F^[[2KCounting hardlinks...\n
+        ^[[1F^[[2KCounting hardlinks... 64 / 1234\n
         ^[[1F^[[2K
         ");
         assert_snapshot!(draws(&mut Console::new(false), &states, true), @r"
         1 files /   4.1 kB\n  #1: /root\n
         1234 files /   1.1 GB\n  #1: /root/sub\n
         Counting hardlinks...\n
+        Counting hardlinks... 64 / 1234\n
         ");
     }
 

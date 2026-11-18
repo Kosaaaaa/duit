@@ -167,6 +167,8 @@ pub struct Tree {
     /// The inodes whose sizes may be missing from the totals, which [`Tree::add_all_stats`] adds.
     /// `None` stands for every inode, which is cheaper than a set once many are uncounted.
     uncounted: Option<HashSet<Inode>>,
+    /// How many inodes the last [`Tree::add_all_stats`] went through, `add_total` in `model.zig`.
+    counted_inodes: usize,
     extended: Vec<EntryExtended>,
     names: Vec<u8>,
     /// The device number of each [`DeviceId`].
@@ -823,25 +825,35 @@ impl Tree {
     }
 
     /// Add the sizes of the inodes that are left out of the totals, as after adding or removing
-    /// hard links.
-    pub fn add_all_stats(&mut self) {
+    /// hard links, `addAllStats` in `model.zig`. `progress` gets how many of how many inodes are
+    /// done whenever bits 0 and 6 of the count are clear, where ncdu calls `handleEvent`.
+    pub fn add_all_stats(&mut self, progress: &mut dyn FnMut(usize, usize)) {
         let inodes = mem::take(&mut self.inodes);
-        match self.uncounted.take() {
-            None => {
-                for &link in inodes.values() {
-                    self.set_stats(link, true);
-                }
+        let uncounted = self.uncounted.take();
+        let (total, links): (usize, Box<dyn Iterator<Item = Option<LinkId>>>) = match &uncounted {
+            None => (inodes.len(), Box::new(inodes.values().copied().map(Some))),
+            Some(uncounted) => (
+                uncounted.len(),
+                Box::new(uncounted.iter().map(|inode| inodes.get(inode).copied())),
+            ),
+        };
+        for (done, link) in (1..).zip(links) {
+            if let Some(link) = link {
+                self.set_stats(link, true);
             }
-            Some(uncounted) => {
-                for inode in &uncounted {
-                    if let Some(&link) = inodes.get(inode) {
-                        self.set_stats(link, true);
-                    }
-                }
+            if done & 0b100_0001 == 0 {
+                progress(done, total);
             }
         }
+        self.counted_inodes = total;
         self.inodes = inodes;
         self.uncounted = Some(HashSet::new());
+    }
+
+    /// How many inodes the last [`Tree::add_all_stats`] went through, which the first frame of the
+    /// next count shows before it starts, as ncdu keeps its counters until then.
+    pub fn counted_inodes(&self) -> usize {
+        self.counted_inodes
     }
 
     /// Set the `sub_error` of `directory` from its entries alone. The directories below it must be

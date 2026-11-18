@@ -41,14 +41,14 @@ fn tree_of(input: &[u8], extended: bool) -> Tree {
     let (head, rest) = input.split_at(8);
     let mut sink = MemorySink::new(extended);
     import(&mut sink, rest, head).expect("input is imported");
-    sink.finish()
+    sink.finish(&mut |_, _| {})
 }
 
 /// The tree that `build` adds to a [`MemorySink`].
 fn build(extended: bool, build: impl FnOnce(&mut MemorySink) -> io::Result<()>) -> Tree {
     let mut sink = MemorySink::new(extended);
     build(&mut sink).expect("entries are added");
-    sink.finish()
+    sink.finish(&mut |_, _| {})
 }
 
 /// The root of `tree`.
@@ -484,7 +484,7 @@ fn zero_stats_links() {
     "#);
     let links = find(&tree, root, b"links");
     tree.zero_stats(links, Some(root));
-    tree.add_all_stats();
+    tree.add_all_stats(&mut |_, _| {});
     assert_snapshot!(render(&tree), @r#"
     "/root" directory {asize: 4106, blocks: 9, items: 1, dev: 1, shared_asize: 10, shared_blocks: 1}
       "links" directory {asize: 0, blocks: 0, items: 0, dev: 1}
@@ -495,7 +495,7 @@ fn zero_stats_links() {
     "#);
     let a = find(&tree, root, b"a");
     tree.zero_stats(a, Some(root));
-    tree.add_all_stats();
+    tree.add_all_stats(&mut |_, _| {});
     assert_snapshot!(render(&tree), @r#"
     "/root" directory {asize: 4086, blocks: 7, items: 0, dev: 1}
       "links" directory {asize: 0, blocks: 0, items: 0, dev: 1}
@@ -515,7 +515,7 @@ fn refresh(
 ) -> Tree {
     let mut sink = MemorySink::refresh(tree, directory, extended);
     build(&mut sink).expect("entries are added");
-    sink.finish()
+    sink.finish(&mut |_, _| {})
 }
 
 /// `/root/sub` before a refresh, below `/root` with a file of its own.
@@ -677,6 +677,52 @@ fn refresh_links() {
         "c" hard link {asize: 20, blocks: 1, ino: 2, nlink: 2}
       "a" hard link {asize: 10, blocks: 1, ino: 1, nlink: 2}
     "#);
+}
+
+/// Finishing the tree counts every inode on a scan. After a refresh, it counts only the inodes that
+/// the refresh took out of the totals, unless they are more than an eighth of all inodes. The count reports its progress whenever bits 0 and 6 of how many inodes
+/// are done are clear, as `addAllStats` in `model.zig` calls `handleEvent`. Until the next count
+/// starts, the tree keeps how many inodes the last one went through, as ncdu keeps `add_total`.
+#[test]
+fn count_progress() {
+    let mut sink = MemorySink::new(false);
+    let built = (|| -> io::Result<()> {
+        let mut root = sink.create_root(b"/root", &directory(1))?;
+        for inode in 0..127 {
+            sink.add_stat(&mut root, inode.to_string().as_bytes(), &link(inode, 10))?;
+        }
+        let mut sub = sink.add_directory(&mut root, b"sub", &directory(1))?;
+        for inode in 127..130 {
+            sink.add_stat(&mut sub, inode.to_string().as_bytes(), &link(inode, 10))?;
+        }
+        sink.finish_directory(sub, Some(&mut root))?;
+        sink.finish_directory(root, None)
+    })();
+    built.expect("entries are added");
+    let mut rendered = format!("scan, last count {}:", sink.counted_inodes());
+    let tree = sink.finish(&mut |done, total| {
+        let _ = write!(rendered, " {done}/{total}");
+    });
+    let sub = find_directory(&tree, root(&tree), b"sub");
+    let mut sink = MemorySink::refresh(tree, sub, false);
+    let built = (|| -> io::Result<()> {
+        let mut sub = sink.create_root(b"/root/sub", &directory(1))?;
+        for inode in 127..130 {
+            sink.add_stat(&mut sub, inode.to_string().as_bytes(), &link(inode, 10))?;
+        }
+        sink.finish_directory(sub, None)
+    })();
+    built.expect("entries are added");
+    let _ = write!(rendered, "\nrefresh, last count {}:", sink.counted_inodes());
+    let tree = sink.finish(&mut |done, total| {
+        let _ = write!(rendered, " {done}/{total}");
+    });
+    let _ = write!(rendered, "\nnext, last count {}", tree.counted_inodes());
+    assert_snapshot!(rendered, @"
+    scan, last count 0: 2/130 4/130 6/130 8/130 10/130 12/130 14/130 16/130 18/130 20/130 22/130 24/130 26/130 28/130 30/130 32/130 34/130 36/130 38/130 40/130 42/130 44/130 46/130 48/130 50/130 52/130 54/130 56/130 58/130 60/130 62/130 128/130 130/130
+    refresh, last count 130: 2/3
+    next, last count 3
+    ");
 }
 
 /// A refresh whose directory cannot be opened adds nothing, and the tree is finished anyway, as

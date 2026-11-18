@@ -93,7 +93,7 @@ const LINKS: &str = r#"[1,2,{"progname":"ncdu","progver":"2.9.2"},
 fn tree_of(input: &[u8], extended: bool) -> Tree {
     let mut sink = MemorySink::new(extended);
     import(&mut sink, input, &[]).expect("input is imported");
-    sink.finish()
+    sink.finish(&mut |_, _| {})
 }
 
 /// A JSON export whose root holds a directory with each number of files in `counts`, and one

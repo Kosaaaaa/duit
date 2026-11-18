@@ -360,7 +360,8 @@ fn error() {
 }
 
 /// While the counts of a refreshed directory are cleared and while the hard links are counted,
-/// the screen says so, and every key is ignored. Once the scan is done, nothing is drawn.
+/// the screen says so, and every key is ignored. The count of the hard links shows how many inodes
+/// are done, once it has any to go through. Once the scan is done, nothing is drawn.
 #[test]
 fn steps() {
     let mut screen = ScanScreen::new(UPDATE_DELAY);
@@ -368,10 +369,14 @@ fn steps() {
     let mut rendered = String::new();
     for state in [
         ScanState::Zeroing,
-        ScanState::CountingHardLinks,
+        ScanState::CountingHardLinks { done: 0, total: 0 },
+        ScanState::CountingHardLinks {
+            done: 1234,
+            total: 5678,
+        },
         ScanState::Done,
     ] {
-        let terminal = draw(&mut screen, &state, &options, (40, 4));
+        let terminal = draw(&mut screen, &state, &options, (45, 4));
         let _ = write!(rendered, "{state:?}:\n{}", terminal.backend());
         for key in [Key::Char('q'), Key::Char('y'), Key::Enter] {
             assert_eq!(screen.key_input(&state, key, &options), None, "{state:?}");
@@ -379,19 +384,24 @@ fn steps() {
     }
     assert_snapshot!(rendered, @r#"
     Zeroing:
-    "   ┌── Initializing ─────────────────┐  "
-    "   │                                 │  "
-    "   │ Clearing directory counts...    │  "
-    "   └─────────────────────────────────┘  "
-    CountingHardLinks:
-    "   ┌── Finalizing ───────────────────┐  "
-    "   │                                 │  "
-    "   │ Counting hardlinks...           │  "
-    "   └─────────────────────────────────┘  "
+    "  ┌── Initializing ──────────────────────┐   "
+    "  │                                      │   "
+    "  │ Clearing directory counts...         │   "
+    "  └──────────────────────────────────────┘   "
+    CountingHardLinks { done: 0, total: 0 }:
+    "  ┌── Finalizing ────────────────────────┐   "
+    "  │                                      │   "
+    "  │ Counting hardlinks...                │   "
+    "  └──────────────────────────────────────┘   "
+    CountingHardLinks { done: 1234, total: 5678 }:
+    "  ┌── Finalizing ────────────────────────┐   "
+    "  │                                      │   "
+    "  │ Counting hardlinks... 1,234 / 5,678  │   "
+    "  └──────────────────────────────────────┘   "
     Done:
-    "                                        "
-    "                                        "
-    "                                        "
-    "                                        "
+    "                                             "
+    "                                             "
+    "                                             "
+    "                                             "
     "#);
 }

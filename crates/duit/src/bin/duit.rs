@@ -671,12 +671,17 @@ trait Consumer: Sink {
     /// What the consumer gives when it is complete.
     type Output;
 
-    /// Whether [`Consumer::finish`] adds the sizes of the hard links, which ncdu shows as a step of
-    /// the scan, as `done` in `mem_sink.zig` does.
-    const COUNTS_HARD_LINKS: bool = false;
+    /// How many inodes the last count of the hard links went through, if [`Consumer::finish`]
+    /// adds the sizes of the hard links, which ncdu shows as a step of the scan, as `done` in
+    /// `mem_sink.zig` does. The first frame of the step shows this count, which ncdu keeps from
+    /// the last count until the next one starts.
+    fn counted_inodes(&self) -> Option<usize> {
+        None
+    }
 
-    /// Write the end of the export and flush it, or complete the tree.
-    fn finish(self) -> io::Result<Self::Output>;
+    /// Write the end of the export and flush it, or complete the tree, and give `progress` the
+    /// progress of the count of the hard links.
+    fn finish(self, progress: &mut dyn FnMut(usize, usize)) -> io::Result<Self::Output>;
 
     /// Drop the export without writing what is still buffered, as ncdu does when it stops on an
     /// error.
@@ -686,7 +691,7 @@ trait Consumer: Sink {
 impl<W: Write> Consumer for JsonExport<W> {
     type Output = ();
 
-    fn finish(self) -> io::Result<()> {
+    fn finish(self, _: &mut dyn FnMut(usize, usize)) -> io::Result<()> {
         Self::finish(self).map(drop)
     }
 
@@ -698,7 +703,7 @@ impl<W: Write> Consumer for JsonExport<W> {
 impl<W: Write> Consumer for BinaryExport<W> {
     type Output = ();
 
-    fn finish(self) -> io::Result<()> {
+    fn finish(self, _: &mut dyn FnMut(usize, usize)) -> io::Result<()> {
         Self::finish(self).map(drop)
     }
 
@@ -709,10 +714,12 @@ impl<W: Write> Consumer for BinaryExport<W> {
 impl Consumer for MemorySink {
     type Output = Tree;
 
-    const COUNTS_HARD_LINKS: bool = true;
+    fn counted_inodes(&self) -> Option<usize> {
+        Some(Self::counted_inodes(self))
+    }
 
-    fn finish(self) -> io::Result<Tree> {
-        Ok(Self::finish(self))
+    fn finish(self, progress: &mut dyn FnMut(usize, usize)) -> io::Result<Tree> {
+        Ok(Self::finish(self, progress))
     }
 
     fn discard(self) {}
@@ -960,16 +967,24 @@ impl ScanProgress {
     }
 
     /// Complete `consumer` once the scan or the import is done, and erase the progress of `-1`, as
-    /// `done` in `sink.zig` does.
+    /// `done` in `sink.zig` does. Ctrl-C or an error reading the keys while the hard links are
+    /// counted ends duit once they are counted.
     fn finish<C: Consumer>(&mut self, consumer: C) -> Result<C::Output, Result<ExitCode, Vec<u8>>> {
-        if C::COUNTS_HARD_LINKS {
-            self.handle_event(&ScanState::CountingHardLinks, true);
+        if let Some(total) = consumer.counted_inodes() {
+            self.handle_event(&ScanState::CountingHardLinks { done: total, total }, true);
             if let Some(exit) = self.exit.take() {
                 consumer.discard();
                 return Err(exit);
             }
         }
-        let output = consumer.finish().map_err(|error| Err(writing(&error)))?;
+        let output = consumer
+            .finish(&mut |done, total| {
+                self.handle_event(&ScanState::CountingHardLinks { done, total }, false);
+            })
+            .map_err(|error| Err(writing(&error)))?;
+        if let Some(exit) = self.exit.take() {
+            return Err(exit);
+        }
         match self.scan_ui {
             ScanUi::Line => self.handle_event(&ScanState::Done, true),
             ScanUi::Off | ScanUi::Full => {}

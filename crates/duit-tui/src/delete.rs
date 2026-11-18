@@ -222,7 +222,7 @@ impl Deletion {
             events,
         };
         let outcome = run.delete_item(CWD, &path, parent, previous, entry);
-        tree.add_all_stats();
+        tree.add_all_stats(&mut |_, _| {});
         self.state = State::Closed;
         match outcome {
             Outcome::Deleted => next,
@@ -270,7 +270,7 @@ impl Deletion {
         // Nothing at the path, or a path that cannot be read, counts as deleted.
         let Some(stat) = run(&mut command, path) else {
             tree.remove(parent, previous, entry);
-            tree.add_all_stats();
+            tree.add_all_stats(&mut |_, _| {});
             return Ok((self.next, None));
         };
         let entry = match (tree.entry(entry).kind, stat.entry_type) {
@@ -293,7 +293,7 @@ impl Deletion {
                 EntryExtended::of(&stat, extended),
             )?,
         };
-        tree.add_all_stats();
+        tree.add_all_stats(&mut |_, _| {});
         let directory = match tree.entry(entry).kind {
             EntryKind::Directory(directory) => Some(directory),
             EntryKind::HardLink(_)
