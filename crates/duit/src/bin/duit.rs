@@ -394,18 +394,12 @@ fn browse(
                     }
                     Ok(Action::Refresh) => {
                         let directory = browser.directory();
-                        ui = match refresh(ui, &mut tree, directory, &options, config, drawn) {
+                        ui = match refresh(ui, &mut tree, directory, &options, config, drawn)
+                            .and_then(|ui| reload(ui, &mut browser, &tree, &options, update_delay))
+                        {
                             Ok(ui) => ui,
                             Err(exit) => return exit,
                         };
-                        let mut load = Load::new(&mut ui, update_delay);
-                        browser.load_directory(&tree, &options, &mut |loading| {
-                            load.report(loading);
-                        });
-                        if let Some(exit) = load.finish() {
-                            ui.deinit();
-                            return exit;
-                        }
                         draw = true;
                         block = true;
                     }
@@ -434,14 +428,10 @@ fn browse(
                                 Err(exit) => return exit,
                             };
                         }
-                        let mut load = Load::new(&mut ui, update_delay);
-                        browser.load_directory(&tree, &options, &mut |loading| {
-                            load.report(loading);
-                        });
-                        if let Some(exit) = load.finish() {
-                            ui.deinit();
-                            return exit;
-                        }
+                        ui = match reload(ui, &mut browser, &tree, &options, update_delay) {
+                            Ok(ui) => ui,
+                            Err(exit) => return exit,
+                        };
                         draw = true;
                         block = true;
                     }
@@ -460,14 +450,10 @@ fn browse(
                             ui.deinit();
                             return exit;
                         }
-                        let mut load = Load::new(&mut ui, update_delay);
-                        browser.load_directory(&tree, &options, &mut |loading| {
-                            load.report(loading);
-                        });
-                        if let Some(exit) = load.finish() {
-                            ui.deinit();
-                            return exit;
-                        }
+                        ui = match reload(ui, &mut browser, &tree, &options, update_delay) {
+                            Ok(ui) => ui,
+                            Err(exit) => return exit,
+                        };
                         draw = true;
                         block = true;
                     }
@@ -492,6 +478,25 @@ fn browse(
             }
         }
     }
+}
+
+/// List the open directory of `browser` again after `tree` changed, the `browser.loadDir` call
+/// that follows the `.refresh` and `.delete` states of the loop in `main.zig`, and return `ui`, or
+/// how duit ends once `ui` is closed. [`Load`] draws the loading screen after `update_delay`.
+fn reload(
+    mut ui: Ui,
+    browser: &mut Browser,
+    tree: &Tree,
+    options: &BrowserOptions,
+    update_delay: Duration,
+) -> Result<Ui, Result<ExitCode, Vec<u8>>> {
+    let mut load = Load::new(&mut ui, update_delay);
+    browser.load_directory(tree, options, &mut |loading| load.report(loading));
+    if let Some(exit) = load.finish() {
+        ui.deinit();
+        return Err(exit);
+    }
+    Ok(ui)
 }
 
 /// Scan `directory` of `tree` again into the tree, the `.refresh` state of the loop in `main.zig`,
