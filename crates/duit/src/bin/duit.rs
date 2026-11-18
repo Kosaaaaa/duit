@@ -7,7 +7,7 @@ use std::io::{self, IsTerminal, Read, Write};
 use std::num::NonZero;
 use std::os::fd::AsFd;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -21,7 +21,7 @@ use duit_format::{
 };
 use duit_model::{MemorySink, Sink, Tree, TreeError};
 use duit_scan::{ScanError, ScanOptions, scan};
-use duit_tui::{Browser, BrowserOptions, InitError, Input, Loading, Ui};
+use duit_tui::{Action, Browser, BrowserOptions, InitError, Input, Loading, Ui};
 
 /// The terminal sequence that clears from the cursor to the end of the screen. ncdu writes it to
 /// standard error before an error message and at the end of a scan, to clear a progress line.
@@ -302,12 +302,7 @@ fn browse(
         &mut dyn FnMut(&Loading<'_>),
     ) -> Result<Option<(Browser, Tree)>, BinaryImportError>,
 ) -> Result<ExitCode, Vec<u8>> {
-    let mut ui = Ui::init(!io::stdin().is_terminal()).map_err(|error| match error {
-        InitError::OpenTty(error) => {
-            format!("Error opening /dev/tty: {}.\n", strerror(&error)).into_bytes()
-        }
-        InitError::Terminal(_) => b"Error initializing the terminal.\n".to_vec(),
-    })?;
+    let mut ui = Ui::init(!io::stdin().is_terminal()).map_err(init_error)?;
     let mut load = Load::new(&mut ui, update_delay);
     let opened = open(&options, &mut |loading| load.report(loading));
     if let Some(exit) = load.finish() {
@@ -339,7 +334,7 @@ fn browse(
         match ui.getch(block) {
             Ok(Some(Input::Key(key))) => {
                 let mut load = Load::new(&mut ui, update_delay);
-                let quit =
+                let action =
                     browser.key_input(&mut tree, &mut options, key, height, &mut |loading| {
                         load.report(loading);
                     });
@@ -347,12 +342,22 @@ fn browse(
                     ui.deinit();
                     return exit;
                 }
-                match quit {
-                    Ok(true) => {
+                match action {
+                    Ok(Action::Browse) => block = false,
+                    Ok(Action::Quit) => {
                         ui.deinit();
                         return Ok(ExitCode::SUCCESS);
                     }
-                    Ok(false) => block = false,
+                    Ok(Action::Shell) => {
+                        let shell = env::var_os("NCDU_SHELL")
+                            .or_else(|| env::var_os("SHELL"))
+                            .unwrap_or_else(|| "/bin/sh".into());
+                        let mut command = Command::new(shell);
+                        command.current_dir(OsStr::from_bytes(browser.path()));
+                        ui.run_command(&mut command, false).map_err(init_error)?;
+                        draw = true;
+                        block = true;
+                    }
                     Err(error) => {
                         ui.deinit();
                         return Err(binary_import_error(error));
@@ -373,6 +378,16 @@ fn browse(
                 return Err(input_error(&error));
             }
         }
+    }
+}
+
+/// The message that ncdu exits with when it cannot take over the terminal.
+fn init_error(error: InitError) -> Vec<u8> {
+    match error {
+        InitError::OpenTty(error) => {
+            format!("Error opening /dev/tty: {}.\n", strerror(&error)).into_bytes()
+        }
+        InitError::Terminal(_) => b"Error initializing the terminal.\n".to_vec(),
     }
 }
 

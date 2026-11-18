@@ -1,11 +1,14 @@
-//! The terminal that `ui.zig` sets up with ncurses, over crossterm: `init`, `deinit`, and
-//! `getch`.
+//! The terminal that `ui.zig` sets up with ncurses, over crossterm: `init`, `deinit`, `getch`,
+//! and `runCmd`.
 
+use std::env;
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufRead, BufWriter, Write};
 use std::os::fd::AsFd;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::process::ExitStatusExt;
 use std::panic;
-use std::process;
+use std::process::{self, Command, ExitStatus};
 use std::time::Duration;
 
 use crossterm::cursor::Show;
@@ -16,6 +19,7 @@ use crossterm::terminal::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::{Frame, Terminal};
+use rustix::process::{Signal, kill_current_process_group};
 
 /// Why [`Ui::init`] failed.
 #[derive(Debug)]
@@ -30,7 +34,8 @@ pub enum InitError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Input {
     Key(Key),
-    /// The terminal changed its size, so the screen needs a redraw.
+    /// The screen needs a redraw: the terminal changed its size, or duit took it over again after
+    /// Ctrl-Z suspended it.
     Resize,
     /// Ctrl-C. ncurses keeps the terminal from turning it into a key, so it raises `SIGINT`, and
     /// the signal handler of ncurses restores the terminal and exits with status 1. The raw mode
@@ -65,6 +70,8 @@ pub struct Ui {
     /// The input after an ESC that crossterm read together with it, which [`Ui::getch`] returns
     /// next.
     pending: Option<Input>,
+    /// The terminal that `terminal` draws on, to take over again after [`Ui::run_command`].
+    output: File,
 }
 
 impl Ui {
@@ -90,27 +97,49 @@ impl Ui {
             )
         };
         let panic_output = output.try_clone().map_err(InitError::Terminal)?;
-        enable_raw_mode().map_err(InitError::Terminal)?;
         let previous_hook = panic::take_hook();
         panic::set_hook(Box::new(move |info| {
             restore(&panic_output);
             previous_hook(info);
         }));
-        let mut output = BufWriter::new(output);
-        // The alternate screen starts empty. `Terminal::clear` is not used, because it asks the
-        // terminal for the cursor position and waits for the answer.
-        let terminal = execute!(output, EnterAlternateScreen)
-            .and_then(|()| Terminal::new(CrosstermBackend::new(output)));
-        match terminal {
-            Ok(terminal) => Ok(Self {
-                terminal,
-                pending: None,
-            }),
-            Err(error) => {
-                let _ = disable_raw_mode();
-                Err(InitError::Terminal(error))
-            }
+        let terminal = enter(&output)?;
+        Ok(Self {
+            terminal,
+            output,
+            pending: None,
+        })
+    }
+
+    /// Give the terminal to `command` until it exits, and take it over again, `runCmd` in
+    /// `ui.zig`. The command gets an `NCDU_LEVEL` one higher than duit's. A command that cannot
+    /// run, or that a signal ends, leaves a message, and with `report_error` also one that exits
+    /// with a status other than 0. After a message, Enter on standard input continues.
+    pub fn run_command(
+        &mut self,
+        command: &mut Command,
+        report_error: bool,
+    ) -> Result<(), InitError> {
+        restore(self.terminal.backend_mut());
+        let level = env::var_os("NCDU_LEVEL").unwrap_or_default();
+        command.env("NCDU_LEVEL", next_level(level.as_bytes()));
+        // ncdu prints with `std.debug.print`, which ignores errors.
+        let message = match command.status() {
+            Ok(status) => exit_message(status, report_error),
+            Err(error) => Some(format!(
+                "Error running command: {}\n\nPress enter to continue.\n",
+                spawn_error(&error)
+            )),
+        };
+        if let Some(message) = message {
+            let _ = io::stderr().write_all(message.as_bytes());
+            let _ = io::stdin().lock().read_until(b'\n', &mut Vec::new());
         }
+        // The clear that `init` writes before it takes over the terminal, for a line that `-1`
+        // leaves behind.
+        let _ = io::stderr().write_all(b"\x1b[J");
+        // A new `Terminal` draws the whole screen, which the alternate screen lost.
+        self.terminal = enter(&self.output)?;
+        Ok(())
     }
 
     /// Draw a frame with `draw`, after a resize at the new size.
@@ -134,6 +163,25 @@ impl Ui {
                 return Ok(None);
             }
             let input = match event::read()? {
+                // Ctrl-Z and Ctrl-\, which crossterm 0.29 reads as Ctrl-4. ncurses keeps the
+                // terminal from turning them into keys, so the terminal sends `SIGTSTP` and
+                // `SIGQUIT` to the whole foreground process group, and the `SIGTSTP` handler of
+                // ncurses restores the terminal around the suspend.
+                Event::Key(KeyEvent {
+                    code: KeyCode::Char(character @ ('z' | '4')),
+                    modifiers,
+                    kind,
+                    ..
+                }) if kind != KeyEventKind::Release
+                    && modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    self.signal_process_group(if character == 'z' {
+                        Signal::TSTP
+                    } else {
+                        Signal::QUIT
+                    })?;
+                    Some(Input::Resize)
+                }
                 // crossterm reads an ESC and the key after it in the same read as that key with
                 // ALT, and ncurses as two keys.
                 // shortcut: also splits a key whose ALT comes from a CSI modifier, such as
@@ -164,11 +212,93 @@ impl Ui {
         restore(self.terminal.backend_mut());
     }
 
+    /// Give the terminal back, send `signal` to the process group of duit, and take the terminal
+    /// over again if duit continues, as after a suspend.
+    ///
+    /// The group gets the signal as from the terminal, so that a suspend also stops the other
+    /// processes of the job, such as the producer of `-f-`.
+    fn signal_process_group(&mut self, signal: Signal) -> io::Result<()> {
+        restore(self.terminal.backend_mut());
+        // `kill(0, signal)` fails only for a signal that is not valid or a group that it may not
+        // signal, and duit takes the terminal over again either way.
+        let _ = kill_current_process_group(signal);
+        self.terminal = enter(&self.output)
+            .map_err(|(InitError::OpenTty(error) | InitError::Terminal(error))| error)?;
+        Ok(())
+    }
+
     /// Give the terminal back and exit with status 1, as on Ctrl-C.
     pub fn interrupt(&mut self) -> ! {
         restore(self.terminal.backend_mut());
         // The SIGINT handler of ncurses restores the terminal and exits at once.
         process::exit(1)
+    }
+}
+
+/// Enter raw mode and the alternate screen on `output`, and return the terminal that draws there.
+fn enter(output: &File) -> Result<Terminal<CrosstermBackend<BufWriter<File>>>, InitError> {
+    let output = output.try_clone().map_err(InitError::Terminal)?;
+    enable_raw_mode().map_err(InitError::Terminal)?;
+    let mut output = BufWriter::new(output);
+    // The alternate screen starts empty. `Terminal::clear` is not used, because it asks the
+    // terminal for the cursor position and waits for the answer.
+    execute!(output, EnterAlternateScreen)
+        .and_then(|()| Terminal::new(CrosstermBackend::new(output)))
+        .map_err(|error| {
+            let _ = disable_raw_mode();
+            InitError::Terminal(error)
+        })
+}
+
+/// The `NCDU_LEVEL` of a command that ncdu runs, from its own `level`: one higher, and 1 when it
+/// is empty. Only the first character counts, so the level stops at 9, and anything that does
+/// not start with a digit gives 1.
+fn next_level(level: &[u8]) -> String {
+    match level.first() {
+        Some(&digit @ b'0'..=b'8') => char::from(digit + 1).to_string(),
+        Some(b'9') => "9".to_string(),
+        Some(_) | None => "1".to_string(),
+    }
+}
+
+/// The message for a command that exited with `status`, if it needs one: a command that a signal
+/// ended, and with `report_error`, one that exited with a status other than 0.
+fn exit_message(status: ExitStatus, report_error: bool) -> Option<String> {
+    let (kind, value) = match (status.code(), status.signal()) {
+        (Some(0), _) => return None,
+        (Some(_), _) if !report_error => return None,
+        (Some(code), _) => ("error", code),
+        (None, Some(signal)) => ("signal", signal),
+        // `waitpid` without `WUNTRACED` reports no stopped child, so this is not reached.
+        (None, None) => ("unknown", status.into_raw()),
+    };
+    Some(format!(
+        "\nCommand returned with {kind} code {value}.\nPress enter to continue.\n"
+    ))
+}
+
+/// The description of an error that keeps a command from running, as Zig 0.15 maps the errors of
+/// `pipe2`, `fork`, `chdir`, and `execve` for `std.process.Child`, and `ui.errorString` prints
+/// them. An `ELOOP` of `chdir` reads as one of `execve`, which Rust does not tell apart.
+fn spawn_error(error: &io::Error) -> &'static str {
+    match error.raw_os_error() {
+        Some(libc::EACCES) => "Access denied",
+        Some(libc::EPERM) => "PermissionDenied",
+        Some(libc::E2BIG | libc::ENOMEM | libc::EAGAIN) => "Out of memory",
+        Some(libc::EMFILE) => "Process file descriptor limit exceeded",
+        Some(libc::ENFILE) => "System file descriptor limit exceeded",
+        Some(libc::ENAMETOOLONG) => "Filename too long",
+        Some(libc::EINVAL | libc::ENOEXEC) => "Invalid executable",
+        #[cfg(target_vendor = "apple")]
+        Some(libc::EBADEXEC | libc::EBADARCH) => "Invalid executable",
+        #[cfg(target_os = "linux")]
+        Some(libc::ELIBBAD) => "Invalid executable",
+        Some(libc::EIO | libc::ELOOP) => "I/O error",
+        Some(libc::EISDIR) => "Is a directory",
+        Some(libc::ENOENT) => "No such file or directory",
+        Some(libc::ENOTDIR) => "Not a directory",
+        Some(libc::ETXTBSY) => "File is busy",
+        _ => "Unexpected",
     }
 }
 
@@ -223,4 +353,49 @@ fn input_of(event: KeyEvent) -> Option<Input> {
         | KeyCode::Modifier(_) => Key::Other,
     };
     Some(Input::Key(key))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::ExitStatus;
+
+    use super::{exit_message, next_level};
+
+    /// `NCDU_LEVEL` counts from the first character only, up to 9. Upstream has no test for
+    /// `runCmd`.
+    #[test]
+    fn next_levels() {
+        assert_eq!(next_level(b""), "1");
+        assert_eq!(next_level(b"0"), "1");
+        assert_eq!(next_level(b"3"), "4");
+        assert_eq!(next_level(b"8"), "9");
+        assert_eq!(next_level(b"9"), "9");
+        assert_eq!(next_level(b"12"), "2");
+        assert_eq!(next_level(b"9x"), "9");
+        assert_eq!(next_level(b"x"), "1");
+        assert_eq!(next_level(b"\xff"), "1");
+    }
+
+    /// A command that a signal ended is always reported, and one that exited with a status other
+    /// than 0 only with `report_error`, as `--delete-command` runs it.
+    #[test]
+    fn exit_messages() {
+        let exited = |code| ExitStatus::from_raw(code << 8);
+        let message = |kind, value| {
+            format!("\nCommand returned with {kind} code {value}.\nPress enter to continue.\n")
+        };
+        assert_eq!(exit_message(exited(0), false), None);
+        assert_eq!(exit_message(exited(0), true), None);
+        assert_eq!(exit_message(exited(3), false), None);
+        assert_eq!(exit_message(exited(3), true), Some(message("error", 3)));
+        assert_eq!(
+            exit_message(ExitStatus::from_raw(15), false),
+            Some(message("signal", 15))
+        );
+        assert_eq!(
+            exit_message(ExitStatus::from_raw(9), true),
+            Some(message("signal", 9))
+        );
+    }
 }

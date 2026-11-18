@@ -20,6 +20,7 @@ duit-format = { workspace = true }
 duit-model = { workspace = true }
 libc = { workspace = true }
 ratatui = { workspace = true }
+rustix = { workspace = true, features = ["process"] }
 unicode-width = { workspace = true }
 
 [dev-dependencies]
