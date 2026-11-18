@@ -421,11 +421,12 @@ fn browse(
                         if let Some(error) = failed {
                             return Err(init_error(error));
                         }
-                        let Ok(directory) = deleted else {
-                            ui.deinit();
-                            return Err(
-                                b"Maximum number of device identifiers exceeded.\n".to_vec()
-                            );
+                        let directory = match deleted {
+                            Ok(directory) => directory,
+                            Err(error) => {
+                                ui.deinit();
+                                return Err(writing(&error.into()));
+                            }
                         };
                         if let Some(directory) = directory {
                             ui = match refresh(ui, &mut tree, directory, &options, config, drawn) {
