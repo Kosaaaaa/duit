@@ -1,17 +1,12 @@
 use std::io;
 
-use crate::tree::{BLOCKS_MAX, DirectoryId, EntryExtended, FileKind, Tree};
+use crate::tree::{DirectoryId, EntryExtended, FileKind, Tree, add_blocks};
 use crate::{EntryType, Extended, Sink, Special, Stat};
-
-/// The sum of two block counts, saturated at the largest block count that ncdu stores.
-fn add_blocks(blocks: u64, more: u64) -> u64 {
-    blocks.saturating_add(more).min(BLOCKS_MAX)
-}
 
 /// A [`Sink`] that builds a [`Tree`] in memory, with the totals of each directory.
 ///
-/// The sizes of hard links are not added to their directories yet: that is the hard link
-/// accounting, which ncdu runs when the tree is finished.
+/// The sizes of hard links are added to their directories when the tree is finished, by
+/// [`Tree::add_all_stats`], so that each inode counts once in each directory.
 #[derive(Debug)]
 pub struct MemorySink {
     tree: Tree,
@@ -58,12 +53,14 @@ impl MemorySink {
         }
     }
 
-    /// Finish the tree after the root is finished, and return it.
+    /// Finish the tree after the root is finished, with the sizes of the hard links, and return
+    /// it.
     pub fn finish(self) -> Tree {
         let mut tree = self.tree;
         if let Some(root) = tree.root() {
             tree.update_sub_error(root);
         }
+        tree.add_all_stats();
         tree
     }
 
@@ -76,7 +73,7 @@ impl MemorySink {
     }
 
     /// Count an entry with `stat` in the totals of `directory`. The sizes of a hard link are left
-    /// to the hard link accounting.
+    /// to [`Tree::add_all_stats`].
     fn count(&mut self, directory: &MemoryDirectory, stat: &Stat) {
         let data = self.tree.directory_mut(directory.directory);
         data.items = data.items.saturating_add(1);

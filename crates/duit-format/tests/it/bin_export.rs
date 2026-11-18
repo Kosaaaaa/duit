@@ -65,7 +65,7 @@ fn convert(input: &[u8], extended: bool, compress_level: u8, block_size: Option<
 ///
 /// With the `test-ncdu` feature, ncdu converts the same input with `ncdu -f- -O-`. With one
 /// thread, the blocks of both exports must hold the same bytes once decompressed.
-fn export(input: &[u8], extended: bool, block_size: Option<usize>) -> Vec<u8> {
+pub(crate) fn export(input: &[u8], extended: bool, block_size: Option<usize>) -> Vec<u8> {
     let output = convert(input, extended, 4, block_size);
     #[cfg(feature = "test-ncdu")]
     {
