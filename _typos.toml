@@ -5,3 +5,4 @@ ignore-hidden = false
 [default.extend-words]
 ratatui = "ratatui" # terminal UI crate
 eigth = "eigth"     # ncdu accepts `--graph-style eigth-block`
+Scannin = "Scannin" # a step of the animation that writes "Scanning..."

@@ -1,14 +1,18 @@
 use std::fmt::Write as _;
+use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::Duration;
 
 use insta::assert_snapshot;
 use tempfile::TempDir;
 
-use crate::browse::{pty, read_output, spawn, wait_exit, wait_for};
+use crate::browse::{
+    ENTER_ALTERNATE_SCREEN, FOOTER, LEAVE_ALTERNATE_SCREEN, fixture, pty, read_output, spawn,
+    spawn_on, wait_exit, wait_for,
+};
 use crate::text;
 
 /// An export of `/root` with 3 files, of which the import reads the first before [`PAUSE`] and the
@@ -170,4 +174,148 @@ fn default() {
     $ TERM=xterm duit -f - -o- (stdout: Terminal, stderr: Pipe)
     ^[[J
     ");
+}
+
+/// Without `-o` or `-O`, the scan and the import show the progress of `-2`, which takes over the
+/// terminal at the latest for the step that counts the hard links, as `done` in `mem_sink.zig`
+/// draws it at once. The browser then opens on the same terminal. The needles have no spaces,
+/// because duit does not write a space that is on the screen already.
+#[test]
+fn full() {
+    let directory = fixture();
+    for arguments in [&["."][..], &["-f", "tree.json"], &["-2", "."]] {
+        let pty = pty();
+        let receiver = read_output(&pty);
+        let mut child = spawn_on(&pty, directory.path(), arguments);
+        let mut output = Vec::new();
+        wait_for(&receiver, &mut output, FOOTER);
+        (&pty.master).write_all(b"q").expect("key is typed");
+        assert_eq!(wait_exit(&mut child).code(), Some(0), "{arguments:?}");
+        let browser = position(&output, FOOTER);
+        assert!(position(&output, b"Finalizing") < browser, "{arguments:?}");
+        assert!(
+            position(&output, b"hardlinks...") < browser,
+            "{arguments:?}"
+        );
+        assert_eq!(count(&output, ENTER_ALTERNATE_SCREEN), 1, "{arguments:?}");
+    }
+}
+
+/// Where `needle` first is in `output`, or the end of `output` if it is not there.
+fn position(output: &[u8], needle: &[u8]) -> usize {
+    output
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .unwrap_or(output.len())
+}
+
+/// How often `needle` is in `output`.
+fn count(output: &[u8], needle: &[u8]) -> usize {
+    output
+        .windows(needle.len())
+        .filter(|window| *window == needle)
+        .count()
+}
+
+/// Run `program` with `arguments`, which import from standard input into memory, with a pause,
+/// on a terminal that it draws on as its controlling terminal. Type `keys` once it draws the
+/// progress of `-2`, and return how it exits with what it wrote. The import draws at the second
+/// file, after [`PAUSE`], and again at the fourth, after a second pause, when duit reads the keys.
+fn full_import(
+    program: &str,
+    directory: &Path,
+    arguments: &[&str],
+    keys: &[u8],
+) -> (ExitStatus, Vec<u8>) {
+    let pty = pty();
+    let receiver = read_output(&pty);
+    let terminal = || Stdio::from(pty.terminal.try_clone().expect("terminal is duplicated"));
+    let mut command = Command::new(program);
+    command
+        .env("TERM", "xterm")
+        .stdin(Stdio::piped())
+        .stdout(terminal())
+        .stderr(terminal());
+    let mut child = spawn(directory, arguments, &mut command, true);
+    let mut input = child.stdin.take().expect("standard input is a pipe");
+    let mut output = Vec::new();
+    input.write_all(BEFORE_PAUSE).expect("import is written");
+    thread::sleep(PAUSE);
+    input
+        .write_all(br#",{"name":"b"}"#)
+        .expect("import is written");
+    wait_for(&receiver, &mut output, b"items:");
+    (&pty.master).write_all(keys).expect("keys are typed");
+    thread::sleep(PAUSE);
+    // ncdu ends at once on Ctrl-C, and the pipe may be closed.
+    let _ = input.write_all(br#",{"name":"c"},{"name":"d"}]]"#);
+    drop(input);
+    let status = wait_exit(&mut child);
+    // Everything that the program wrote is on its way once it exited.
+    while let Ok(bytes) = receiver.recv_timeout(Duration::from_millis(500)) {
+        output.extend(bytes);
+    }
+    (status, output)
+}
+
+/// `q` aborts an import with status 0, before the browser opens, as `ui.quit` does, and
+/// with `--confirm-quit` only after `y`. Ctrl-C ends it with status 1, as ncurses does on
+/// `SIGINT`. The terminal is restored.
+#[test]
+fn full_abort() {
+    let directory = TempDir::new().expect("temporary directory is created");
+    let cases: [(&[&str], &[u8], i32); 3] = [
+        (&["-f", "-"], b"q", 0),
+        (&["--confirm-quit", "-f", "-"], b"qy", 0),
+        (&["-f", "-"], b"\x03", 1),
+    ];
+    for (arguments, keys, code) in cases {
+        let (status, output) = full_import(
+            env!("CARGO_BIN_EXE_duit"),
+            directory.path(),
+            arguments,
+            keys,
+        );
+        assert_eq!(status.code(), Some(code), "{arguments:?} {keys:?}");
+        assert_eq!(count(&output, FOOTER), 0, "{arguments:?} {keys:?}");
+        assert_eq!(
+            count(&output, LEAVE_ALTERNATE_SCREEN),
+            1,
+            "{arguments:?} {keys:?}"
+        );
+        #[cfg(feature = "test-ncdu")]
+        {
+            let (status, output) = full_import("ncdu", directory.path(), arguments, keys);
+            assert_eq!(status.code(), Some(code), "ncdu {arguments:?} {keys:?}");
+            assert_eq!(count(&output, b"disk"), 0, "ncdu {arguments:?} {keys:?}");
+        }
+    }
+}
+
+/// With `-2` and an export, the progress takes over the terminal while the import runs, and gives
+/// it back once the export is complete.
+#[test]
+fn full_export() {
+    let directory = TempDir::new().expect("temporary directory is created");
+    let arguments = &["-2", "-o", "export.json", "-f", "-"];
+    let export = directory.path().join("export.json");
+    let (status, output) =
+        full_import(env!("CARGO_BIN_EXE_duit"), directory.path(), arguments, b"");
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(count(&output, LEAVE_ALTERNATE_SCREEN), 1);
+    let duit = text(&fs::read(&export).expect("export is written"));
+    #[cfg(feature = "test-ncdu")]
+    {
+        let (status, _) = full_import("ncdu", directory.path(), arguments, b"");
+        assert_eq!(status.code(), Some(0));
+        assert_eq!(text(&fs::read(&export).expect("export is written")), duit);
+    }
+    assert_snapshot!(duit, @r#"
+    [1,2,{[METADATA]},
+    [{"name":"/root"},
+    {"name":"a","dsize":4096},
+    {"name":"b"},
+    {"name":"c"},
+    {"name":"d"}]]
+    "#);
 }
