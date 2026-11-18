@@ -7,41 +7,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use duit_scan::ExcludePatterns;
+use duit_tui::{GraphStyle, SharedColumn, SortColumn, SortOrder};
 
 use crate::util::{LineReader, expand_user, until_nul};
 use crate::{Arg, Args, open_error};
-
-/// The style of the bars in the graph column, `--graph-style`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GraphStyle {
-    Hash,
-    HalfBlock,
-    EighthBlock,
-}
-
-/// The column that the browser sorts by, `--sort`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SortColumn {
-    Name,
-    Blocks,
-    Size,
-    Items,
-    Mtime,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SortOrder {
-    Ascending,
-    Descending,
-}
-
-/// What the shared column of a directory shows, `--shared-column`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SharedColumn {
-    Off,
-    Shared,
-    Unique,
-}
 
 /// The interface during a scan: `-0`, `-1`, or `-2`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
