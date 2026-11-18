@@ -395,24 +395,3 @@ fn steps() {
     "                                        "
     "#);
 }
-
-/// The box of `drawMessage` in `sink.zig`, which ncdu 2.9.2 does not call.
-#[test]
-fn message() {
-    let mut terminal = Terminal::new(TestBackend::new(40, 4)).expect("terminal opens");
-    terminal
-        .draw(|frame| {
-            ScanScreen::draw_message(frame, "Something went wrong", &BrowserOptions::default());
-        })
-        .expect("message draws");
-    assert_snapshot!(render(&terminal), @r#"
-    "   ┌── Scan error ───────────────────┐  "
-    "   │                                 │  "
-    "   │ Something went wrong            │  "
-    "   └─────────────────────────────────┘  "
-    ......BBBBBBBBBBBB......................
-    ........................................
-    ........................................
-    ........................................
-    "#);
-}

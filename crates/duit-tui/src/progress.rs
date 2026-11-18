@@ -199,16 +199,6 @@ impl ScanScreen {
         }
     }
 
-    /// Draw `message` in a box on all of `frame`, which is erased first, `drawMessage` in
-    /// `sink.zig`, which ncdu 2.9.2 does not call.
-    pub fn draw_message(frame: &mut Frame<'_>, message: &str, options: &BrowserOptions) {
-        let width = frame.area().width.saturating_sub(5);
-        let buffer = frame.buffer_mut();
-        buffer.set_style(buffer.area, options.color.style(Style::Default));
-        let window = Window::new(buffer, options.color, 4, width, "Scan error");
-        window.text(buffer, 2, 2, message, Style::Default);
-    }
-
     /// Handle `key` in `state`, `keyInput` in `sink.zig`. Returns [`Action::Quit`] once the scan is
     /// aborted, and [`Action::Browse`] once the error of a refresh is closed.
     pub fn key_input(
