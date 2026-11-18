@@ -536,7 +536,7 @@ fn scan_tree(fixture: &Fixture) -> Tree {
         &ExcludePatterns::default(),
     )
     .expect("scan succeeds");
-    memory.finish()
+    memory.finish(&mut |_, _| {})
 }
 
 /// Scan the directory at `path`, by names from the root, of `tree` again into it, as a refresh
@@ -567,7 +567,7 @@ fn refresh_tree(tree: Tree, path: &[&[u8]]) -> Tree {
         &ExcludePatterns::default(),
     )
     .expect("scan succeeds");
-    memory.finish()
+    memory.finish(&mut |_, _| {})
 }
 
 /// Every entry of `tree` below the root by path, sorted, with its kind, its sizes, and the

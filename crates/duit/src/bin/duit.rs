@@ -23,11 +23,12 @@ use duit_format::{
 use duit_model::{
     DirectoryId, MemorySink, Producer, Progress, ProgressSink, Sink, Tree, TreeError,
 };
-use duit_scan::{ScanError, ScanOptions, scan};
+use duit_scan::{ScanError, ScanOptions, scan, stat_at};
 use duit_tui::{
     Action, Browser, BrowserOptions, Console, Deletion, InitError, Input, Loading, ScanKey,
     ScanScreen, ScanState, Ui,
 };
+use rustix::fs::CWD;
 
 /// The terminal sequence that clears from the cursor to the end of the screen. ncdu writes it to
 /// standard error before an error message and at the end of a scan, to clear a progress line.
@@ -247,7 +248,8 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
             if quit_after_scan {
                 return Ok(ExitCode::SUCCESS);
             }
-            return browse(None, options, &config, |options, loading| {
+            let screen = ScanScreen::new(config.update_delay);
+            return browse(None, screen, options, &config, |options, loading| {
                 Browser::open(reader, options, loading)
             });
         }
@@ -265,9 +267,14 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
         let Some(root) = tree.root() else {
             return Ok(ExitCode::SUCCESS);
         };
-        return browse(progress.ui.take(), options, &config, |options, loading| {
-            Ok(Some((Browser::new(&tree, root, options, loading), tree)))
-        });
+        let screen = mem::replace(&mut progress.screen, ScanScreen::new(config.update_delay));
+        return browse(
+            progress.ui.take(),
+            screen,
+            options,
+            &config,
+            |options, loading| Ok(Some((Browser::new(&tree, root, options, loading), tree))),
+        );
     };
 
     let out: Box<dyn Write> = if export_path == b"-" {
@@ -319,9 +326,12 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
 /// the root of a binary export is read then, and `open` gives `None` for a root that is not a
 /// directory. While the browser lists a directory, [`Load`] draws the loading screen after
 /// `update_delay`. The browser draws on `ui` if the progress of `-2` took over the terminal. A
-/// refresh scans with the options of `config`.
+/// refresh scans with the options of `config`, and draws its progress on `screen`, the screen of
+/// the scan before the browser if there was one, as ncdu keeps the confirmation of
+/// `--confirm-quit` and the step of the animation in globals that no scan resets.
 fn browse(
     ui: Option<Ui>,
+    mut screen: ScanScreen,
     mut options: BrowserOptions,
     config: &Config,
     open: impl FnOnce(
@@ -393,18 +403,60 @@ fn browse(
                     }
                     Ok(Action::Refresh) => {
                         let directory = browser.directory();
-                        ui = match refresh(ui, &mut tree, directory, &options, config, drawn) {
+                        ui = match refresh(
+                            ui,
+                            &mut screen,
+                            &mut tree,
+                            directory,
+                            &options,
+                            config,
+                            drawn,
+                        )
+                        .and_then(|ui| reload(ui, &mut browser, &tree, &options, update_delay))
+                        {
                             Ok(ui) => ui,
                             Err(exit) => return exit,
                         };
-                        let mut load = Load::new(&mut ui, update_delay);
-                        browser.load_directory(&tree, &options, &mut |loading| {
-                            load.report(loading);
-                        });
-                        if let Some(exit) = load.finish() {
-                            ui.deinit();
-                            return exit;
+                        draw = true;
+                        block = true;
+                    }
+                    Ok(Action::Delete) if !options.delete_command.is_empty() => {
+                        let mut failed = None;
+                        let deleted =
+                            browser.delete_command(&mut tree, &options, &mut |command, path| {
+                                if let Err(error) = ui.run_command(command, true) {
+                                    failed = Some(error);
+                                }
+                                stat_at(CWD, path, false).ok().map(|(stat, _)| stat)
+                            });
+                        if let Some(error) = failed {
+                            return Err(init_error(error));
                         }
+                        let directory = match deleted {
+                            Ok(directory) => directory,
+                            Err(error) => {
+                                ui.deinit();
+                                return Err(writing(&error.into()));
+                            }
+                        };
+                        if let Some(directory) = directory {
+                            ui = match refresh(
+                                ui,
+                                &mut screen,
+                                &mut tree,
+                                directory,
+                                &options,
+                                config,
+                                drawn,
+                            ) {
+                                Ok(ui) => ui,
+                                Err(exit) => return exit,
+                            };
+                        }
+                        ui = match reload(ui, &mut browser, &tree, &options, update_delay) {
+                            Ok(ui) => ui,
+                            Err(exit) => return exit,
+                        };
                         draw = true;
                         block = true;
                     }
@@ -423,14 +475,10 @@ fn browse(
                             ui.deinit();
                             return exit;
                         }
-                        let mut load = Load::new(&mut ui, update_delay);
-                        browser.load_directory(&tree, &options, &mut |loading| {
-                            load.report(loading);
-                        });
-                        if let Some(exit) = load.finish() {
-                            ui.deinit();
-                            return exit;
-                        }
+                        ui = match reload(ui, &mut browser, &tree, &options, update_delay) {
+                            Ok(ui) => ui,
+                            Err(exit) => return exit,
+                        };
                         draw = true;
                         block = true;
                     }
@@ -457,14 +505,34 @@ fn browse(
     }
 }
 
+/// List the open directory of `browser` again after `tree` changed, the `browser.loadDir` call
+/// that follows the `.refresh` and `.delete` states of the loop in `main.zig`, and return `ui`, or
+/// how duit ends once `ui` is closed. [`Load`] draws the loading screen after `update_delay`.
+fn reload(
+    mut ui: Ui,
+    browser: &mut Browser,
+    tree: &Tree,
+    options: &BrowserOptions,
+    update_delay: Duration,
+) -> Result<Ui, Result<ExitCode, Vec<u8>>> {
+    let mut load = Load::new(&mut ui, update_delay);
+    browser.load_directory(tree, options, &mut |loading| load.report(loading));
+    if let Some(exit) = load.finish() {
+        ui.deinit();
+        return Err(exit);
+    }
+    Ok(ui)
+}
+
 /// Scan `directory` of `tree` again into the tree, the `.refresh` state of the loop in `main.zig`,
 /// and return `ui`, or how duit ends. The progress is drawn on the full screen of `ui` whatever
 /// `-0` and `-1` say, as ncdu sets `scan_ui` to `.full` before it starts the browser. A directory
 /// that cannot be opened leaves its entries as they were, and shows an error until a key is
 /// pressed. The update delay runs from `drawn`, when the browser was drawn, as ncdu keeps one timer
-/// for every screen.
+/// for every screen. The progress is drawn on `screen`, which keeps its state for the next scan.
 fn refresh(
     ui: Ui,
+    screen: &mut ScanScreen,
     tree: &mut Tree,
     directory: DirectoryId,
     options: &BrowserOptions,
@@ -479,6 +547,7 @@ fn refresh(
     let mut progress = ScanProgress::new(ScanUi::Full, config.update_delay, options, false);
     progress.ui = Some(ui);
     progress.drawn = drawn;
+    mem::swap(&mut progress.screen, screen);
     let memory = MemorySink::refresh(mem::take(tree), directory, config.extended);
     let mut report = |state: &Progress| progress.report(state);
     let mut sink = ProgressSink::new(memory, Producer::Scan, &mut report);
@@ -497,6 +566,7 @@ fn refresh(
             path: path.to_bytes(),
         })?;
     }
+    mem::swap(&mut progress.screen, screen);
     progress.ui.take().ok_or(Ok(ExitCode::FAILURE))
 }
 
@@ -635,12 +705,17 @@ trait Consumer: Sink {
     /// What the consumer gives when it is complete.
     type Output;
 
-    /// Whether [`Consumer::finish`] adds the sizes of the hard links, which ncdu shows as a step of
-    /// the scan, as `done` in `mem_sink.zig` does.
-    const COUNTS_HARD_LINKS: bool = false;
+    /// How many inodes the last count of the hard links went through, if [`Consumer::finish`]
+    /// adds the sizes of the hard links, which ncdu shows as a step of the scan, as `done` in
+    /// `mem_sink.zig` does. The first frame of the step shows this count, which ncdu keeps from
+    /// the last count until the next one starts.
+    fn counted_inodes(&self) -> Option<usize> {
+        None
+    }
 
-    /// Write the end of the export and flush it, or complete the tree.
-    fn finish(self) -> io::Result<Self::Output>;
+    /// Write the end of the export and flush it, or complete the tree, and give `progress` the
+    /// progress of the count of the hard links.
+    fn finish(self, progress: &mut dyn FnMut(usize, usize)) -> io::Result<Self::Output>;
 
     /// Drop the export without writing what is still buffered, as ncdu does when it stops on an
     /// error.
@@ -650,7 +725,7 @@ trait Consumer: Sink {
 impl<W: Write> Consumer for JsonExport<W> {
     type Output = ();
 
-    fn finish(self) -> io::Result<()> {
+    fn finish(self, _: &mut dyn FnMut(usize, usize)) -> io::Result<()> {
         Self::finish(self).map(drop)
     }
 
@@ -662,7 +737,7 @@ impl<W: Write> Consumer for JsonExport<W> {
 impl<W: Write> Consumer for BinaryExport<W> {
     type Output = ();
 
-    fn finish(self) -> io::Result<()> {
+    fn finish(self, _: &mut dyn FnMut(usize, usize)) -> io::Result<()> {
         Self::finish(self).map(drop)
     }
 
@@ -673,10 +748,12 @@ impl<W: Write> Consumer for BinaryExport<W> {
 impl Consumer for MemorySink {
     type Output = Tree;
 
-    const COUNTS_HARD_LINKS: bool = true;
+    fn counted_inodes(&self) -> Option<usize> {
+        Some(Self::counted_inodes(self))
+    }
 
-    fn finish(self) -> io::Result<Tree> {
-        Ok(Self::finish(self))
+    fn finish(self, progress: &mut dyn FnMut(usize, usize)) -> io::Result<Tree> {
+        Ok(Self::finish(self, progress))
     }
 
     fn discard(self) {}
@@ -924,16 +1001,24 @@ impl ScanProgress {
     }
 
     /// Complete `consumer` once the scan or the import is done, and erase the progress of `-1`, as
-    /// `done` in `sink.zig` does.
+    /// `done` in `sink.zig` does. Ctrl-C or an error reading the keys while the hard links are
+    /// counted ends duit once they are counted.
     fn finish<C: Consumer>(&mut self, consumer: C) -> Result<C::Output, Result<ExitCode, Vec<u8>>> {
-        if C::COUNTS_HARD_LINKS {
-            self.handle_event(&ScanState::CountingHardLinks, true);
+        if let Some(total) = consumer.counted_inodes() {
+            self.handle_event(&ScanState::CountingHardLinks { done: total, total }, true);
             if let Some(exit) = self.exit.take() {
                 consumer.discard();
                 return Err(exit);
             }
         }
-        let output = consumer.finish().map_err(|error| Err(writing(&error)))?;
+        let output = consumer
+            .finish(&mut |done, total| {
+                self.handle_event(&ScanState::CountingHardLinks { done, total }, false);
+            })
+            .map_err(|error| Err(writing(&error)))?;
+        if let Some(exit) = self.exit.take() {
+            return Err(exit);
+        }
         match self.scan_ui {
             ScanUi::Line => self.handle_event(&ScanState::Done, true),
             ScanUi::Off | ScanUi::Full => {}

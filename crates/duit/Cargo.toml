@@ -24,6 +24,7 @@ duit-model = { workspace = true }
 duit-scan = { workspace = true }
 duit-tui = { workspace = true }
 libc = { workspace = true }
+rustix = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }

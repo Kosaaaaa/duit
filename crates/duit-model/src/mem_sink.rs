@@ -89,7 +89,9 @@ impl MemorySink {
     /// A refresh whose directory could not be opened finishes the tree too, as `scan` in
     /// `scan.zig` defers `done`. The directory was not cleared then, so the directories above it
     /// count its totals twice, as in ncdu.
-    pub fn finish(self) -> Tree {
+    ///
+    /// `progress` gets the progress of [`Tree::add_all_stats`].
+    pub fn finish(self, progress: &mut dyn FnMut(usize, usize)) -> Tree {
         let mut tree = self.tree;
         if let Some(directory) = self.refresh.or(tree.root()) {
             let data = tree.directory(directory);
@@ -109,8 +111,14 @@ impl MemorySink {
                 }
             }
         }
-        tree.add_all_stats();
+        tree.add_all_stats(progress);
         tree
+    }
+
+    /// How many inodes the last count of the hard links of the tree went through, as
+    /// [`Tree::counted_inodes`].
+    pub fn counted_inodes(&self) -> usize {
+        self.tree.counted_inodes()
     }
 
     /// The extended information to keep for an entry with `stat`.

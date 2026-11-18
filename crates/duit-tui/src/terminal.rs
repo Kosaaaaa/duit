@@ -362,23 +362,19 @@ mod tests {
 
     use super::{exit_message, next_level};
 
-    /// `NCDU_LEVEL` counts from the first character only, up to 9. Upstream has no test for
-    /// `runCmd`.
+    /// `NCDU_LEVEL` counts from the first character only, up to 9, for the levels that the `shell`
+    /// integration test does not set. Upstream has no test for `runCmd`.
     #[test]
     fn next_levels() {
-        assert_eq!(next_level(b""), "1");
         assert_eq!(next_level(b"0"), "1");
-        assert_eq!(next_level(b"3"), "4");
         assert_eq!(next_level(b"8"), "9");
-        assert_eq!(next_level(b"9"), "9");
-        assert_eq!(next_level(b"12"), "2");
         assert_eq!(next_level(b"9x"), "9");
-        assert_eq!(next_level(b"x"), "1");
         assert_eq!(next_level(b"\xff"), "1");
     }
 
     /// A command that a signal ended is always reported, and one that exited with a status other
-    /// than 0 only with `report_error`, as `--delete-command` runs it.
+    /// than 0 only with `report_error`, as `--delete-command` runs it, for the statuses that the
+    /// `shell`, `shell_errors`, and `delete_command` integration tests do not reach.
     #[test]
     fn exit_messages() {
         let exited = |code| ExitStatus::from_raw(code << 8);
@@ -386,13 +382,7 @@ mod tests {
             format!("\nCommand returned with {kind} code {value}.\nPress enter to continue.\n")
         };
         assert_eq!(exit_message(exited(0), false), None);
-        assert_eq!(exit_message(exited(0), true), None);
-        assert_eq!(exit_message(exited(3), false), None);
         assert_eq!(exit_message(exited(3), true), Some(message("error", 3)));
-        assert_eq!(
-            exit_message(ExitStatus::from_raw(15), false),
-            Some(message("signal", 15))
-        );
         assert_eq!(
             exit_message(ExitStatus::from_raw(9), true),
             Some(message("signal", 9))

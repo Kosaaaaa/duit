@@ -7,7 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use duit_format::{BinaryReader, import};
-use duit_model::{DirectoryId, EntryKind, MemorySink, Tree};
+use duit_model::{DirectoryId, EntryKind, EntryType, MemorySink, Stat, Tree};
 use duit_tui::{
     Action, Browser, BrowserOptions, ColorScheme, GraphStyle, Key, SharedColumn, SortColumn,
     SortOrder,
@@ -93,7 +93,7 @@ const LINKS: &str = r#"[1,2,{"progname":"ncdu","progver":"2.9.2"},
 fn tree_of(input: &[u8], extended: bool) -> Tree {
     let mut sink = MemorySink::new(extended);
     import(&mut sink, input, &[]).expect("input is imported");
-    sink.finish()
+    sink.finish(&mut |_, _| {})
 }
 
 /// A JSON export whose root holds a directory with each number of files in `counts`, and one
@@ -156,7 +156,19 @@ fn screen(
     size: (u16, u16),
 ) -> String {
     let browser = Browser::new(tree, directory, options, &mut |_| {});
-    run(browser, tree.clone(), options, keys, size)
+    run(browser, tree.clone(), options, keys, size, None)
+}
+
+/// Open the root of `tree` as [`screen`] does, where the command of `--delete-command` leaves
+/// `stat` at the path of the entry, or nothing without it.
+fn command_screen(
+    tree: &Tree,
+    options: &BrowserOptions,
+    keys: &[Key],
+    stat: Option<Stat>,
+) -> String {
+    let browser = Browser::new(tree, root(tree), options, &mut |_| {});
+    run(browser, tree.clone(), options, keys, (80, 12), stat)
 }
 
 /// Open the binary export `fixture` of `crates/duit/tests/fixtures` as [`screen`] opens a tree,
@@ -170,20 +182,22 @@ fn file_screen(fixture: &str, options: &BrowserOptions, keys: &[Key], size: (u16
     let (browser, tree) = Browser::open(reader, options, &mut |_| {})
         .expect("root is read")
         .expect("root is a directory");
-    run(browser, tree, options, keys, size)
+    run(browser, tree, options, keys, size, None)
 }
 
 /// Draw `browser` on a terminal of `width` by `height`, and again after each of `keys`, and render
 /// the last screen as [`screen`] describes.
 ///
 /// A deletion runs only in a temporary directory. Its windows that wait for a key take the next
-/// of `keys`. When none is left, the deletion is aborted, and its window is the last screen.
+/// of `keys`. When none is left, the deletion is aborted, and its window is the last screen. The
+/// command of `--delete-command` runs, and leaves `stat` at the path of the entry.
 fn run(
     mut browser: Browser,
     mut tree: Tree,
     options: &BrowserOptions,
     keys: &[Key],
     (width, height): (u16, u16),
+    stat: Option<Stat>,
 ) -> String {
     let mut options = options.clone();
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal opens");
@@ -201,6 +215,19 @@ fn run(
                 Path::new(OsStr::from_bytes(root)).starts_with(env::temp_dir()),
                 "deletes only in a temporary directory"
             );
+            if !options.delete_command.is_empty() {
+                browser
+                    .delete_command(&mut tree, &options, &mut |command, _| {
+                        assert!(command.status().expect("command runs").success());
+                        stat
+                    })
+                    .expect("tree takes the entry");
+                browser.load_directory(&tree, &options, &mut |_| {});
+                terminal
+                    .draw(|frame| browser.draw(frame, &tree, &options))
+                    .expect("browser draws");
+                continue;
+            }
             let mut waiting = false;
             browser.delete(&mut tree, &mut |deletion, tree, block| {
                 if block {
@@ -2256,6 +2283,180 @@ fn delete_progress() {
     ................................................................................
     "#);
     assert!(!directory.path().join("top").exists());
+}
+
+/// With `--delete-command`, `d` asks to run the command on the entry, both shortened, the same for
+/// a directory as for a file.
+#[test]
+fn delete_command_confirmation() {
+    let tree = tree_of(SOURCE, false);
+    let options = BrowserOptions {
+        delete_command: b"trash-put --verbose --trash-dir=/tmp/trash".to_vec(),
+        ..BrowserOptions::default()
+    };
+    let mut keys = [Key::Down; 8];
+    keys[7] = Key::Char('d');
+    assert_snapshot!(screen(&tree, root(&tree), &options, &keys, (80, 12)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "--- /home/user/project ---------------------------------------------------------"
+    "   16.0 KiB S   4.0 KiB [###########] /src                                      "
+    "!   4.0 Ki┌── Confirm delete ────────────────────────────────────────┐          "
+    "e   4.0 Ki│ Are you sure you want to run "trash-put -...=/tmp/trash" │          "
+    "    4.0 Ki│   on "quote " backslash \ tab \x09 control \x01 é"       │          "
+    "H   4.0 Ki│                                                          │          "
+    "    0.0   │              yes       no    don't ask me again          │          "
+    "    0.0   └──────────────────────────────────────────────────────────┘          "
+    "    0.0   B             [           ]  quote " backslash \...\x09 control \x01 é"
+    "@   0.0   B             [           ]  socket                                   "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    .............BBBBBBBBBBBBBBBB...................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ...................................RR...........................................
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// When nothing is left at the path after the command, the entry is taken out of the tree and its
+/// sizes from the totals, and the cursor goes to the entry after it. duit does not delete the file
+/// itself.
+#[test]
+fn delete_command_removed() {
+    let (directory, tree) = on_disk(DELETE, &DELETE_FILES);
+    let options = BrowserOptions {
+        delete_command: b"true".to_vec(),
+        ..BrowserOptions::default()
+    };
+    let keys = [Key::Down, Key::Down, Key::Char('d'), Key::Left, Key::Enter];
+    let screen = command_screen(&tree, &options, &keys, None);
+    assert_snapshot!(redact_directory(&screen, &directory), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "--- [DIR] ----------------------------------------------------------------------"
+    "   32.0 KiB [###########] /top                                                  "
+    "   12.0 KiB [####       ]  c.txt                                                "
+    "    4.0 KiB [#          ]  a.txt                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "*Total disk usage:  52.0 KiB   Apparent size:  30.7 KiB   Items: 8              "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+    assert!(directory.path().join("b.txt").exists());
+}
+
+/// A file that the command leaves at the path is added again with the sizes that it has now, in
+/// the totals too, and the cursor stays on it.
+#[test]
+fn delete_command_changed() {
+    let (directory, tree) = on_disk(DELETE, &DELETE_FILES);
+    let options = BrowserOptions {
+        delete_command: b"true".to_vec(),
+        confirm_delete: false,
+        ..BrowserOptions::default()
+    };
+    let stat = Stat {
+        entry_type: EntryType::Regular,
+        blocks: 40,
+        size: 20_000,
+        ..Stat::default()
+    };
+    let keys = [Key::Down, Key::Down, Key::Char('d')];
+    let screen = command_screen(&tree, &options, &keys, Some(stat));
+    assert_snapshot!(redact_directory(&screen, &directory), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "--- [DIR] ----------------------------------------------------------------------"
+    "   32.0 KiB [###########] /top                                                  "
+    "   20.0 KiB [########   ]  b.txt                                                "
+    "   12.0 KiB [####       ]  c.txt                                                "
+    "    4.0 KiB [#          ]  a.txt                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "*Total disk usage:  72.0 KiB   Apparent size:  50.3 KiB   Items: 9              "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// A hard link that the command leaves at the path is added as a hard link, whose sizes the
+/// totals count once for its inode.
+#[test]
+fn delete_command_hard_link() {
+    let (directory, tree) = on_disk(DELETE, &DELETE_FILES);
+    let options = BrowserOptions {
+        delete_command: b"true".to_vec(),
+        confirm_delete: false,
+        ..BrowserOptions::default()
+    };
+    let stat = Stat {
+        entry_type: EntryType::HardLink,
+        blocks: 16,
+        size: 5000,
+        inode: 7,
+        link_count: 2,
+        ..Stat::default()
+    };
+    let keys = [Key::Down, Key::Down, Key::Char('d')];
+    let screen = command_screen(&tree, &options, &keys, Some(stat));
+    assert_snapshot!(redact_directory(&screen, &directory), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "--- [DIR] ----------------------------------------------------------------------"
+    "   32.0 KiB [###########] /top                                                  "
+    "   12.0 KiB [####       ]  c.txt                                                "
+    "H   8.0 KiB [###        ]  b.txt                                                "
+    "    4.0 KiB [#          ]  a.txt                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "*Total disk usage:  60.0 KiB   Apparent size:  35.6 KiB   Items: 9              "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
 }
 
 /// `i` shows the name, the type, and the sizes of a file.

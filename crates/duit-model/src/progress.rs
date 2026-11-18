@@ -388,7 +388,7 @@ mod tests {
                 memory.finish_directory(root, None)
             })();
             built.expect("entries are added");
-            let tree = memory.finish();
+            let tree = memory.finish(&mut |_, _| {});
             let root = tree.root().expect("tree has a root");
             let mut zeroing = Vec::new();
             let mut record = |progress: &Progress| {
