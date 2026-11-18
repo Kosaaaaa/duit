@@ -1392,9 +1392,9 @@ impl Browser {
 
     /// Delete the entry of the deletion that [`Action::Delete`] started, `delete` in `delete.zig`.
     /// `events` gets the deletion before each entry that it deletes, and with `true` whenever it
-    /// waits for a key, to draw it and to give it keys. The cursor then goes to the entry after
-    /// the deleted one, or stays on the entry if it is still in the tree. Call
-    /// [`Browser::load_directory`] next, as `main.zig` does.
+    /// waits for a key, to draw it and to give it keys. The cursor then stays on the entry if it is
+    /// still in the tree, and else goes to the entry after it, or the one before it when it was the
+    /// last, or none. Call [`Browser::load_directory`] next, as `main.zig` does.
     pub fn delete(&mut self, tree: &mut Tree, events: &mut dyn FnMut(&mut Deletion, &Tree, bool)) {
         // Without an entry to select, the cursor stays on the name of the deleted entry, which is
         // no longer listed, so the view puts it on the first row.

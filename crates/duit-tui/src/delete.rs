@@ -193,9 +193,9 @@ impl Deletion {
 
     /// Delete the entry once the deletion is confirmed, `delete` in `delete.zig`, from the
     /// filesystem and from `tree`, and return the entry to put the cursor on: the entry when it is
-    /// still in the tree, and else the entry after it. `events` gets the deletion before each
-    /// entry, and with `true` whenever it waits for a key, to draw it and give it keys, as
-    /// `handleEvent` in `main.zig`.
+    /// still in the tree, and else the entry after it, or the one before it when it was the last,
+    /// or none. `events` gets the deletion before each entry, and with `true` whenever it waits for
+    /// a key, to draw it and give it keys, as `handleEvent` in `main.zig`.
     pub(crate) fn run(
         &mut self,
         tree: &mut Tree,
