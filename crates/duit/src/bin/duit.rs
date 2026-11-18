@@ -25,8 +25,8 @@ use duit_model::{
 };
 use duit_scan::{ScanError, ScanOptions, scan};
 use duit_tui::{
-    Action, Browser, BrowserOptions, Console, Deletion, InitError, Input, Loading, ScanScreen,
-    ScanState, Ui,
+    Action, Browser, BrowserOptions, Console, Deletion, InitError, Input, Loading, ScanKey,
+    ScanScreen, ScanState, Ui,
 };
 
 /// The terminal sequence that clears from the cursor to the end of the screen. ncdu writes it to
@@ -885,9 +885,8 @@ impl ScanProgress {
         while exit.is_none() {
             match ui.getch(false) {
                 Ok(Some(Input::Key(key))) => match screen.key_input(state, key, options) {
-                    Some(Action::Quit) => *exit = Some(Ok(ExitCode::SUCCESS)),
-                    Some(Action::Browse | Action::Shell | Action::Delete | Action::Refresh)
-                    | None => {}
+                    Some(ScanKey::Quit) => *exit = Some(Ok(ExitCode::SUCCESS)),
+                    Some(ScanKey::Close) | None => {}
                 },
                 Ok(Some(Input::Resize)) => ui.draw(|frame| screen.draw(frame, state, options)),
                 Ok(Some(Input::Interrupt)) => *exit = Some(Ok(ExitCode::FAILURE)),
@@ -914,9 +913,8 @@ impl ScanProgress {
             ui.draw(|frame| screen.draw(frame, state, options));
             match ui.getch(true) {
                 Ok(Some(Input::Key(key))) => match screen.key_input(state, key, options) {
-                    Some(Action::Browse) => return Ok(()),
-                    Some(Action::Quit | Action::Shell | Action::Delete | Action::Refresh)
-                    | None => {}
+                    Some(ScanKey::Close) => return Ok(()),
+                    Some(ScanKey::Quit) | None => {}
                 },
                 Ok(Some(Input::Resize) | None) => {}
                 Ok(Some(Input::Interrupt)) => return Err(Ok(ExitCode::FAILURE)),

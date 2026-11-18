@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 use std::time::Duration;
 
-use duit_tui::{Action, BrowserOptions, ColorScheme, Key, ScanScreen, ScanState};
+use duit_tui::{BrowserOptions, ColorScheme, Key, ScanKey, ScanScreen, ScanState};
 use insta::assert_snapshot;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -282,7 +282,7 @@ fn quit() {
     assert_eq!(screen.key_input(&RUNNING, Key::Char('y'), &options), None);
     assert_eq!(
         screen.key_input(&RUNNING, Key::Char('q'), &options),
-        Some(Action::Quit)
+        Some(ScanKey::Quit)
     );
 
     let options = BrowserOptions {
@@ -310,7 +310,7 @@ fn quit() {
     "#);
     assert_eq!(
         screen.key_input(&RUNNING, Key::Char('Y'), &options),
-        Some(Action::Quit)
+        Some(ScanKey::Quit)
     );
 }
 
@@ -355,7 +355,7 @@ fn error() {
     "#);
     assert_eq!(
         screen.key_input(&state, Key::Other, &options),
-        Some(Action::Browse)
+        Some(ScanKey::Close)
     );
 }
 
