@@ -53,8 +53,10 @@ fn fixture() -> TempDir {
 }
 
 /// `--quit-after-scan` scans or imports into memory and exits without opening the browser, so it
-/// needs no terminal. A binary export is only opened, not read. The cases pass `-0`, because duit
-/// shows no scan progress yet, and ncdu opens its full-screen progress on the terminal without it.
+/// needs no terminal. A binary export is only opened, not read. The cases pass `-0` or `-1`,
+/// because duit shows no full-screen progress yet, and ncdu opens it on the terminal without them.
+/// With `-1`, the tree in memory draws the line that it counts hard links on, even after an error
+/// at the root, and erases it only on a terminal.
 #[test]
 fn quit_after_scan() {
     let directory = fixture();
@@ -71,6 +73,11 @@ fn quit_after_scan() {
         &["-0", "--quit-after-scan", "-f", "tree.ncdu"],
         &["-0", "--quit-after-scan", "-f", "malformed.json"],
         &["-0", "--quit-after-scan", "missing"],
+        &["-1", "--quit-after-scan", "."],
+        &["-1", "--quit-after-scan", "-f", "tree.json"],
+        &["-1", "--quit-after-scan", "-f", "tree.ncdu"],
+        &["-1", "--quit-after-scan", "-f", "malformed.json"],
+        &["-1", "--quit-after-scan", "missing"],
     ];
     #[cfg(feature = "test-ncdu")]
     for arguments in cases {
@@ -118,6 +125,44 @@ fn quit_after_scan() {
 
     ----- stderr -----
     ^[[JError opening directory: No such file or directory.
+
+    $ duit -1 --quit-after-scan .
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Counting hardlinks...
+    ^[[J
+
+    $ duit -1 --quit-after-scan -f tree.json
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Counting hardlinks...
+    ^[[J
+
+    $ duit -1 --quit-after-scan -f tree.ncdu
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    ^[[J
+
+    $ duit -1 --quit-after-scan -f malformed.json
+    exit_code: 1
+    ----- stdout -----
+
+    ----- stderr -----
+    ^[[JError importing file on line 1:23: expected string.
+
+    $ duit -1 --quit-after-scan missing
+    exit_code: 1
+    ----- stdout -----
+
+    ----- stderr -----
+    Counting hardlinks...
+    ^[[JError opening directory: No such file or directory.
     ");
 }
 
@@ -150,12 +195,12 @@ fn errors() {
 
 /// A pseudo-terminal of 80 columns and 24 rows: the side that the test reads and writes, and the
 /// terminal side that duit runs on.
-struct Pty {
+pub(crate) struct Pty {
     master: File,
-    terminal: File,
+    pub(crate) terminal: File,
 }
 
-fn pty() -> Pty {
+pub(crate) fn pty() -> Pty {
     let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).expect("pty is opened");
     grantpt(&master).expect("pty is granted");
     unlockpt(&master).expect("pty is unlocked");
@@ -183,7 +228,12 @@ fn pty() -> Pty {
 /// Run duit with `arguments` in `directory`, in a new session without a controlling terminal, so
 /// that it cannot reach the terminal that runs the tests. With `controlling`, its standard error
 /// becomes the controlling terminal of the session.
-fn spawn(directory: &Path, arguments: &[&str], command: &mut Command, controlling: bool) -> Child {
+pub(crate) fn spawn(
+    directory: &Path,
+    arguments: &[&str],
+    command: &mut Command,
+    controlling: bool,
+) -> Child {
     command
         .current_dir(directory)
         .arg("--ignore-config")
@@ -230,7 +280,7 @@ fn spawn_command_on(
 }
 
 /// Send what duit writes to the terminal of `pty` to the returned receiver, until it closes.
-fn read_output(pty: &Pty) -> Receiver<Vec<u8>> {
+pub(crate) fn read_output(pty: &Pty) -> Receiver<Vec<u8>> {
     let mut master = pty.master.try_clone().expect("pty is duplicated");
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
@@ -245,7 +295,7 @@ fn read_output(pty: &Pty) -> Receiver<Vec<u8>> {
 }
 
 /// Append what `receiver` reads to `output` until it holds `needle`.
-fn wait_for(receiver: &Receiver<Vec<u8>>, output: &mut Vec<u8>, needle: &[u8]) {
+pub(crate) fn wait_for(receiver: &Receiver<Vec<u8>>, output: &mut Vec<u8>, needle: &[u8]) {
     let deadline = Instant::now() + TIMEOUT;
     while !output.windows(needle.len()).any(|window| window == needle) {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -257,7 +307,7 @@ fn wait_for(receiver: &Receiver<Vec<u8>>, output: &mut Vec<u8>, needle: &[u8]) {
 }
 
 /// Wait for `child` to exit, and kill it if it does not.
-fn wait_exit(child: &mut Child) -> ExitStatus {
+pub(crate) fn wait_exit(child: &mut Child) -> ExitStatus {
     let deadline = Instant::now() + TIMEOUT;
     loop {
         if let Some(status) = child.try_wait().expect("child is waited for") {

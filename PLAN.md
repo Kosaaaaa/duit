@@ -60,7 +60,7 @@ lazily block by block. A binary export of a huge tree can therefore be browsed w
 | `duit-model`  | `model.zig`, `sink.zig`, `mem_sink.zig`, `mem_src.zig`                   | none                        |
 | `duit-scan`   | `scan.zig`, `exclude.zig`                                                | `duit-model`                |
 | `duit-format` | `json_export.zig`, `json_import.zig`, `bin_export.zig`, `bin_reader.zig` | `duit-model`                |
-| `duit-tui`    | `ui.zig`, `browser.zig`, `delete.zig`                                    | `duit-model`, `duit-format` |
+| `duit-tui`    | `ui.zig`, `browser.zig`, `delete.zig`, `sink.zig`                        | `duit-model`, `duit-format` |
 | `duit`        | `main.zig`                                                               | all of the above            |
 
 - `duit-model`: entry types, the `Sink` trait, the in-memory tree, hard link accounting, and size
@@ -210,8 +210,8 @@ Workspace, lints, CI, and documentation. No code. Done.
 - The option parser for every flag, and config files. Modes without an implementation yet (`-f`,
   `-O`, `-c`, `-t` above 1, and any run without `-o`) are rejected with a clear message. Flags that
   only change the scan progress, the browser, or the actions of M3 and M4 are parsed and have no
-  effect until then, so the ncdu config files that duit falls back to keep working. Until M4, duit
-  shows no scan progress, as with `-0`.
+  effect until then, so the ncdu config files that duit falls back to keep working. Until M4 ports
+  the full-screen progress of `-2`, a scan or an import with it shows no progress, as with `-0`.
 - The entry types, the sink, and a single-threaded scan with `-x`, `-L`, `-e`, exclude patterns,
   kernfs, and cache directories. `-o` writes the scan straight to the export, so the in-memory tree
   waits for M3.
