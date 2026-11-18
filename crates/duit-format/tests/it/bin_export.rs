@@ -148,13 +148,13 @@ impl Blocks {
 
 /// An item of a binary export: its itemref and its fields in the order of the file, with
 /// references shown as the `block:offset` of the item they point to.
-struct Item {
-    itemref: u64,
+pub(crate) struct Item {
+    pub(crate) itemref: u64,
     fields: Vec<(&'static str, String)>,
 }
 
 impl Item {
-    fn field(&self, key: &str) -> Option<&str> {
+    pub(crate) fn field(&self, key: &str) -> Option<&str> {
         self.fields
             .iter()
             .find(|(name, _)| *name == key)
@@ -163,7 +163,7 @@ impl Item {
 }
 
 /// The `block:offset` form of `itemref`.
-fn reference(itemref: u64) -> String {
+pub(crate) fn reference(itemref: u64) -> String {
     format!("{}:{}", itemref >> 24, itemref & 0xff_ffff)
 }
 
@@ -229,7 +229,7 @@ impl Reader<'_> {
 }
 
 /// The items of `export` in the order of the file, and the itemref of the root.
-fn items(export: &[u8]) -> (Vec<Item>, u64) {
+pub(crate) fn items(export: &[u8]) -> (Vec<Item>, u64) {
     let blocks = Blocks::parse(export);
     let mut items = Vec::new();
     for (number, data) in &blocks.data {

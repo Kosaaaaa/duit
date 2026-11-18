@@ -11,6 +11,7 @@ mod bin_export;
 mod bin_reader;
 mod json_export;
 mod json_import;
+mod mem_sink;
 
 /// Run `ncdu -f-` with `arguments`, which select the export, and `input` on standard input.
 #[cfg(feature = "test-ncdu")]
