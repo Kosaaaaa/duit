@@ -248,7 +248,8 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
             if quit_after_scan {
                 return Ok(ExitCode::SUCCESS);
             }
-            return browse(None, options, &config, |options, loading| {
+            let screen = ScanScreen::new(config.update_delay);
+            return browse(None, screen, options, &config, |options, loading| {
                 Browser::open(reader, options, loading)
             });
         }
@@ -266,9 +267,14 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
         let Some(root) = tree.root() else {
             return Ok(ExitCode::SUCCESS);
         };
-        return browse(progress.ui.take(), options, &config, |options, loading| {
-            Ok(Some((Browser::new(&tree, root, options, loading), tree)))
-        });
+        let screen = mem::replace(&mut progress.screen, ScanScreen::new(config.update_delay));
+        return browse(
+            progress.ui.take(),
+            screen,
+            options,
+            &config,
+            |options, loading| Ok(Some((Browser::new(&tree, root, options, loading), tree))),
+        );
     };
 
     let out: Box<dyn Write> = if export_path == b"-" {
@@ -320,9 +326,12 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
 /// the root of a binary export is read then, and `open` gives `None` for a root that is not a
 /// directory. While the browser lists a directory, [`Load`] draws the loading screen after
 /// `update_delay`. The browser draws on `ui` if the progress of `-2` took over the terminal. A
-/// refresh scans with the options of `config`.
+/// refresh scans with the options of `config`, and draws its progress on `screen`, the screen of
+/// the scan before the browser if there was one, as ncdu keeps the confirmation of
+/// `--confirm-quit` and the step of the animation in globals that no scan resets.
 fn browse(
     ui: Option<Ui>,
+    mut screen: ScanScreen,
     mut options: BrowserOptions,
     config: &Config,
     open: impl FnOnce(
@@ -394,8 +403,16 @@ fn browse(
                     }
                     Ok(Action::Refresh) => {
                         let directory = browser.directory();
-                        ui = match refresh(ui, &mut tree, directory, &options, config, drawn)
-                            .and_then(|ui| reload(ui, &mut browser, &tree, &options, update_delay))
+                        ui = match refresh(
+                            ui,
+                            &mut screen,
+                            &mut tree,
+                            directory,
+                            &options,
+                            config,
+                            drawn,
+                        )
+                        .and_then(|ui| reload(ui, &mut browser, &tree, &options, update_delay))
                         {
                             Ok(ui) => ui,
                             Err(exit) => return exit,
@@ -423,7 +440,15 @@ fn browse(
                             }
                         };
                         if let Some(directory) = directory {
-                            ui = match refresh(ui, &mut tree, directory, &options, config, drawn) {
+                            ui = match refresh(
+                                ui,
+                                &mut screen,
+                                &mut tree,
+                                directory,
+                                &options,
+                                config,
+                                drawn,
+                            ) {
                                 Ok(ui) => ui,
                                 Err(exit) => return exit,
                             };
@@ -504,9 +529,10 @@ fn reload(
 /// `-0` and `-1` say, as ncdu sets `scan_ui` to `.full` before it starts the browser. A directory
 /// that cannot be opened leaves its entries as they were, and shows an error until a key is
 /// pressed. The update delay runs from `drawn`, when the browser was drawn, as ncdu keeps one timer
-/// for every screen.
+/// for every screen. The progress is drawn on `screen`, which keeps its state for the next scan.
 fn refresh(
     ui: Ui,
+    screen: &mut ScanScreen,
     tree: &mut Tree,
     directory: DirectoryId,
     options: &BrowserOptions,
@@ -521,6 +547,7 @@ fn refresh(
     let mut progress = ScanProgress::new(ScanUi::Full, config.update_delay, options, false);
     progress.ui = Some(ui);
     progress.drawn = drawn;
+    mem::swap(&mut progress.screen, screen);
     let memory = MemorySink::refresh(mem::take(tree), directory, config.extended);
     let mut report = |state: &Progress| progress.report(state);
     let mut sink = ProgressSink::new(memory, Producer::Scan, &mut report);
@@ -539,6 +566,7 @@ fn refresh(
             path: path.to_bytes(),
         })?;
     }
+    mem::swap(&mut progress.screen, screen);
     progress.ui.take().ok_or(Ok(ExitCode::FAILURE))
 }
 
