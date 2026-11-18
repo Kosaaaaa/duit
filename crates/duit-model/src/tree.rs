@@ -118,7 +118,7 @@ pub struct Link {
     pub inode: u64,
     /// The number of links to the inode, or 0 when it is unknown, as in old JSON exports.
     pub link_count: u32,
-    entry: EntryId,
+    pub entry: EntryId,
     /// The links to the same inode form a ring, through which any one of them reaches the others.
     next: LinkId,
     previous: LinkId,
@@ -189,6 +189,46 @@ impl Tree {
 
     pub fn link(&self, id: LinkId) -> &Link {
         &self.links[id.0]
+    }
+
+    /// The links to the same inode as `link`, starting with it.
+    pub fn links(&self, link: LinkId) -> impl Iterator<Item = LinkId> + '_ {
+        iter::successors(Some(link), move |&current| {
+            Some(self.links[current.0].next).filter(|&next| next != link)
+        })
+    }
+
+    /// Append the path of `directory` to `out`: the names of the directories from the root down
+    /// to it, joined with a `/` that is left out after a name that ends with one. The root is
+    /// left out unless `with_root` is set, so without it the path of the root is empty.
+    /// `Dir.fmtPath` in `model.zig`.
+    pub fn format_path(&self, directory: DirectoryId, with_root: bool, out: &mut Vec<u8>) {
+        let mut names = Vec::new();
+        let mut current = Some(directory);
+        while let Some(id) = current {
+            let data = &self.directories[id.0];
+            if with_root || data.parent.is_some() {
+                names.push(self.name(data.entry));
+            }
+            current = data.parent;
+        }
+        for (index, name) in names.into_iter().rev().enumerate() {
+            if index != 0 && out.last() != Some(&b'/') {
+                out.push(b'/');
+            }
+            out.extend_from_slice(name);
+        }
+    }
+
+    /// The path of `link`: the path of its directory, as [`Tree::format_path`] gives it, a `/`,
+    /// and its name. `Link.path` in `model.zig`.
+    pub fn link_path(&self, link: LinkId, with_root: bool) -> Vec<u8> {
+        let link = &self.links[link.0];
+        let mut path = Vec::new();
+        self.format_path(link.parent, with_root, &mut path);
+        path.push(b'/');
+        path.extend_from_slice(self.name(link.entry));
+        path
     }
 
     /// The device number of `id`.
@@ -619,5 +659,50 @@ mod tests {
         assert_eq!(tree.entry(id).kind, EntryKind::Regular);
         assert!(tree.extended(id).is_none());
         assert_eq!(tree.name(id), b"hello");
+    }
+
+    /// Paths join the names from below the root, or from the root when asked, with a `/` that is
+    /// left out after a name that ends with one, and the path of a link adds a `/` and its name in
+    /// any case. Upstream has no test for `Dir.fmtPath` and `Link.path`.
+    #[test]
+    fn paths() {
+        let mut tree = Tree::default();
+        let device = tree.device_id(0).expect("device fits");
+        let stat = Stat::default();
+        let root = tree.create_directory(None, device, &stat, None, b"/");
+        let first = tree.create_directory(Some(root), device, &stat, None, b"a");
+        let second = tree.create_directory(Some(first), device, &stat, None, b"b");
+        let path = |directory, with_root| {
+            let mut path = Vec::new();
+            tree.format_path(directory, with_root, &mut path);
+            String::from_utf8(path).expect("path is UTF-8")
+        };
+        assert_eq!(path(root, false), "");
+        assert_eq!(path(root, true), "/");
+        assert_eq!(path(second, false), "a/b");
+        assert_eq!(path(second, true), "/a/b");
+
+        let link = |tree: &mut Tree, parent, name: &[u8]| {
+            let entry = tree.create(parent, FileKind::HardLink, &stat, None, name);
+            match tree.entry(entry).kind {
+                EntryKind::HardLink(link) => Some(link),
+                EntryKind::Directory(_)
+                | EntryKind::Regular
+                | EntryKind::NonRegular
+                | EntryKind::Special(_) => None,
+            }
+            .expect("entry is a hard link")
+        };
+        let top = link(&mut tree, root, b"x");
+        let deep = link(&mut tree, second, b"y");
+        let link_path = |link, with_root| {
+            String::from_utf8(tree.link_path(link, with_root)).expect("path is UTF-8")
+        };
+        assert_eq!(link_path(top, false), "/x");
+        assert_eq!(link_path(top, true), "//x");
+        assert_eq!(link_path(deep, false), "a/b/y");
+        assert_eq!(link_path(deep, true), "/a/b/y");
+        assert_eq!(tree.links(top).collect::<Vec<_>>(), [top, deep]);
+        assert_eq!(tree.links(deep).collect::<Vec<_>>(), [deep, top]);
     }
 }

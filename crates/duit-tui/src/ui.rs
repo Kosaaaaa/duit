@@ -230,6 +230,25 @@ impl Window {
         let x = self.x.saturating_add(column);
         draw_text(buffer, x, self.y.saturating_add(row), text, style).saturating_sub(self.x)
     }
+
+    /// Draw the tab `label` at `column` of the top border, after the `key` that selects it, in
+    /// reverse video when it is `selected`, `Box.tab` in `ui.zig`.
+    pub(crate) fn tab(
+        &self,
+        buffer: &mut Buffer,
+        column: u16,
+        selected: bool,
+        key: &str,
+        label: &str,
+    ) {
+        let (key_style, style) = if selected {
+            (BOLD_REVERSE, REVERSE)
+        } else {
+            (BOLD, PLAIN)
+        };
+        let x = self.text(buffer, 0, column, key, key_style);
+        self.text(buffer, 0, x, &format!(":{label}"), style);
+    }
 }
 
 /// Draw `value` bytes as a human-readable size, as [`FmtSize`] formats it, and return the column

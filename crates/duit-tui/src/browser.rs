@@ -3,16 +3,17 @@
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::iter;
 
-use duit_model::{DirectoryId, Entry, EntryId, EntryKind, Special, Tree};
+use duit_model::{DirectoryId, Entry, EntryId, EntryKind, LinkId, Special, Tree};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::style::Style;
 
 use crate::terminal::Key;
 use crate::ui::{
-    BOLD, BOLD_REVERSE, PLAIN, REVERSE, Window, draw_line, draw_size, draw_text, format_number,
-    format_timestamp, shorten, to_utf8,
+    BOLD, BOLD_REVERSE, FmtSize, PLAIN, REVERSE, Window, draw_line, draw_size, draw_text,
+    format_mode, format_number, format_timestamp, shorten, to_utf8,
 };
 use crate::util::{fmt5dec, strnatcmp};
 
@@ -110,6 +111,30 @@ enum State {
     Main,
     /// The confirmation of `--confirm-quit`.
     Quit,
+    /// The info window, which shows [`Info`].
+    Info,
+}
+
+/// A tab of the info window. Only a hard link has the links tab.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    #[default]
+    Info,
+    Links,
+}
+
+/// The info window, `info` in `browser.zig`. It stays as it is when a key of the listing closes the
+/// window, so opening it again on the same entry keeps the cursor of the links tab.
+#[derive(Debug, Default)]
+struct Info {
+    tab: Tab,
+    /// The entry that the window was opened on, or `None` once a key of the window closed it.
+    entry: Option<EntryId>,
+    /// The links to the inode of the entry, sorted by path, once the links tab was opened.
+    links: Option<Vec<LinkId>>,
+    /// The index in `links` of the first row on the screen, and of the row under the cursor.
+    links_top: usize,
+    links_index: usize,
 }
 
 /// Where the user left a directory, `View` in `browser.zig`.
@@ -146,7 +171,14 @@ pub struct Browser {
     /// The view of each directory that was open, by path, `opened_dir_views` in `browser.zig`.
     /// Directories with the same path share a view.
     views: HashMap<Vec<u8>, View>,
+    /// The directories that were opened to reach the open one, from the root, with the open one
+    /// last, `dir_parents` in `browser.zig`. Going to the parent directory goes back to the one
+    /// before the last. Enter in the links tab of the info window opens another directory without
+    /// changing them or the path, as ncdu does, and the listing then has no row of the parent
+    /// directory when the directory that was open was the root.
+    parents: Vec<DirectoryId>,
     state: State,
+    info: Info,
 }
 
 /// Whether ncdu shows `kind` as a directory, with a `/` in front of the name: a directory, also
@@ -302,8 +334,9 @@ fn dirname(path: &[u8]) -> Option<&[u8]> {
 }
 
 /// Move `index` in a list of `length` rows for a selection key, with `page` rows to a page, as
-/// `keyInputSelection` in `browser.zig`. Other keys do nothing.
-fn select_with_key(key: Key, index: &mut usize, length: usize, page: usize) {
+/// `keyInputSelection` in `browser.zig`. Returns whether `key` is a selection key. Other keys do
+/// nothing.
+fn select_with_key(key: Key, index: &mut usize, length: usize, page: usize) -> bool {
     match key {
         Key::Char('j') | Key::Down => {
             if *index + 1 < length {
@@ -315,7 +348,28 @@ fn select_with_key(key: Key, index: &mut usize, length: usize, page: usize) {
         Key::End => *index = length.saturating_sub(1),
         Key::PageUp => *index = index.saturating_sub(page),
         Key::PageDown => *index = length.saturating_sub(1).min(*index + page),
-        Key::Char(_) | Key::Enter | Key::Backspace | Key::Left | Key::Right | Key::Other => {}
+        Key::Char(_) | Key::Enter | Key::Backspace | Key::Left | Key::Right | Key::Other => {
+            return false;
+        }
+    }
+    true
+}
+
+/// The tab that `key` switches the info window of a hard link to.
+fn tab_of_key(key: Key) -> Option<Tab> {
+    match key {
+        Key::Char('1' | 'h') | Key::Left => Some(Tab::Info),
+        Key::Char('2' | 'l') | Key::Right => Some(Tab::Links),
+        Key::Char(_)
+        | Key::Enter
+        | Key::Backspace
+        | Key::Up
+        | Key::Down
+        | Key::Home
+        | Key::End
+        | Key::PageUp
+        | Key::PageDown
+        | Key::Other => None,
     }
 }
 
@@ -344,8 +398,11 @@ impl Browser {
             max_size: 1,
             has_shared: false,
             views: HashMap::new(),
+            parents: iter::successors(Some(directory), |&id| tree.directory(id).parent).collect(),
             state: State::Main,
+            info: Info::default(),
         };
+        browser.parents.reverse();
         browser.load(tree, options);
         browser
     }
@@ -357,7 +414,7 @@ impl Browser {
         self.max_blocks = 1;
         self.max_size = 1;
         self.has_shared = false;
-        if tree.directory(self.directory).parent.is_some() {
+        if self.parents.len() > 1 {
             self.items.push(None);
         }
         for id in tree.entries(self.directory) {
@@ -429,7 +486,7 @@ impl Browser {
             .unwrap_or(0);
     }
 
-    /// Open the subdirectory `directory`, `enterSub` in `browser.zig`.
+    /// Open the subdirectory `directory`, `enterSub` in `browser.zig`, and close the window.
     fn enter_subdirectory(
         &mut self,
         tree: &Tree,
@@ -437,13 +494,20 @@ impl Browser {
         directory: DirectoryId,
     ) {
         self.directory = directory;
+        self.parents.push(directory);
         join_path(&mut self.path, tree.name(tree.directory(directory).entry));
         self.load(tree, options);
+        self.state = State::Main;
     }
 
-    /// Open the parent directory, if there is one, `enterParent` in `browser.zig`.
+    /// Open the parent directory, if there is one, `enterParent` in `browser.zig`, and close the
+    /// window.
     fn enter_parent(&mut self, tree: &Tree, options: &BrowserOptions) {
-        let Some(parent) = tree.directory(self.directory).parent else {
+        if self.parents.len() < 2 {
+            return;
+        }
+        self.parents.pop();
+        let Some(&parent) = self.parents.last() else {
             return;
         };
         self.directory = parent;
@@ -452,6 +516,102 @@ impl Browser {
         // there.
         self.path = dirname(&self.path).map_or_else(|| path_of(tree, parent), <[u8]>::to_vec);
         self.load(tree, options);
+        self.state = State::Main;
+    }
+
+    /// Show the info of `item` in `tab`, or close the window when `item` is the row of the parent
+    /// directory or `None`, `info.set` in `browser.zig`.
+    fn set_info(&mut self, tree: &Tree, item: Option<EntryId>, tab: Tab) {
+        if item != self.info.entry {
+            self.info = Info::default();
+        }
+        self.info.entry = item;
+        let Some(entry) = item else {
+            self.state = State::Main;
+            return;
+        };
+        self.state = State::Info;
+        self.info.tab = tab;
+        if tab == Tab::Links
+            && self.info.links.is_none()
+            && let EntryKind::HardLink(link) = tree.entry(entry).kind
+        {
+            let mut links: Vec<LinkId> = tree.links(link).collect();
+            links.sort_by_cached_key(|&link| tree.link_path(link, false));
+            if let Some(index) = links
+                .iter()
+                .position(|&link| tree.link(link).entry == entry)
+            {
+                self.info.links_index = index;
+            }
+            self.info.links = Some(links);
+        }
+    }
+
+    /// Handle `key` in the info window, `info.keyInput` in `browser.zig`. Returns whether the key
+    /// was handled, or else the listing handles it too.
+    fn info_key_input(
+        &mut self,
+        tree: &Tree,
+        options: &BrowserOptions,
+        key: Key,
+        height: u16,
+    ) -> bool {
+        let Some(entry) = self.info.entry else {
+            return false;
+        };
+        if let EntryKind::HardLink(_) = tree.entry(entry).kind
+            && let Some(tab) = tab_of_key(key)
+        {
+            self.set_info(tree, Some(entry), tab);
+            return true;
+        }
+        if self.info.tab == Tab::Links {
+            let links = self.info.links.as_deref().unwrap_or_default();
+            if select_with_key(key, &mut self.info.links_index, links.len(), 5) {
+                return true;
+            }
+            // Enter opens the directory of the selected link, closes the window, and then reaches
+            // the listing as well.
+            if key == Key::Enter
+                && let Some(&link) = links.get(self.info.links_index)
+            {
+                let link = tree.link(link);
+                self.directory = link.parent;
+                self.load(tree, options);
+                let name = tree.name(link.entry);
+                self.cursor = self
+                    .items
+                    .iter()
+                    .position(|item| item.map(|id| tree.name(id)) == Some(name))
+                    .unwrap_or(0);
+                self.set_info(tree, None, Tab::Info);
+            }
+        }
+        let page = usize::from(height.saturating_sub(3));
+        if select_with_key(key, &mut self.cursor, self.items.len(), page) {
+            let item = self.items.get(self.cursor).copied().flatten();
+            self.set_info(tree, item, Tab::Info);
+            return true;
+        }
+        match key {
+            Key::Char('i' | 'q') => {
+                self.set_info(tree, None, Tab::Info);
+                true
+            }
+            Key::Char(_)
+            | Key::Enter
+            | Key::Backspace
+            | Key::Up
+            | Key::Down
+            | Key::Left
+            | Key::Right
+            | Key::Home
+            | Key::End
+            | Key::PageUp
+            | Key::PageDown
+            | Key::Other => false,
+        }
     }
 
     /// Sort by `column`: in `default_order` when it is another column than before, and in the
@@ -503,6 +663,11 @@ impl Browser {
                 self.state = State::Main;
                 return key == Key::Char('y') || key == Key::Char('Y');
             }
+            State::Info => {
+                if self.info_key_input(tree, options, key, height) {
+                    return false;
+                }
+            }
         }
 
         match key {
@@ -512,8 +677,13 @@ impl Browser {
                 }
                 self.state = State::Quit;
             }
-            // The help and info windows, refresh, shell, and delete.
-            Key::Char('?' | 'i' | 'r' | 'b' | 'd') => {}
+            Key::Char('i') => {
+                if let Some(&item) = self.items.get(self.cursor) {
+                    self.set_info(tree, item, Tab::Info);
+                }
+            }
+            // The help window, refresh, shell, and delete.
+            Key::Char('?' | 'r' | 'b' | 'd') => {}
 
             Key::Char('n') => {
                 self.sort_toggle(tree, options, SortColumn::Name, SortOrder::Ascending);
@@ -537,6 +707,7 @@ impl Browser {
             Key::Char('e') => {
                 options.show_hidden = !options.show_hidden;
                 self.load(tree, options);
+                self.state = State::Main;
             }
             Key::Char('t') => {
                 options.sort_directories_first = !options.sort_directories_first;
@@ -595,12 +766,14 @@ impl Browser {
             | Key::End
             | Key::PageUp
             | Key::PageDown
-            | Key::Other => select_with_key(
-                key,
-                &mut self.cursor,
-                self.items.len(),
-                usize::from(height.saturating_sub(3)),
-            ),
+            | Key::Other => {
+                select_with_key(
+                    key,
+                    &mut self.cursor,
+                    self.items.len(),
+                    usize::from(height.saturating_sub(3)),
+                );
+            }
         }
         false
     }
@@ -723,7 +896,200 @@ impl Browser {
                 let x = window.text(buffer, 2, x, "N", BOLD);
                 window.text(buffer, 2, x, ")", PLAIN);
             }
+            State::Info => {
+                if let Some(&Some(entry)) = self.items.get(self.cursor) {
+                    self.info.draw(buffer, tree, options, entry);
+                }
+            }
         }
+    }
+}
+
+/// The width of the info window.
+const INFO_WIDTH: u16 = 60;
+
+impl Info {
+    /// Draw the window over the listing with the info of `entry`, the entry under the cursor.
+    fn draw(&mut self, buffer: &mut Buffer, tree: &Tree, options: &BrowserOptions, entry: EntryId) {
+        let data = tree.entry(entry);
+        let link = match data.kind {
+            EntryKind::HardLink(link) => Some(link),
+            EntryKind::Directory(_)
+            | EntryKind::Regular
+            | EntryKind::NonRegular
+            | EntryKind::Special(_) => None,
+        };
+        let directory = directory_of(data).map(|id| tree.directory(id));
+        // The border, the padding, and the row that says how to close the window, and the rows of
+        // the tab.
+        let height = 5 + match self.tab {
+            Tab::Links => 8,
+            Tab::Info => {
+                4 + u16::from(tree.extended(entry).is_some())
+                    + u16::from(link.is_some())
+                    + directory.map_or(0, |directory| {
+                        1 + if directory.shared_size > 0 { 2 } else { 0 }
+                            + if directory.shared_blocks > 0 { 2 } else { 0 }
+                    })
+            }
+        };
+        let window = Window::new(buffer, height, INFO_WIDTH, "Item info");
+        if link.is_some() {
+            window.tab(buffer, INFO_WIDTH - 19, self.tab == Tab::Info, "1", "Info");
+            window.tab(
+                buffer,
+                INFO_WIDTH - 10,
+                self.tab == Tab::Links,
+                "2",
+                "Links",
+            );
+        }
+
+        match self.tab {
+            Tab::Info => draw_info_tab(&window, buffer, tree, options, entry),
+            Tab::Links => self.draw_links(&window, buffer, tree, height),
+        }
+
+        let row = height - 2;
+        let x = window.text(buffer, row, INFO_WIDTH - 30, "Press ", PLAIN);
+        let x = window.text(buffer, row, x, "i", BOLD);
+        window.text(buffer, row, x, " to close this window", PLAIN);
+    }
+
+    /// Draw the paths of the links to the inode on the rows of a window of `height`, the selected
+    /// one in reverse video and the one of the entry marked with `*`, and the number of the
+    /// selected one.
+    fn draw_links(&mut self, window: &Window, buffer: &mut Buffer, tree: &Tree, height: u16) {
+        let rows = usize::from(height.saturating_sub(4));
+        if self.links_index < self.links_top {
+            self.links_top = self.links_index;
+        }
+        if self.links_index >= self.links_top + rows {
+            self.links_top = self.links_index + 1 - rows;
+        }
+        let links = self.links.as_deref().unwrap_or_default();
+        for (row, (index, &link)) in (2..)
+            .zip(links.iter().enumerate().skip(self.links_top))
+            .take(rows)
+        {
+            let style = if index == self.links_index {
+                REVERSE
+            } else {
+                PLAIN
+            };
+            let mark = if Some(tree.link(link).entry) == self.entry {
+                "*"
+            } else {
+                " "
+            };
+            let x = window.text(buffer, row, 2, mark, style);
+            let path = tree.link_path(link, false);
+            let path = shorten(&to_utf8(&path), usize::from(INFO_WIDTH - 5)).into_owned();
+            window.text(buffer, row, x, &path, style);
+        }
+        let position = format!("{:>3}/{}", self.links_index + 1, links.len());
+        window.text(buffer, height - 2, 4, &position, PLAIN);
+    }
+}
+
+/// Draw the info tab of `entry` in `window`: its name, its type or its extended information, its
+/// sizes, and its item count or its link count and inode.
+fn draw_info_tab(
+    window: &Window,
+    buffer: &mut Buffer,
+    tree: &Tree,
+    options: &BrowserOptions,
+    entry: EntryId,
+) {
+    let data = tree.entry(entry);
+    let extended = tree.extended(entry);
+    let mut row = 2;
+    let x = window.text(buffer, row, 3, "Name: ", BOLD);
+    let name = shorten(&to_utf8(tree.name(entry)), usize::from(INFO_WIDTH - 11)).into_owned();
+    window.text(buffer, row, x, &name, PLAIN);
+    row += 1;
+
+    if let Some(extended) = extended {
+        let extended = extended.extended;
+        let mut x = 3;
+        if let Some(mode) = extended.mode {
+            x = window.text(buffer, row, x, "Mode: ", BOLD);
+            x = window.text(buffer, row, x, &format_mode(mode), PLAIN);
+        }
+        if let Some(uid) = extended.uid {
+            x = window.text(buffer, row, x, "  UID: ", BOLD);
+            x = window.text(buffer, row, x, &format!("{uid:<6}"), PLAIN);
+        }
+        if let Some(gid) = extended.gid {
+            x = window.text(buffer, row, x, " GID: ", BOLD);
+            window.text(buffer, row, x, &format!("{gid:<6}"), PLAIN);
+        }
+    } else {
+        let x = window.text(buffer, row, 3, "Type: ", BOLD);
+        let kind = match data.kind {
+            EntryKind::Directory(_) => "Directory",
+            EntryKind::NonRegular => "Other",
+            EntryKind::Regular | EntryKind::HardLink(_) => "File",
+            EntryKind::Special(_) => "Excluded",
+        };
+        window.text(buffer, row, x, kind, PLAIN);
+    }
+    row += 1;
+
+    if let Some(extended) = extended
+        && extended.extended.mtime.is_some()
+    {
+        let x = window.text(buffer, row, 3, "Last modified: ", BOLD);
+        let mtime = format_timestamp(extended.latest_mtime)
+            .unwrap_or_else(|| "            invalid mtime".to_string());
+        window.text(buffer, row, x, &mtime, PLAIN);
+        row += 1;
+    }
+
+    // A size in full and in a human-readable form, and its shared and unique parts when it has a
+    // shared part.
+    let sizes = |buffer: &mut Buffer, row: &mut u16, label: &str, size: u64, shared: u64| {
+        let mut size_row = |label: &str, style, size| {
+            let x = window.text(buffer, *row, 3, label, style);
+            let formatted = FmtSize::new(size, options.si);
+            let number = format_number(size, &options.thousands_separator);
+            let text = format!("{}{} ({number})", formatted.number, formatted.unit);
+            window.text(buffer, *row, x, &text, PLAIN);
+            *row += 1;
+        };
+        size_row(label, BOLD, size);
+        if shared > 0 {
+            size_row("     > shared: ", PLAIN, shared);
+            size_row("     > unique: ", PLAIN, size.saturating_sub(shared));
+        }
+    };
+    let directory = directory_of(data).map(|id| tree.directory(id));
+    let shared_blocks = directory.map_or(0, |directory| blocks_to_size(directory.shared_blocks));
+    let shared_size = directory.map_or(0, |directory| directory.shared_size);
+    let disk_usage = blocks_to_size(data.blocks);
+    sizes(
+        buffer,
+        &mut row,
+        "   Disk usage: ",
+        disk_usage,
+        shared_blocks,
+    );
+    sizes(buffer, &mut row, "Apparent size: ", data.size, shared_size);
+
+    if let Some(directory) = directory {
+        let x = window.text(buffer, row, 3, "    Sub items: ", BOLD);
+        let items = format_number(directory.items.into(), &options.thousands_separator);
+        window.text(buffer, row, x, &items, PLAIN);
+        row += 1;
+    }
+
+    if let EntryKind::HardLink(link) = data.kind {
+        let link = tree.link(link);
+        let x = window.text(buffer, row, 3, "   Link count: ", BOLD);
+        let link_count = format_number(link.link_count.into(), &options.thousands_separator);
+        window.text(buffer, row, x, &link_count, PLAIN);
+        let x = window.text(buffer, row, 23, "  Inode: ", BOLD);
+        window.text(buffer, row, x, &link.inode.to_string(), PLAIN);
     }
 }
 
