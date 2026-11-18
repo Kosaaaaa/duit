@@ -60,7 +60,7 @@ lazily block by block. A binary export of a huge tree can therefore be browsed w
 | `duit-model`  | `model.zig`, `sink.zig`, `mem_sink.zig`, `mem_src.zig`                   | none                        |
 | `duit-scan`   | `scan.zig`, `exclude.zig`                                                | `duit-model`                |
 | `duit-format` | `json_export.zig`, `json_import.zig`, `bin_export.zig`, `bin_reader.zig` | `duit-model`                |
-| `duit-tui`    | `ui.zig`, `browser.zig`, `delete.zig`                                    | `duit-model`, `duit-format` |
+| `duit-tui`    | `ui.zig`, `browser.zig`, `delete.zig`, `sink.zig`                        | `duit-model`, `duit-format` |
 | `duit`        | `main.zig`                                                               | all of the above            |
 
 - `duit-model`: entry types, the `Sink` trait, the in-memory tree, hard link accounting, and size
