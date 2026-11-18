@@ -246,6 +246,7 @@ dependencies = [
  "libc",
  "ratatui",
  "rustix",
+ "tempfile",
  "unicode-width",
 ]
 

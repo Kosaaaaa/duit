@@ -1,6 +1,10 @@
+use std::env;
+use std::ffi::OsStr;
 use std::fmt::Write as _;
-use std::fs::File;
-use std::path::Path;
+use std::fs::{self, File, Permissions};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 
 use duit_format::{BinaryReader, import};
 use duit_model::{DirectoryId, EntryKind, MemorySink, Tree};
@@ -12,6 +16,7 @@ use insta::assert_snapshot;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::style::{Color, Modifier};
+use tempfile::TempDir;
 
 /// The JSON export that `crates/duit/tests/fixtures/generate.sh` converts with ncdu. It has every
 /// kind of entry.
@@ -169,6 +174,9 @@ fn file_screen(fixture: &str, options: &BrowserOptions, keys: &[Key], size: (u16
 
 /// Draw `browser` on a terminal of `width` by `height`, and again after each of `keys`, and render
 /// the last screen as [`screen`] describes.
+///
+/// A deletion runs only in a temporary directory. Its windows that wait for a key take the next
+/// of `keys`. When none is left, the deletion is aborted, and its window is the last screen.
 fn run(
     mut browser: Browser,
     mut tree: Tree,
@@ -181,10 +189,36 @@ fn run(
     terminal
         .draw(|frame| browser.draw(frame, &tree, &options))
         .expect("browser draws");
-    for &key in keys {
-        browser
+    let mut keys = keys.iter().copied();
+    while let Some(key) = keys.next() {
+        let action = browser
             .key_input(&mut tree, &mut options, key, height, &mut |_| {})
             .expect("key is handled");
+        if action == Action::Delete {
+            let root = tree.name(tree.directory(root(&tree)).entry);
+            assert!(
+                Path::new(OsStr::from_bytes(root)).starts_with(env::temp_dir()),
+                "deletes only in a temporary directory"
+            );
+            let mut waiting = false;
+            browser.delete(&mut tree, &mut |deletion, tree, block| {
+                if block {
+                    terminal
+                        .draw(|frame| deletion.draw(frame, tree, &options))
+                        .expect("deletion draws");
+                    if let Some(key) = keys.next() {
+                        deletion.key_input(key);
+                    } else {
+                        waiting = true;
+                        deletion.key_input(Key::Char('q'));
+                    }
+                }
+            });
+            if waiting {
+                return render(&terminal);
+            }
+            browser.load_directory(&tree, &options, &mut |_| {});
+        }
         terminal
             .draw(|frame| browser.draw(frame, &tree, &options))
             .expect("browser draws");
@@ -1632,6 +1666,637 @@ fn delete_disabled() {
         screen(&empty, root(&empty), &options, &[Key::Char('d')], (80, 12)),
         screen(&empty, root(&empty), &options, &[], (80, 12))
     );
+}
+
+/// A tree to delete from, whose root is named `[DIR]`: three files, and a directory with a file and
+/// a directory with a file below it.
+const DELETE: &str = r#"[1,2,{"progname":"ncdu","progver":"2.9.2"},
+[{"name":"[DIR]","asize":4096,"dsize":4096},
+{"name":"a.txt","asize":1000,"dsize":4096},
+{"name":"b.txt","asize":2000,"dsize":8192},
+{"name":"c.txt","asize":3000,"dsize":12288},
+[{"name":"top","asize":4096,"dsize":4096},
+[{"name":"dir","asize":4096,"dsize":4096},
+{"name":"f","asize":5000,"dsize":8192},
+[{"name":"deep","asize":4096,"dsize":4096},{"name":"g","asize":6000,"dsize":8192}]],
+{"name":"keep","asize":100,"dsize":4096}]]]"#;
+
+/// The files of [`DELETE`].
+const DELETE_FILES: [&str; 6] = [
+    "a.txt",
+    "b.txt",
+    "c.txt",
+    "top/dir/f",
+    "top/dir/deep/g",
+    "top/keep",
+];
+
+/// A temporary directory with the empty files `files`, each with the directories above it, and the
+/// tree of the JSON export `export`, whose root `[DIR]` is named after the directory.
+fn on_disk(export: &str, files: &[&str]) -> (TempDir, Tree) {
+    let directory = TempDir::new().expect("temporary directory is created");
+    for file in files {
+        let path = directory.path().join(file);
+        fs::create_dir_all(path.parent().expect("file is in a directory"))
+            .expect("directory is created");
+        fs::write(&path, b"").expect("file is written");
+    }
+    let root = directory.path().to_str().expect("path is UTF-8");
+    let tree = tree_of(export.replace("[DIR]", root).as_bytes(), false);
+    (directory, tree)
+}
+
+/// `screen` with the path of `directory` replaced by `[DIR]`, and the line of the path filled with
+/// `-` to its width again.
+fn redact_directory(screen: &str, directory: &TempDir) -> String {
+    let path = directory.path().to_str().expect("path is UTF-8");
+    let fill = "-".repeat(path.chars().count() - "[DIR]".len());
+    let mut redacted = String::new();
+    for line in screen.lines() {
+        if let Some(start) = line.strip_suffix('"')
+            && start.contains(path)
+        {
+            let _ = writeln!(redacted, "{}{fill}\"", start.replacen(path, "[DIR]", 1));
+        } else {
+            let _ = writeln!(redacted, "{line}");
+        }
+    }
+    redacted
+}
+
+/// A directory that is read-only until the value is dropped, so that the entries in it cannot be
+/// deleted and the temporary directory that holds it can.
+struct ReadOnly(PathBuf);
+
+impl ReadOnly {
+    fn new(path: PathBuf) -> Self {
+        fs::set_permissions(&path, Permissions::from_mode(0o555)).expect("directory is read-only");
+        Self(path)
+    }
+}
+
+impl Drop for ReadOnly {
+    fn drop(&mut self) {
+        let _ = fs::set_permissions(&self.0, Permissions::from_mode(0o755));
+    }
+}
+
+/// `d` asks before it deletes, with "no" selected, over the listing. A directory is deleted with
+/// all of its contents.
+#[test]
+fn delete_confirmation() {
+    let tree = tree_of(SOURCE, false);
+    let options = BrowserOptions::default();
+    assert_snapshot!(screen(&tree, root(&tree), &options, &[Key::Char('d')], (80, 12)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "--- /home/user/project ---------------------------------------------------------"
+    "   16.0 KiB S   4.0 KiB [###########] /src                                      "
+    "!   4.0 Ki┌── Confirm delete ────────────────────────────────────────┐          "
+    "e   4.0 Ki│ Are you sure you want to delete "src"                    │          "
+    "    4.0 Ki│                 and all of its contents?                 │          "
+    "H   4.0 Ki│                                                          │          "
+    "    0.0   │              yes       no    don't ask me again          │          "
+    "    0.0   └──────────────────────────────────────────────────────────┘          "
+    "    0.0   B             [           ]  quote " backslash \...\x09 control \x01 é"
+    "@   0.0   B             [           ]  socket                                   "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    .............BBBBBBBBBBBBBBBB...................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ...................................RR...........................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// Left and `h` select the button on the left, and Right and `l` the one on the right. A file is
+/// deleted without its contents.
+#[test]
+fn delete_confirmation_keys() {
+    let tree = tree_of(SOURCE, false);
+    let options = BrowserOptions::default();
+    let keys = [
+        Key::Down,
+        Key::Down,
+        Key::Down,
+        Key::Char('d'),
+        Key::Right,
+        Key::Char('h'),
+        Key::Left,
+    ];
+    assert_snapshot!(screen(&tree, root(&tree), &options, &keys, (80, 12)), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "--- /home/user/project ---------------------------------------------------------"
+    "   16.0 KiB S   4.0 KiB [###########] /src                                      "
+    "!   4.0 Ki┌── Confirm delete ────────────────────────────────────────┐          "
+    "e   4.0 Ki│ Are you sure you want to delete "README.md"?             │          "
+    "    4.0 Ki│                                                          │          "
+    "H   4.0 Ki│                                                          │          "
+    "    0.0   │              yes       no    don't ask me again          │          "
+    "    0.0   └──────────────────────────────────────────────────────────┘          "
+    "    0.0   B             [           ]  quote " backslash \...\x09 control \x01 é"
+    "@   0.0   B             [           ]  socket                                   "
+    "*Total disk usage:  32.0 KiB   Apparent size:   1.0 MiB   Items: 15             "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    .............BBBBBBBBBBBBBBBB...................................................
+    ................................................................................
+    RRRRRRRRRR............................................................RRRRRRRRRR
+    ................................................................................
+    .........................RRR....................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+}
+
+/// Enter on "no", or `q` on any button, closes the confirmation and deletes nothing.
+#[test]
+fn delete_cancel() {
+    let (directory, tree) = on_disk(DELETE, &DELETE_FILES);
+    let options = BrowserOptions::default();
+    let before = screen(&tree, root(&tree), &options, &[], (80, 12));
+    let cases: [&[Key]; 4] = [
+        &[Key::Char('d'), Key::Enter],
+        &[Key::Char('d'), Key::Char('q')],
+        &[Key::Char('d'), Key::Left, Key::Char('l'), Key::Enter],
+        &[Key::Char('d'), Key::Left, Key::Char('q')],
+    ];
+    for keys in cases {
+        assert_eq!(
+            screen(&tree, root(&tree), &options, keys, (80, 12)),
+            before,
+            "{keys:?}"
+        );
+    }
+    for file in DELETE_FILES {
+        assert!(directory.path().join(file).exists(), "{file}");
+    }
+}
+
+/// "yes" deletes the file, takes its sizes from the totals, and puts the cursor on the entry after
+/// it.
+#[test]
+fn delete_file() {
+    let (directory, tree) = on_disk(DELETE, &DELETE_FILES);
+    let keys = [Key::Down, Key::Down, Key::Char('d'), Key::Left, Key::Enter];
+    let screen = screen(
+        &tree,
+        root(&tree),
+        &BrowserOptions::default(),
+        &keys,
+        (80, 12),
+    );
+    assert_snapshot!(redact_directory(&screen, &directory), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "--- [DIR] ----------------------------------------------------------------------"
+    "   32.0 KiB [###########] /top                                                  "
+    "   12.0 KiB [####       ]  c.txt                                                "
+    "    4.0 KiB [#          ]  a.txt                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "*Total disk usage:  52.0 KiB   Apparent size:  30.7 KiB   Items: 8              "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+    assert!(!directory.path().join("b.txt").exists());
+}
+
+/// Deleting a directory deletes everything below it, and takes its sizes and items from the
+/// totals of its parent and of the root.
+#[test]
+fn delete_directory() {
+    let (directory, tree) = on_disk(DELETE, &DELETE_FILES);
+    let keys = [
+        Key::Enter,
+        Key::Down,
+        Key::Char('d'),
+        Key::Left,
+        Key::Enter,
+        Key::Left,
+    ];
+    let screen = screen(
+        &tree,
+        root(&tree),
+        &BrowserOptions::default(),
+        &keys,
+        (80, 12),
+    );
+    assert_snapshot!(redact_directory(&screen, &directory), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "--- [DIR] ----------------------------------------------------------------------"
+    "   12.0 KiB [###########]  c.txt                                                "
+    "    8.0 KiB [########   ] /top                                                  "
+    "    8.0 KiB [########   ]  b.txt                                                "
+    "    4.0 KiB [####       ]  a.txt                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "*Total disk usage:  36.0 KiB   Apparent size:  14.0 KiB   Items: 5              "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+    assert!(!directory.path().join("top/dir").exists());
+    assert!(directory.path().join("top/keep").exists());
+}
+
+/// After the last entry is deleted, the cursor is on the entry before it, and after the only entry,
+/// on the row of the parent directory.
+#[test]
+fn delete_cursor() {
+    let (directory, tree) = on_disk(DELETE, &DELETE_FILES);
+    let keys = [
+        Key::Enter,
+        Key::End,
+        Key::Char('d'),
+        Key::Left,
+        Key::Enter,
+        Key::Char('d'),
+        Key::Left,
+        Key::Enter,
+    ];
+    let screen = screen(
+        &tree,
+        root(&tree),
+        &BrowserOptions::default(),
+        &keys,
+        (80, 12),
+    );
+    assert_snapshot!(redact_directory(&screen, &directory), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "--- [DIR]/top ------------------------------------------------------------------"
+    "                          /..                                                   "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "*Total disk usage:   4.0 KiB   Apparent size:   4.0 KiB   Items: 0              "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+    assert!(!directory.path().join("top/keep").exists());
+    assert!(!directory.path().join("top/dir").exists());
+}
+
+/// "don't ask me again" deletes, and the deletes after it are not confirmed, as with
+/// `--no-confirm-delete`.
+#[test]
+fn delete_without_confirmation() {
+    let (directory, tree) = on_disk(DELETE, &DELETE_FILES);
+    let keys = [
+        Key::Down,
+        Key::Char('d'),
+        Key::Right,
+        Key::Enter,
+        Key::Char('d'),
+    ];
+    let rendered = screen(
+        &tree,
+        root(&tree),
+        &BrowserOptions::default(),
+        &keys,
+        (80, 12),
+    );
+    assert_snapshot!(redact_directory(&rendered, &directory), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "--- [DIR] ----------------------------------------------------------------------"
+    "   32.0 KiB [###########] /top                                                  "
+    "    4.0 KiB [#          ]  a.txt                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "*Total disk usage:  40.0 KiB   Apparent size:  27.8 KiB   Items: 7              "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+    assert!(!directory.path().join("c.txt").exists());
+    assert!(!directory.path().join("b.txt").exists());
+
+    let (directory, tree) = on_disk(DELETE, &DELETE_FILES);
+    let options = BrowserOptions {
+        confirm_delete: false,
+        ..BrowserOptions::default()
+    };
+    screen(&tree, root(&tree), &options, &[Key::Char('d')], (80, 12));
+    assert!(!directory.path().join("top").exists());
+}
+
+/// Deleting a hard link takes its inode from the totals, and the other link of the inode is counted
+/// again, still as shared, because its link count stays 2.
+#[test]
+fn delete_hard_link() {
+    let export = r#"[1,2,{"progname":"ncdu","progver":"2.9.2"},
+[{"name":"[DIR]","asize":4096,"dsize":4096},
+{"name":"x","asize":100,"dsize":4096,"ino":5,"hlnkc":true,"nlink":2},
+[{"name":"sub","asize":4096,"dsize":4096},
+{"name":"y","asize":100,"dsize":4096,"ino":5,"hlnkc":true,"nlink":2}]]]"#;
+    let (directory, tree) = on_disk(export, &["x", "sub/y"]);
+    let keys = [Key::Down, Key::Char('d'), Key::Left, Key::Enter];
+    let screen = screen(
+        &tree,
+        root(&tree),
+        &BrowserOptions::default(),
+        &keys,
+        (80, 12),
+    );
+    assert_snapshot!(redact_directory(&screen, &directory), @r#"
+    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "--- [DIR] ----------------------------------------------------------------------"
+    "    8.0 KiB S   4.0 KiB [###########] /sub                                      "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "*Total disk usage:   8.0 KiB   Apparent size:   8.0 KiB   Items: 2              "
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR#RRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    R##################RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    "#);
+    assert!(!directory.path().join("x").exists());
+}
+
+/// A read-only directory with two files, which cannot be deleted.
+const READ_ONLY: &str = r#"[1,2,{"progname":"ncdu","progver":"2.9.2"},
+[{"name":"[DIR]","asize":4096,"dsize":4096},
+[{"name":"ro","asize":4096,"dsize":4096},
+{"name":"a","asize":10,"dsize":4096},
+{"name":"b","asize":10,"dsize":4096}]]]"#;
+
+/// An entry that cannot be deleted opens an error window on an erased screen, with the path from
+/// below the root, and "abort" selected.
+#[test]
+fn delete_error() {
+    let (directory, tree) = on_disk(READ_ONLY, &["ro/a", "ro/b"]);
+    let _read_only = ReadOnly::new(directory.path().join("ro"));
+    let keys = [Key::Char('d'), Key::Left, Key::Enter];
+    let screen = screen(
+        &tree,
+        root(&tree),
+        &BrowserOptions::default(),
+        &keys,
+        (80, 12),
+    );
+    assert_snapshot!(screen, @r#"
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "          ┌── Error ─────────────────────────────────────────────────┐          "
+    "          │ Error deleting ro/b                                      │          "
+    "          │   Access denied                                          │          "
+    "          │                                                          │          "
+    "          │             abort    ignore    ignore all                │          "
+    "          └──────────────────────────────────────────────────────────┘          "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    .............BBBBBBB............................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ........................RRRRR...................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    "#);
+}
+
+/// "abort" and `q` stop the deletion, "ignore" goes on to the next entry, where the error window
+/// opens with "ignore" selected, and "ignore all" goes on without error windows, also in the next
+/// deletion. A directory that still holds an entry is kept without an error.
+#[test]
+fn delete_error_options() {
+    let (directory, tree) = on_disk(READ_ONLY, &["ro/a", "ro/b"]);
+    let _read_only = ReadOnly::new(directory.path().join("ro"));
+    let options = BrowserOptions::default();
+    let before = screen(&tree, root(&tree), &options, &[], (80, 12));
+    let confirm = [Key::Char('d'), Key::Left, Key::Enter];
+    let cases: [&[Key]; 3] = [
+        &[Key::Enter],
+        &[Key::Char('q')],
+        &[
+            Key::Right,
+            Key::Right,
+            Key::Enter,
+            Key::Char('d'),
+            Key::Left,
+            Key::Enter,
+        ],
+    ];
+    for keys in cases {
+        let keys = [&confirm[..], keys].concat();
+        assert_eq!(
+            screen(&tree, root(&tree), &options, &keys, (80, 12)),
+            before,
+            "{keys:?}"
+        );
+    }
+    let keys = [&confirm[..], &[Key::Char('l'), Key::Enter]].concat();
+    assert_snapshot!(screen(&tree, root(&tree), &options, &keys, (80, 12)), @r#"
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "          ┌── Error ─────────────────────────────────────────────────┐          "
+    "          │ Error deleting ro/a                                      │          "
+    "          │   Access denied                                          │          "
+    "          │                                                          │          "
+    "          │             abort    ignore    ignore all                │          "
+    "          └──────────────────────────────────────────────────────────┘          "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    .............BBBBBBB............................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    .................................RRRRRR.........................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    "#);
+    assert!(directory.path().join("ro/a").exists());
+    assert!(directory.path().join("ro/b").exists());
+}
+
+/// A directory that is not empty on disk, although it is empty in the tree, opens the error window.
+/// The window joins the directory to the last entry that the deletion went through, which is the
+/// directory itself when the tree has no entries in it.
+#[test]
+fn delete_error_not_empty() {
+    let export = r#"[1,2,{"progname":"ncdu","progver":"2.9.2"},
+[{"name":"[DIR]","asize":4096,"dsize":4096},
+[{"name":"full","asize":4096,"dsize":4096}]]]"#;
+    let (directory, tree) = on_disk(export, &["full/unknown"]);
+    let keys = [Key::Char('d'), Key::Left, Key::Enter];
+    let screen = screen(
+        &tree,
+        root(&tree),
+        &BrowserOptions::default(),
+        &keys,
+        (80, 12),
+    );
+    assert_snapshot!(screen, @r#"
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "          ┌── Error ─────────────────────────────────────────────────┐          "
+    "          │ Error deleting full/full                                 │          "
+    "          │   Directory not empty                                    │          "
+    "          │                                                          │          "
+    "          │             abort    ignore    ignore all                │          "
+    "          └──────────────────────────────────────────────────────────┘          "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    .............BBBBBBB............................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ........................RRRRR...................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    "#);
+    assert!(directory.path().join("full/unknown").exists());
+}
+
+/// While it deletes, the deletion draws on an erased screen the path of the entry that it deletes,
+/// from below the root, here a directory in the root.
+#[test]
+fn delete_progress() {
+    let (directory, mut tree) = on_disk(DELETE, &DELETE_FILES);
+    let mut options = BrowserOptions {
+        confirm_delete: false,
+        ..BrowserOptions::default()
+    };
+    let mut browser = Browser::new(&tree, root(&tree), &options, &mut |_| {});
+    let action = browser
+        .key_input(&mut tree, &mut options, Key::Char('d'), 12, &mut |_| {})
+        .expect("key is handled");
+    assert_eq!(action, Action::Delete);
+    let mut terminal = Terminal::new(TestBackend::new(80, 12)).expect("terminal opens");
+    let mut drawn = false;
+    browser.delete(&mut tree, &mut |deletion, tree, _| {
+        if !drawn {
+            terminal
+                .draw(|frame| deletion.draw(frame, tree, &options))
+                .expect("deletion draws");
+            drawn = true;
+        }
+    });
+    assert_snapshot!(render(&terminal), @r#"
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    "          ┌── Deleting... ───────────────────────────────────────────┐          "
+    "          │                                                          │          "
+    "          │ /top                                                     │          "
+    "          │                                                          │          "
+    "          │                                        Press q to abort  │          "
+    "          └──────────────────────────────────────────────────────────┘          "
+    "                                                                                "
+    "                                                                                "
+    "                                                                                "
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    .............BBBBBBBBBBBBB......................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    .........................................................B......................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    "#);
+    assert!(!directory.path().join("top").exists());
 }
 
 /// `i` shows the name, the type, and the sizes of a file.

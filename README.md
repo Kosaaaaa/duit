@@ -12,11 +12,11 @@ JSON and binary export formats.
 
 ## 🚧 Status
 
-M3 is done: `duit DIR` scans a directory and opens a read-only browser over it, and `duit -f FILE`
-opens the same browser over a JSON export or reads a binary export straight from the file. `-o-`
-still writes ncdu's JSON export, `-c` compresses it, and `-O` writes the binary export, so with `-f`
-duit also converts between formats. Scan progress, refresh, delete, and shell come in M4. There is
-no release yet. See [PLAN.md](PLAN.md) for the architecture and the milestones.
+M3 is done: `duit DIR` scans a directory and opens a browser over it, and `duit -f FILE` opens the
+same browser over a JSON export or reads a binary export straight from the file. `-o-` still writes
+ncdu's JSON export, `-c` compresses it, and `-O` writes the binary export, so with `-f` duit also
+converts between formats. Scan progress, refresh, delete, and shell come in M4. There is no release
+yet. See [PLAN.md](PLAN.md) for the architecture and the milestones.
 
 ## 🤝 Contributing
 
