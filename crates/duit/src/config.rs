@@ -54,9 +54,9 @@ pub struct Config {
     /// The options of the browser, of which the config sets the listing, the columns,
     /// `--confirm-quit`, and `--color`.
     ///
-    /// `imported`, `can_delete`, `thousands_separator`, and `extended` describe the session, not
-    /// the config. They keep their defaults here until `run` sets them, from `can_delete` and
-    /// `extended` above among others.
+    /// `imported`, `can_delete`, `can_shell`, `can_refresh`, `thousands_separator`, and `extended`
+    /// describe the session, not the config. They keep their defaults here until `run` sets them,
+    /// from `can_delete` and `extended` above among others.
     pub browser: BrowserOptions,
     pub can_delete: Option<bool>,
     pub can_shell: Option<bool>,
