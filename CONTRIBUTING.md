@@ -9,8 +9,8 @@ of the milestones.
 pinned in `rust-toolchain.toml`, and rustup installs it on first use.
 
 Run `make help` to list the shortcuts for the commands in this guide. `make check` runs the CI
-checks except zizmor, fixing TOML, Markdown, YAML, and JSON formatting in place, then the tests the
-way CI does.
+checks except zizmor and the cargo publish dry run, fixing TOML, Markdown, YAML, and JSON formatting
+in place, then the tests the way CI does.
 
 ## 🧪 Testing
 
@@ -164,4 +164,23 @@ PLAN.md maps each crate to the upstream ncdu source files that it ports.
 
 ## 🚀 Releases
 
-There is no release process yet. It is part of milestone M6.
+Releases are built by [dist](https://axodotdev.github.io/cargo-dist/), configured in
+`dist-workspace.toml`. The `Release` workflow builds static Linux binaries (musl) and macOS
+binaries, packs each with `LICENSE`, `README.md`, and `duit.1`, and attaches them to a GitHub
+Release together with a shell installer. Its release notes are the entry for the version in
+[CHANGELOG.md](CHANGELOG.md). The workflow never publishes to crates.io.
+
+To release a version, for example `0.1.0`:
+
+1. Set the version in `[workspace.package]` and in the internal crates in `[workspace.dependencies]`
+   of the root `Cargo.toml`, and update the snapshots that show it.
+2. Replace `Not released yet.` in the CHANGELOG.md entry with `Released on YYYY-MM-DD.`, update the
+   status in `README.md`, which the archives include, and merge the change into `master`.
+3. Run the workflow with the default tag, `dry-run`, to build every artifact without publishing:
+   `gh workflow run release.yml -f tag=dry-run`.
+4. Run it with the tag: `gh workflow run release.yml -f tag=v0.1.0`. It creates the tag on the
+   commit it ran on and the GitHub Release.
+5. Publish the crates from that tag by hand: `cargo publish --workspace`.
+
+`.github/workflows/release.yml` is maintained by hand, so that it passes zizmor. After a dist
+upgrade, compare it with the output of `dist generate`.

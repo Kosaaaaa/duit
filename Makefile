@@ -66,7 +66,7 @@ deny: ## Check licenses, sources, and bans of dependencies
 man: ## Lint the man page with mandoc
 	mandoc -T lint -W warning crates/duit/duit.1
 
-check: fmt-check clippy typos shear deny man ## Run the CI checks except zizmor, then the tests the way CI does
+check: fmt-check clippy typos shear deny man ## Run the CI checks except zizmor and the publish dry run, then the tests the way CI does
 	cargo nextest run --workspace --locked --profile ci --cargo-profile fast-build
 
 bench: ## Compare scan time and peak memory with ncdu 2.9.2, see BENCHMARKS.md
