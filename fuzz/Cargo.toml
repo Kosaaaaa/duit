@@ -1,0 +1,32 @@
+[package]
+name = "duit-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# A workspace of its own, apart from the one at the root: the targets build on nightly with
+# `cargo fuzz`, and the checks and the lockfile of the root workspace stay stable-only.
+[workspace]
+
+[dependencies]
+duit-format = { version = "0.1.0", path = "../crates/duit-format" }
+duit-model = { version = "0.1.0", path = "../crates/duit-model" }
+libfuzzer-sys = { version = "0.4.13" }
+
+[[bin]]
+name = "json_import"
+path = "fuzz_targets/json_import.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bin_reader"
+path = "fuzz_targets/bin_reader.rs"
+test = false
+doc = false
+bench = false
