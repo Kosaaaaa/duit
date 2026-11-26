@@ -244,6 +244,47 @@ fn threads() {
     }
 }
 
+/// A thread that cannot be started ends duit with the Zig error of `std.Thread.spawn`, as
+/// `ui.die` in `scan.zig` does, and an export writes nothing. Linux counts threads against the
+/// process limit of the user, so a limit of 1 makes `pthread_create` fail with `EAGAIN`. Assumes
+/// that the tests do not run as root, which ignores the limit.
+#[cfg(target_os = "linux")]
+#[test]
+fn thread_spawn_error() {
+    let directory = TempDir::new().expect("temporary directory is created");
+    let mut rendered = String::new();
+    for arguments in [&["-o-"][..], &["-0", "--quit-after-scan"]] {
+        let output = Command::new("bash")
+            .current_dir(directory.path())
+            .args(["-c", r#"ulimit -u 1 && exec "$0" "$@""#])
+            .arg(env!("CARGO_BIN_EXE_duit"))
+            .args([&["--ignore-config", "-t", "2"][..], arguments].concat())
+            .output()
+            .expect("bash runs");
+        let _ = writeln!(
+            rendered,
+            "$ duit -t 2 {}\n{}\n",
+            arguments.join(" "),
+            render(&output).trim_end()
+        );
+    }
+    assert_snapshot!(rendered, @"
+    $ duit -t 2 -o-
+    exit_code: 1
+    ----- stdout -----
+
+    ----- stderr -----
+    ^[[JError spawning thread: error.SystemResources
+
+    $ duit -t 2 -0 --quit-after-scan
+    exit_code: 1
+    ----- stdout -----
+
+    ----- stderr -----
+    ^[[JError spawning thread: error.SystemResources
+    ");
+}
+
 /// `-o FILE` writes the same export as `-o-` writes to standard output.
 #[test]
 fn file() {

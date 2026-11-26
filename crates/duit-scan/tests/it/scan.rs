@@ -540,9 +540,9 @@ fn scan_tree(fixture: &Fixture, options: ScanOptions) -> Tree {
     memory.finish(&mut |_, _| {})
 }
 
-/// Scan the directory at `path`, by names from the root, of `tree` again into it, as a refresh
-/// does.
-fn refresh_tree(tree: Tree, path: &[&[u8]]) -> Tree {
+/// Scan the directory at `path`, by names from the root, of `tree` again into it with `options`,
+/// as a refresh does.
+fn refresh_tree(tree: Tree, path: &[&[u8]], options: ScanOptions) -> Tree {
     let mut directory = tree.root().expect("tree has a root");
     for name in path {
         directory = tree
@@ -564,7 +564,7 @@ fn refresh_tree(tree: Tree, path: &[&[u8]]) -> Tree {
     scan(
         &mut memory,
         &full_path,
-        ScanOptions::default(),
+        options,
         &ExcludePatterns::default(),
     )
     .expect("scan succeeds");
@@ -615,7 +615,7 @@ fn summary(tree: &Tree) -> Vec<String> {
 
 /// A refresh of `top/sub` after a file was added, one removed, one grown, one replaced by a
 /// directory, and the entries of a subdirectory changed, gives the totals of a new scan, in the
-/// directories above it too.
+/// directories above it too, with one thread and with several.
 #[test]
 fn refresh() {
     let fixture = Fixture::new();
@@ -625,7 +625,13 @@ fn refresh() {
     fixture.write("top/sub/grow", &[0; 100]);
     fixture.write("top/sub/swap", &[0; 9000]);
     fixture.write("top/sub/nested/old", &[0; 11_000]);
-    let tree = scan_tree(&fixture, ScanOptions::default());
+    let trees = [1, 4].map(|threads| {
+        let options = ScanOptions {
+            threads,
+            ..ScanOptions::default()
+        };
+        (options, scan_tree(&fixture, options))
+    });
 
     fs::remove_file(fixture.path("top/sub/gone")).expect("file is removed");
     fixture.write("top/sub/grow", &[0; 20_000]);
@@ -634,15 +640,18 @@ fn refresh() {
     fs::remove_file(fixture.path("top/sub/nested/old")).expect("file is removed");
     fixture.write("top/sub/nested/new", &[0; 15_000]);
     fixture.write("top/sub/added", &[0; 17_000]);
-    let refreshed = refresh_tree(tree, &[b"top", b"sub"]);
-    assert_eq!(
-        summary(&refreshed),
-        summary(&scan_tree(&fixture, ScanOptions::default()))
-    );
+    for (options, tree) in trees {
+        let refreshed = refresh_tree(tree, &[b"top", b"sub"], options);
+        assert_eq!(
+            summary(&refreshed),
+            summary(&scan_tree(&fixture, ScanOptions::default())),
+            "{options:?}"
+        );
+    }
 }
 
 /// A refresh of a directory with hard links, to each other and to a file outside of it, gives
-/// the link counts and shared sizes of a new scan.
+/// the link counts and shared sizes of a new scan, with one thread and with several.
 #[test]
 fn refresh_hard_links() {
     let fixture = Fixture::new();
@@ -651,18 +660,21 @@ fn refresh_hard_links() {
     fixture.hard_link("sub/inside", "outside");
     fixture.hard_link("sub/second", "sub/first");
     fixture.write("sub/third", &[0; 9000]);
-    let tree = scan_tree(&fixture, ScanOptions::default());
+    let trees = [1, 4].map(|threads| {
+        let options = ScanOptions {
+            threads,
+            ..ScanOptions::default()
+        };
+        (options, scan_tree(&fixture, options))
+    });
     fixture.hard_link("sub/fourth", "sub/third");
-    let refreshed = refresh_tree(tree, &[b"sub"]);
-    assert_eq!(
-        summary(&refreshed),
-        summary(&scan_tree(&fixture, ScanOptions::default()))
-    );
-    let refreshed = refresh_tree(refreshed, &[]);
-    assert_eq!(
-        summary(&refreshed),
-        summary(&scan_tree(&fixture, ScanOptions::default()))
-    );
+    let expected = summary(&scan_tree(&fixture, ScanOptions::default()));
+    for (options, tree) in trees {
+        let refreshed = refresh_tree(tree, &[b"sub"], options);
+        assert_eq!(summary(&refreshed), expected, "{options:?}");
+        let refreshed = refresh_tree(refreshed, &[], options);
+        assert_eq!(summary(&refreshed), expected, "{options:?}");
+    }
 }
 
 /// A scan with several threads gives the tree of a scan with one, with the totals of every
