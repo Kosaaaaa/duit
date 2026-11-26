@@ -178,8 +178,9 @@ To release a version, for example `0.1.0`:
    status in `README.md`, which the archives include, and merge the change into `master`.
 3. Run the workflow with the default tag, `dry-run`, to build every artifact without publishing:
    `gh workflow run release.yml -f tag=dry-run`.
-4. Run it with the tag: `gh workflow run release.yml -f tag=v0.1.0`. It creates the tag on the
-   commit it ran on and the GitHub Release.
+4. Run it with the tag on `master`: `gh workflow run release.yml -f tag=v0.1.0`. It creates the tag
+   on the commit it ran on and the GitHub Release, and fails on any other branch or when the tag
+   exists already.
 5. Publish the crates from that tag by hand: `cargo publish --workspace`.
 
 `.github/workflows/release.yml` is maintained by hand, so that it passes zizmor. After a dist
