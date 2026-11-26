@@ -300,6 +300,16 @@ Man page, changelog, prebuilt binaries with cargo-dist for Linux and macOS, crat
 
 Done when `0.1.0` is published. Done.
 
+### M7: Publishing from CI
+
+A `publish-crates` job in the Release workflow publishes the five crates to crates.io, as uv does.
+It logs in with crates.io Trusted Publishing (`rust-lang/crates-io-auth-action`), so no API token is
+stored, and it runs in a protected `release` environment. The GitHub Release does not wait for it.
+Trusted Publishing needs a crate that exists already, so `0.1.0` is published by hand with an API
+token. Each crate then gets a trusted publisher for `release.yml` and the `release` environment.
+
+Done when a release after `0.1.0` publishes all five crates from the workflow.
+
 M1 comes first because it has no UI: its output can be compared with ncdu's by a machine from the
 first day.
 
