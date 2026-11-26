@@ -1,4 +1,5 @@
 use std::io;
+use std::rc::Rc;
 
 use crate::{Sink, Special, Stat};
 
@@ -12,6 +13,10 @@ pub enum Producer {
     /// when the count of files has bits 0 and 6 clear, as `json_import.zig` and `bin_reader.zig`
     /// call `main.handleEvent`.
     Import,
+    /// A replay of the tree in memory, which handles an event before each item when the count of
+    /// files has bits 0 and 6 clear, as `rec` in `mem_src.zig` calls `main.handleEvent`. The root
+    /// shows no directory until a subdirectory is finished, as `run` in `mem_src.zig` sets none.
+    Replay,
 }
 
 /// What a scan or an import has reported so far, the counters of a `Thread` in `sink.zig`.
@@ -19,10 +24,11 @@ pub enum Producer {
 pub struct Progress {
     files: u64,
     bytes: u64,
-    /// The path of the innermost directory that is open.
+    /// The path of the directory that entries were added to last.
     path: Vec<u8>,
-    /// The length of `path` before each open directory was added to it, from the root.
-    lengths: Vec<usize>,
+    /// The directories from the root to the one of `path`, each with the length of `path` before
+    /// its name, or none when no directory is being read.
+    open: Vec<(Rc<Node>, usize)>,
     /// The path of the last entry that could not be read, `last_error` in `sink.zig`.
     last_error: Option<Vec<u8>>,
     /// The sink clears the counts of the directory that a refresh scans again, `zeroing` in
@@ -45,7 +51,7 @@ impl Progress {
     /// The path of the directory being read, as `Dir.path` in `sink.zig` joins it, or `None` once
     /// the root is finished.
     pub fn directory(&self) -> Option<&[u8]> {
-        (!self.lengths.is_empty()).then_some(self.path.as_slice())
+        (!self.open.is_empty()).then_some(self.path.as_slice())
     }
 
     /// The path of the last entry that could not be read: a directory that failed to read, or an
@@ -60,31 +66,98 @@ impl Progress {
         self.zeroing
     }
 
-    fn enter(&mut self, name: &[u8]) {
-        self.lengths.push(self.path.len());
-        if self.lengths.len() > 1 && !self.path.ends_with(b"/") {
-            self.path.push(b'/');
-        }
-        self.path.extend_from_slice(name);
-    }
-
-    /// Store the path of the open directory, joined with `name` if it is given, as the last error.
-    fn set_error(&mut self, name: Option<&[u8]>) {
-        let mut path = self.path.clone();
-        if let Some(name) = name {
-            if !path.ends_with(b"/") {
-                path.push(b'/');
+    /// Show `node` as the directory being read. Only the names below the directories that
+    /// `node` shares with the one shown are joined, so a walk depth-first does constant work.
+    fn show(&mut self, node: &Rc<Node>) {
+        let mut missing = Vec::new();
+        let mut next = Some(node);
+        while let Some(current) = next {
+            if self
+                .open
+                .get(current.depth)
+                .is_some_and(|(open, _)| Rc::ptr_eq(open, current))
+            {
+                break;
             }
-            path.extend_from_slice(name);
+            missing.push(current);
+            next = current.parent.as_ref();
         }
-        self.last_error = Some(path);
-    }
-
-    fn leave(&mut self) {
-        if let Some(length) = self.lengths.pop() {
+        let kept = next.map_or(0, |shared| shared.depth + 1);
+        if let Some(&(_, length)) = self.open.get(kept) {
             self.path.truncate(length);
         }
+        self.open.truncate(kept);
+        for current in missing.into_iter().rev() {
+            let length = self.path.len();
+            push_name(&mut self.path, current.depth == 0, &current.name);
+            self.open.push((Rc::clone(current), length));
+        }
     }
+
+    /// The path of `node`, joined with `name` if it is given.
+    fn path_of(&self, node: &Rc<Node>, name: Option<&[u8]>) -> Vec<u8> {
+        let mut path = if self
+            .open
+            .last()
+            .is_some_and(|(open, _)| Rc::ptr_eq(open, node))
+        {
+            self.path.clone()
+        } else {
+            let mut names = Vec::new();
+            let mut next = Some(node);
+            while let Some(current) = next {
+                names.push(&current.name);
+                next = current.parent.as_ref();
+            }
+            let mut path = Vec::new();
+            for (depth, name) in names.into_iter().rev().enumerate() {
+                push_name(&mut path, depth == 0, name);
+            }
+            path
+        };
+        if let Some(name) = name {
+            push_name(&mut path, false, name);
+        }
+        path
+    }
+}
+
+/// Join `name` to `path`, as `Dir.path` in `sink.zig` joins the names of a directory and its
+/// parents: with a `/` unless `name` is the root or `path` ends with one.
+fn push_name(path: &mut Vec<u8>, is_root: bool, name: &[u8]) {
+    if !is_root && !path.ends_with(b"/") {
+        path.push(b'/');
+    }
+    path.extend_from_slice(name);
+}
+
+/// A directory that is not finished, with its name and its parent, as `Dir` in `sink.zig` keeps
+/// them to join its path. A scan with several threads adds entries to any directory that is not
+/// finished, so each directory can give its own path.
+#[derive(Debug)]
+struct Node {
+    name: Box<[u8]>,
+    parent: Option<Rc<Self>>,
+    /// The number of directories above this one.
+    depth: usize,
+}
+
+impl Drop for Node {
+    /// Drop the parents that only this node holds one at a time, so that a deep tree does not
+    /// overflow the stack.
+    fn drop(&mut self) {
+        let mut parent = self.parent.take();
+        while let Some(node) = parent {
+            parent = Rc::into_inner(node).and_then(|mut node| node.parent.take());
+        }
+    }
+}
+
+/// A directory of the sink behind a [`ProgressSink`], which the progress shows while entries are
+/// added to it.
+pub struct ProgressDirectory<D> {
+    directory: D,
+    node: Rc<Node>,
 }
 
 /// A [`Sink`] in front of another that keeps the [`Progress`] of the producer, and passes it to
@@ -118,11 +191,25 @@ impl<'a, S: Sink> ProgressSink<'a, S> {
         self.sink
     }
 
+    /// Get ready to add an entry to `directory`: show it, or handle an event first if the
+    /// producer handles one there.
+    fn item_start(&mut self, directory: &ProgressDirectory<S::Directory>) -> io::Result<()> {
+        match self.producer {
+            Producer::Scan | Producer::Import => self.progress.show(&directory.node),
+            Producer::Replay if self.progress.files & 0b100_0001 == 0 => {
+                (self.handle_event)(&self.progress)?;
+            }
+            Producer::Replay => {}
+        }
+        Ok(())
+    }
+
     /// Handle an event after an item, if the producer handles one there.
     fn item_done(&mut self) -> io::Result<()> {
         let due = match self.producer {
             Producer::Scan => true,
             Producer::Import => self.progress.files & 0b100_0001 == 0,
+            Producer::Replay => false,
         };
         if due {
             (self.handle_event)(&self.progress)?;
@@ -137,9 +224,9 @@ impl<'a, S: Sink> ProgressSink<'a, S> {
 }
 
 impl<S: Sink> Sink for ProgressSink<'_, S> {
-    type Directory = S::Directory;
+    type Directory = ProgressDirectory<S::Directory>;
 
-    fn create_root(&mut self, path: &[u8], stat: &Stat) -> io::Result<S::Directory> {
+    fn create_root(&mut self, path: &[u8], stat: &Stat) -> io::Result<Self::Directory> {
         if self.sink.zeroing() {
             self.progress.zeroing = true;
             let handled = (self.handle_event)(&self.progress);
@@ -147,23 +234,38 @@ impl<S: Sink> Sink for ProgressSink<'_, S> {
             handled?;
         }
         let root = self.sink.create_root(path, stat)?;
-        self.progress.enter(path);
+        let root = ProgressDirectory {
+            directory: root,
+            node: Rc::new(Node {
+                name: path.into(),
+                parent: None,
+                depth: 0,
+            }),
+        };
         match self.producer {
-            Producer::Scan => (self.handle_event)(&self.progress)?,
-            Producer::Import => {}
+            Producer::Scan => {
+                self.progress.show(&root.node);
+                (self.handle_event)(&self.progress)?;
+            }
+            Producer::Import => self.progress.show(&root.node),
+            Producer::Replay => {}
         }
         Ok(root)
     }
 
     fn add_special(
         &mut self,
-        directory: &mut S::Directory,
+        directory: &mut Self::Directory,
         name: &[u8],
         special: Special,
     ) -> io::Result<()> {
-        self.sink.add_special(directory, name, special)?;
+        self.item_start(directory)?;
+        self.sink
+            .add_special(&mut directory.directory, name, special)?;
         match special {
-            Special::ReadError => self.progress.set_error(Some(name)),
+            Special::ReadError => {
+                self.progress.last_error = Some(self.progress.path_of(&directory.node, Some(name)));
+            }
             Special::Pattern | Special::OtherFilesystem | Special::KernelFilesystem => {}
         }
         self.add(0);
@@ -172,11 +274,12 @@ impl<S: Sink> Sink for ProgressSink<'_, S> {
 
     fn add_stat(
         &mut self,
-        directory: &mut S::Directory,
+        directory: &mut Self::Directory,
         name: &[u8],
         stat: &Stat,
     ) -> io::Result<()> {
-        self.sink.add_stat(directory, name, stat)?;
+        self.item_start(directory)?;
+        self.sink.add_stat(&mut directory.directory, name, stat)?;
         self.add(stat.blocks.saturating_mul(512) / u64::from(stat.link_count.max(1)));
         self.item_done()
     }
@@ -185,36 +288,56 @@ impl<S: Sink> Sink for ProgressSink<'_, S> {
     /// entry next, and handles the event after it.
     fn add_directory(
         &mut self,
-        parent: &mut S::Directory,
+        parent: &mut Self::Directory,
         name: &[u8],
         stat: &Stat,
-    ) -> io::Result<S::Directory> {
-        let directory = self.sink.add_directory(parent, name, stat)?;
+    ) -> io::Result<Self::Directory> {
+        self.item_start(parent)?;
+        let directory = self.sink.add_directory(&mut parent.directory, name, stat)?;
+        let directory = ProgressDirectory {
+            directory,
+            node: Rc::new(Node {
+                name: name.into(),
+                parent: Some(Rc::clone(&parent.node)),
+                depth: parent.node.depth + 1,
+            }),
+        };
         self.add(stat.blocks.saturating_mul(512));
-        self.progress.enter(name);
+        self.progress.show(&directory.node);
         Ok(directory)
     }
 
-    /// Every producer marks the innermost open directory, whose path is the last error then.
-    fn set_read_error(&mut self, directory: &mut S::Directory) -> io::Result<()> {
-        self.sink.set_read_error(directory)?;
-        self.progress.set_error(None);
+    /// The path of the directory is the last error then.
+    fn set_read_error(&mut self, directory: &mut Self::Directory) -> io::Result<()> {
+        self.sink.set_read_error(&mut directory.directory)?;
+        self.progress.last_error = Some(self.progress.path_of(&directory.node, None));
         Ok(())
     }
 
-    /// A scan handles no event after the root, whose walk ends there.
+    /// The parent is shown next. A scan handles no event after the root, whose walk ends there.
     fn finish_directory(
         &mut self,
-        directory: S::Directory,
-        parent: Option<&mut S::Directory>,
+        directory: Self::Directory,
+        parent: Option<&mut Self::Directory>,
     ) -> io::Result<()> {
-        let is_root = parent.is_none();
-        self.sink.finish_directory(directory, parent)?;
-        self.progress.leave();
-        match self.producer {
-            Producer::Scan if is_root => Ok(()),
-            Producer::Scan | Producer::Import => self.item_done(),
+        if let Some(parent) = parent {
+            self.sink
+                .finish_directory(directory.directory, Some(&mut parent.directory))?;
+            self.progress.show(&parent.node);
+        } else {
+            self.sink.finish_directory(directory.directory, None)?;
+            self.progress.open.clear();
+            self.progress.path.clear();
+            if self.producer == Producer::Scan {
+                return Ok(());
+            }
         }
+        self.item_done()
+    }
+
+    /// Handle an event while the producer waits.
+    fn idle(&mut self) -> io::Result<()> {
+        (self.handle_event)(&self.progress)
     }
 }
 
@@ -351,6 +474,74 @@ mod tests {
                 Some("/child".to_owned()),
             ]
         );
+    }
+
+    /// A scan with several threads adds entries to a directory after other directories were
+    /// added. The directory of an event is the one that an entry was added to last, or the parent
+    /// of the directory finished last, and a read error names the directory it marks.
+    #[test]
+    fn interleaved() {
+        let mut events = Vec::new();
+        let mut record = |progress: &Progress| {
+            let text =
+                |path: Option<&[u8]>| path.map(|path| String::from_utf8_lossy(path).into_owned());
+            events.push((text(progress.directory()), text(progress.last_error())));
+            Ok(())
+        };
+        let mut sink = ProgressSink::new(MemorySink::new(false), Producer::Scan, &mut record);
+        let built = (|| -> io::Result<()> {
+            let mut root = sink.create_root(b"/", &directory())?;
+            let mut first = sink.add_directory(&mut root, b"first", &directory())?;
+            let mut second = sink.add_directory(&mut root, b"second", &directory())?;
+            sink.add_special(&mut first, b"excluded", Special::Pattern)?;
+            sink.add_special(&mut second, b"excluded", Special::Pattern)?;
+            sink.set_read_error(&mut first)?;
+            sink.finish_directory(first, Some(&mut root))?;
+            sink.add_special(&mut second, b"unreadable", Special::ReadError)?;
+            sink.finish_directory(second, Some(&mut root))?;
+            sink.finish_directory(root, None)
+        })();
+        built.expect("entries are added");
+        drop(sink);
+        let text = |path: &str| Some(path.to_owned());
+        assert_eq!(
+            events,
+            [
+                (text("/"), None),
+                (text("/first"), None),
+                (text("/second"), None),
+                (text("/"), text("/first")),
+                (text("/second"), text("/second/unreadable")),
+                (text("/"), text("/second/unreadable")),
+            ]
+        );
+    }
+
+    /// A replay of the tree handles an event before each item when the count of files has bits 0
+    /// and 6 clear, and none after the entries of a directory, as `rec` in `mem_src.zig` calls
+    /// `main.handleEvent`. As `run` in `mem_src.zig` sets no directory for the root, the entries
+    /// of the root show none until a subdirectory is finished.
+    #[test]
+    fn replay() {
+        let events = events(Producer::Replay, |sink| {
+            let mut root = sink.create_root(b"root", &directory())?;
+            sink.add_special(&mut root, b"excluded", Special::Pattern)?;
+            let mut child = sink.add_directory(&mut root, b"child", &directory())?;
+            for _ in 0..70 {
+                sink.add_special(&mut child, b"excluded", Special::Pattern)?;
+            }
+            sink.finish_directory(child, Some(&mut root))?;
+            for _ in 0..60 {
+                sink.add_special(&mut root, b"excluded", Special::Pattern)?;
+            }
+            sink.finish_directory(root, None)
+        });
+        let files: Vec<u64> = events.iter().map(|(files, _, _)| *files).collect();
+        let expected: Vec<u64> = (0..=62).step_by(2).chain([128, 130]).collect();
+        assert_eq!(files, expected);
+        assert_eq!(events.first(), Some(&(0, 0, None)));
+        assert_eq!(events[1], (2, 512, Some("root/child".to_owned())));
+        assert_eq!(events.last(), Some(&(130, 512, Some("root".to_owned()))));
     }
 
     /// An error of the event handler is returned to the producer.

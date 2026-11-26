@@ -16,6 +16,10 @@ use crate::{Special, Stat};
 /// sink.finish_directory(root, None)
 /// ```
 ///
+/// A scan with several threads adds entries to any directory that is not finished, so it reports
+/// to a sink that keeps every directory apart, such as [`crate::MemorySink`], or a
+/// [`crate::ProgressSink`] in front of one.
+///
 /// Each sink has its own method to finish the output once the root is finished.
 pub trait Sink {
     /// The handle of a directory whose entries are being added.
@@ -63,5 +67,12 @@ pub trait Sink {
     /// progress shows, as a refresh into memory does.
     fn zeroing(&self) -> bool {
         false
+    }
+
+    /// Called while the producer waits for more entries, as a scan with several threads does
+    /// while it waits for a directory to be read, so that a sink that handles events can handle
+    /// one. An error stops the producer.
+    fn idle(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
