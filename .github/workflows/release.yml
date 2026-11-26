@@ -79,8 +79,11 @@ jobs:
             fi
             # `gh release create` reuses an existing tag and ignores `--target`, so the tag would not
             # point at the commit that the archives are built from.
-            if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --silent 2>/dev/null; then
+            if lookup="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --silent 2>&1)"; then
               echo "::error::Tag $TAG already exists"
+              exit 1
+            elif [[ "$lookup" != *"HTTP 404"* ]]; then
+              echo "::error::Could not check whether tag $TAG exists: $lookup"
               exit 1
             fi
             dist host --steps=create "--tag=$TAG" --output-format=json > plan-dist-manifest.json
