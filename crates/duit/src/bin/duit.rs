@@ -1190,6 +1190,7 @@ fn writing(error: &io::Error) -> Vec<u8> {
             TreeError::TooManyDevices => {
                 b"Maximum number of device identifiers exceeded.\n".to_vec()
             }
+            TreeError::TooManyEntries => b"Maximum number of entries exceeded.\n".to_vec(),
         };
     }
     if let Some(error) = inner.and_then(|error| error.downcast_ref::<JsonExportError>()) {

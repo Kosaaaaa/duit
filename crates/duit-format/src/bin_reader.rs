@@ -298,7 +298,8 @@ impl<R: Read + Seek> BinaryReader<R> {
                 ItemType::Special(special) => FileKind::Special(special),
             };
             let entry_extended = EntryExtended::of(&item.stat, extended);
-            tree.create(id, kind, &item.stat, entry_extended, &item.name);
+            tree.create(id, kind, &item.stat, entry_extended, &item.name)
+                .map_err(|_| BinaryImportError::Corrupt { itemref: *entry })?;
         }
         Ok(Some(Listing {
             tree,
@@ -645,7 +646,7 @@ fn add_listed_directory(
 ) -> Result<DirectoryId, TreeError> {
     let device = tree.device_id(item.stat.device)?;
     let entry_extended = EntryExtended::of(&item.stat, extended);
-    let id = tree.create_directory(parent, device, &item.stat, entry_extended, &item.name);
+    let id = tree.create_directory(parent, device, &item.stat, entry_extended, &item.name)?;
     tree.set_totals(
         id,
         item.items,
