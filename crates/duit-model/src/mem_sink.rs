@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io;
 
-use crate::tree::{DirectoryId, EntryExtended, EntryId, FileKind, Tree, add_blocks};
+use crate::tree::{DirectoryId, EntryExtended, EntryId, FileKind, Tree, TreeError, add_blocks};
 use crate::{EntryType, Sink, Special, Stat};
 
 /// A [`Sink`] that builds a [`Tree`] in memory, with the totals of each directory unless it is
@@ -177,7 +177,7 @@ impl MemorySink {
         stat: &Stat,
         extended: Option<EntryExtended>,
         name: &[u8],
-    ) {
+    ) -> Result<(), TreeError> {
         if let Some(id) = directory.previous.get(name).copied()
             && self
                 .tree
@@ -186,8 +186,9 @@ impl MemorySink {
             directory.previous.remove(name);
         } else {
             self.tree
-                .create(directory.directory, kind, stat, extended, name);
+                .create(directory.directory, kind, stat, extended, name)?;
         }
+        Ok(())
     }
 }
 
@@ -200,7 +201,7 @@ impl Sink for MemorySink {
             let entry_extended = self.extended_of(stat);
             let root = self
                 .tree
-                .create_directory(None, device, stat, entry_extended, path);
+                .create_directory(None, device, stat, entry_extended, path)?;
             self.tree.set_root(root);
             return Ok(MemoryDirectory::new(&self.tree, root, stat));
         };
@@ -245,7 +246,7 @@ impl Sink for MemorySink {
             &Stat::default(),
             None,
             name,
-        );
+        )?;
         Ok(())
     }
 
@@ -264,7 +265,7 @@ impl Sink for MemorySink {
         };
         self.count(directory, stat);
         let entry_extended = self.extended_of(stat);
-        self.add_file(directory, kind, stat, entry_extended, name);
+        self.add_file(directory, kind, stat, entry_extended, name)?;
         Ok(())
     }
 
@@ -284,10 +285,16 @@ impl Sink for MemorySink {
             parent.previous.remove(name);
             Some(directory)
         });
-        let directory = reused.unwrap_or_else(|| {
-            self.tree
-                .create_directory(Some(parent.directory), device, stat, entry_extended, name)
-        });
+        let directory = match reused {
+            Some(directory) => directory,
+            None => self.tree.create_directory(
+                Some(parent.directory),
+                device,
+                stat,
+                entry_extended,
+                name,
+            )?,
+        };
         Ok(MemoryDirectory::new(&self.tree, directory, stat))
     }
 

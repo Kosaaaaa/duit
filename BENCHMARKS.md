@@ -50,49 +50,49 @@ The ratios are duit divided by ncdu, so below 1 is better for duit.
 
 | Case                                       |       ncdu time |       duit time | Time ratio | ncdu peak RSS | duit peak RSS | RSS ratio |
 | ------------------------------------------ | --------------: | --------------: | ---------: | ------------: | ------------: | --------: |
-| Scan into memory, `-t 1`                   | 4.974 s ± 0.042 | 4.895 s ± 0.048 |       0.98 |      45.3 MiB |      88.4 MiB |      1.95 |
-| Scan into memory, `-t 4`                   | 2.138 s ± 0.039 | 2.157 s ± 0.036 |       1.01 |      45.3 MiB |     136.8 MiB |      3.02 |
-| Scan into memory, `-t 8`                   | 2.316 s ± 0.088 | 2.359 s ± 0.006 |       1.02 |      45.4 MiB |     133.4 MiB |      2.94 |
-| Scan to JSON, `-t 1`                       | 4.983 s ± 0.058 | 4.886 s ± 0.034 |       0.98 |       2.7 MiB |       2.9 MiB |      1.08 |
-| Scan to JSON, `-t 4`                       | 2.129 s ± 0.034 | 2.153 s ± 0.063 |       1.01 |      45.4 MiB |     135.8 MiB |      2.99 |
-| Scan to JSON, `-t 8`                       | 2.324 s ± 0.079 | 2.363 s ± 0.030 |       1.02 |      45.5 MiB |     138.9 MiB |      3.05 |
-| Scan to binary, `-t 1`                     | 4.997 s ± 0.054 | 4.902 s ± 0.011 |       0.98 |       3.9 MiB |       4.2 MiB |      1.08 |
-| Scan to binary, `-t 4`                     | 2.120 s ± 0.030 | 2.100 s ± 0.005 |       0.99 |       5.9 MiB |      39.8 MiB |      6.72 |
-| Scan to binary, `-t 8`                     | 2.316 s ± 0.075 | 2.327 s ± 0.046 |       1.00 |       7.4 MiB |      44.2 MiB |      5.96 |
-| Import JSON into memory                    | 0.084 s ± 0.003 | 0.149 s ± 0.001 |       1.78 |      45.3 MiB |      88.2 MiB |      1.95 |
-| Import binary to JSON                      | 0.081 s ± 0.000 | 0.100 s ± 0.001 |       1.23 |       3.4 MiB |      39.3 MiB |     11.65 |
-| Scan `/System/Library` into memory, `-t 1` | 4.711 s ± 0.030 | 4.698 s ± 0.035 |       1.00 |      28.8 MiB |      49.6 MiB |      1.72 |
-| Scan `/System/Library` into memory, `-t 8` | 1.693 s ± 0.013 | 1.909 s ± 0.054 |       1.13 |      29.2 MiB |      56.4 MiB |      1.93 |
+| Scan into memory, `-t 1`                   | 4.984 s ± 0.078 | 4.902 s ± 0.048 |       0.98 |      45.3 MiB |      53.6 MiB |      1.18 |
+| Scan into memory, `-t 4`                   | 2.152 s ± 0.036 | 2.136 s ± 0.003 |       0.99 |      45.3 MiB |      89.7 MiB |      1.98 |
+| Scan into memory, `-t 8`                   | 2.351 s ± 0.059 | 2.365 s ± 0.024 |       1.01 |      45.4 MiB |      94.6 MiB |      2.08 |
+| Scan to JSON, `-t 1`                       | 4.947 s ± 0.102 | 4.849 s ± 0.009 |       0.98 |       2.7 MiB |       2.9 MiB |      1.08 |
+| Scan to JSON, `-t 4`                       | 2.132 s ± 0.033 | 2.134 s ± 0.005 |       1.00 |      45.4 MiB |      97.1 MiB |      2.14 |
+| Scan to JSON, `-t 8`                       | 2.370 s ± 0.045 | 2.351 s ± 0.009 |       0.99 |      45.5 MiB |     102.4 MiB |      2.25 |
+| Scan to binary, `-t 1`                     | 4.950 s ± 0.020 | 4.862 s ± 0.019 |       0.98 |       3.9 MiB |       4.2 MiB |      1.06 |
+| Scan to binary, `-t 4`                     | 2.127 s ± 0.030 | 2.094 s ± 0.041 |       0.98 |       5.1 MiB |      39.9 MiB |      7.82 |
+| Scan to binary, `-t 8`                     | 2.329 s ± 0.063 | 2.337 s ± 0.045 |       1.00 |       7.5 MiB |      44.2 MiB |      5.94 |
+| Import JSON into memory                    | 0.082 s ± 0.000 | 0.142 s ± 0.004 |       1.73 |      45.2 MiB |      53.5 MiB |      1.18 |
+| Import binary to JSON                      | 0.081 s ± 0.000 | 0.100 s ± 0.001 |       1.23 |       3.4 MiB |      39.3 MiB |     11.64 |
+| Scan `/System/Library` into memory, `-t 1` | 4.708 s ± 0.022 | 4.677 s ± 0.013 |       0.99 |      28.9 MiB |      28.9 MiB |      1.00 |
+| Scan `/System/Library` into memory, `-t 8` | 1.693 s ± 0.013 | 1.850 s ± 0.066 |       1.09 |      29.2 MiB |      39.1 MiB |      1.34 |
 
 ## Gaps
 
 ### Slower than ncdu
 
-- Import JSON into memory: 1.78 times ncdu's time. The import is CPU bound, so a scan of the same
+- Import JSON into memory: 1.73 times ncdu's time. The import is CPU bound, so a scan of the same
   tree, which waits on `stat`, does not show it.
 - Import binary to JSON: 1.23 times ncdu's time.
-- Scan `/System/Library` into memory with `-t 8`: 1.13 times ncdu's time.
-- Scans of the generated tree with `-t 4` and `-t 8` into memory and to JSON, and with `-t 8` to
-  binary: up to 2% slower, within one standard deviation of ncdu's time.
+- Scan `/System/Library` into memory with `-t 8`: 1.09 times ncdu's time.
+- Scans of the generated tree into memory with `-t 8`, to JSON with `-t 4`, and to binary with
+  `-t 8`: up to 1% slower, within one standard deviation of ncdu's time.
 
-The single-threaded scans take the same time as ncdu's or less, and so does the scan to binary with
-`-t 4`.
+The other scans take the same time as ncdu's or less.
 
 ### More memory than ncdu
 
-duit uses more memory than ncdu in every case. Every case is also over the budget of 1.25 times
-ncdu's peak memory, except the two that stream a single-threaded scan to an export: scan to JSON and
-scan to binary with `-t 1`, at 1.08 times.
+duit uses more memory than ncdu in every case but one: the scan of `/System/Library` with `-t 1`
+takes the same. Every case with `-t 1` is within the budget of 1.25 times ncdu's peak memory, and so
+is the import of JSON. The cases with several threads and the import of binary to JSON are over it.
 
-- The tree in memory takes about twice as much as ncdu's: 1.95 times for a scan or an import of the
-  generated tree with `-t 1`, and 1.72 times for `/System/Library`. This is the measure for the
-  memory layout decision of M5 in PLAN.md.
-- A scan with several threads adds more on top: 137 MiB with `-t 4` against 88 MiB with `-t 1`,
-  while ncdu stays at 45 MiB. A scan to JSON with several threads goes through the tree in memory in
-  both programs, so it has the same peak as the scan into memory.
+- The tree in memory takes 1.18 times as much as ncdu's for a scan or an import of the generated
+  tree with `-t 1`, and the same for `/System/Library`. This is the measure for the memory layout
+  decision of M5 in PLAN.md: an entry takes 40 bytes, a directory 40 more, and a hard link 32 more.
+  The two scans that stream to an export with `-t 1` take 1.06 and 1.08 times ncdu's peak.
+- A scan with several threads adds more on top: 90 MiB with `-t 4` against 54 MiB with `-t 1`, while
+  ncdu stays at 45 MiB. A scan to JSON with several threads goes through the tree in memory in both
+  programs, so it has about the same peak as the scan into memory.
 - A scan to binary with several threads takes 40 to 44 MiB, against 4.2 MiB with `-t 1`. ncdu goes
-  from 3.9 MiB to 5.9 and 7.4 MiB.
-- Import binary to JSON takes 39.3 MiB, 11.65 times ncdu's 3.4 MiB.
+  from 3.9 MiB to 5.1 and 7.5 MiB.
+- Import binary to JSON takes 39.3 MiB, 11.64 times ncdu's 3.4 MiB.
 
 ## Performance bugs for later
 
@@ -111,9 +111,9 @@ the place to start, for example with Instruments (Allocations or Time Profiler) 
   4.2 to 39.8 MiB on a tree of a million entries, about 38 bytes per entry, which points at state
   that is kept per entry or per directory until the end of the scan instead of written out. Profile
   `duit --ignore-config -0 -t 4 -O /dev/null TREE`.
-- **The tree in memory grows with threads.** A scan into memory with `-t 4` peaks 48 MiB above one
+- **The tree in memory grows with threads.** A scan into memory with `-t 4` peaks 36 MiB above one
   with `-t 1`, for the same tree. Profile `duit --ignore-config -0 -t 4 --quit-after-scan TREE`
   against `-t 1`.
-- **JSON import is CPU bound and 1.78 times slower.** Profile
+- **JSON import is CPU bound and 1.73 times slower.** Profile
   `duit --ignore-config -0 -f tree.json --quit-after-scan`, with the importer in
   `crates/duit-format/src/json_import.rs` and the tree in `crates/duit-model`.

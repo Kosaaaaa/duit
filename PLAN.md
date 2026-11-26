@@ -97,9 +97,15 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
   exports are not always valid JSON and `serde_json` rejects them. Files can be gigabytes.
 - **Binary format: a hand-written CBOR subset and the `zstd` crate.** The format uses a small fixed
   subset of CBOR. `zstd` binds libzstd, which is what ncdu links.
-- **Tree memory: index-based arenas in safe Rust first.** Entries and names live in `Vec`-backed
-  arenas and refer to each other by id. Budget: peak memory at most 1.25 times ncdu's. Over budget
-  means a packed layout with documented `unsafe`, decided in M5.
+- **Tree memory: index-based arenas in safe Rust, with at most 2^32 - 1 entries, unlike ncdu.**
+  Entries and names live in `Vec`-backed arenas and refer to each other by id. Budget: peak memory
+  at most 1.25 times ncdu's. Each id is a `u32` with a `NonZero` niche, so an `Option` of an id
+  takes 4 bytes too, and a name ends where the name of the next entry starts, so an entry stores no
+  name length. An entry takes 40 bytes, a directory 40 more, and a hard link 32 more. That meets the
+  budget without `unsafe`, as measured in [BENCHMARKS.md](BENCHMARKS.md), so there is no packed
+  layout. ncdu has no limit on the number of entries. A scan or an import that would add more stops
+  with `Maximum number of entries exceeded.` The offset of a name is a `usize`, so the names have no
+  limit of their own.
 - **Threads: `std::thread` with one writer, unlike ncdu.** At `scan.zig:271-293`, each ncdu thread
   reads its directory entry by entry and reports every entry to the sink itself, so the sinks lock
   what threads share. With `-t` above 1, duit threads take directories from a mutex and condvar
