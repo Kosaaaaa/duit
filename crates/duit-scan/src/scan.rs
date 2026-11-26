@@ -6,9 +6,9 @@ use std::os::fd::{AsFd, BorrowedFd};
 use duit_model::{BLOCKS_MAX, EntryType, Extended, Sink, Special, Stat};
 use rustix::fs::{AtFlags, CWD, Dir, FileType, Mode, OFlags, openat, statat};
 
-use crate::{DirectoryPatterns, ExcludePatterns, Excluded};
+use crate::{DirectoryPatterns, ExcludePatterns, Excluded, threads};
 
-/// The options that change what a scan reports.
+/// The options of a scan.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ScanOptions {
     /// `-x`: Report directories on another filesystem than their parent as excluded.
@@ -20,6 +20,9 @@ pub struct ScanOptions {
     pub exclude_kernfs: bool,
     /// `--exclude-caches`: Report directories with a valid `CACHEDIR.TAG` as excluded.
     pub exclude_caches: bool,
+    /// `-t`: The number of threads that read directories. With 0 or 1, the calling thread reads
+    /// them.
+    pub threads: usize,
 }
 
 /// Why a [`scan`] failed. ncdu describes the `errno` of each step differently, so the caller needs
@@ -30,6 +33,8 @@ pub enum ScanError {
     Stat(io::Error),
     /// The root could not be opened as a directory.
     Open(io::Error),
+    /// A thread to read directories could not be started.
+    Spawn(io::Error),
     /// The sink failed. An error from `dirfd`, which does not happen for an open directory, ends
     /// up here too.
     Sink(io::Error),
@@ -43,12 +48,17 @@ struct Frame<'a, D> {
     sink: D,
 }
 
-/// Scan the directory at `path` and report its tree to `sink`, depth-first in the order of
-/// `readdir`. The path is reported as given, so a caller that wants an absolute path resolves it
-/// first.
+/// Scan the directory at `path` and report its tree to `sink`, in the order of `readdir`. The path
+/// is reported as given, so a caller that wants an absolute path resolves it first.
 ///
-/// Fails if the root cannot be read, before `sink` sees anything, or if `sink` fails. An entry that
-/// cannot be read is reported as such.
+/// With one thread, the tree is reported depth-first. With more, as `-t` in ncdu, threads read
+/// whole directories while the calling thread reports them, so the entries of a directory follow
+/// in one go, while other directories that are not finished yet may get entries in between. Each
+/// directory is finished once its entries and its subdirectories are. Only a sink that keeps every
+/// directory apart, such as the tree in memory, takes such a scan.
+///
+/// Fails if the root cannot be read, before `sink` sees anything, if a thread cannot be started,
+/// or if `sink` fails. An entry that cannot be read is reported as such.
 pub fn scan<S: Sink>(
     sink: &mut S,
     path: &CStr,
@@ -67,13 +77,23 @@ pub fn scan<S: Sink>(
     let root = sink
         .create_root(path.to_bytes(), &stat)
         .map_err(ScanError::Sink)?;
-    let stack = vec![Frame {
+    let frame = Frame {
         entries,
         device: stat.device,
         patterns: exclude.for_path(path),
         sink: root,
-    }];
-    walk(sink, stack, options).map_err(ScanError::Sink)
+    };
+    if options.threads > 1 {
+        return threads::walk(
+            sink,
+            frame.sink,
+            frame.entries,
+            frame.device,
+            frame.patterns,
+            options,
+        );
+    }
+    walk(sink, vec![frame], options).map_err(ScanError::Sink)
 }
 
 /// Read the directories on `stack` depth-first until it is empty.
@@ -117,74 +137,135 @@ fn scan_entry<'a, S: Sink>(
     options: ScanOptions,
 ) -> io::Result<Option<Frame<'a, S::Directory>>> {
     let bytes = name.to_bytes();
-    let excluded = parent.patterns.matches(name);
+    let parent_fd = parent.entries.fd()?;
+    match classify(parent_fd, parent.device, &parent.patterns, name, options)? {
+        Entry::Special(special) => sink.add_special(&mut parent.sink, bytes, special)?,
+        Entry::Stat(stat) => sink.add_stat(&mut parent.sink, bytes, &stat)?,
+        Entry::Unreadable(stat) => add_unreadable(sink, &mut parent.sink, bytes, &stat)?,
+        Entry::Directory {
+            stat,
+            patterns,
+            entries,
+        } => match entries.map_or_else(|| open_directory(parent_fd, name), Ok) {
+            Ok(entries) => {
+                let directory = sink.add_directory(&mut parent.sink, bytes, &stat)?;
+                return Ok(Some(Frame {
+                    entries,
+                    device: stat.device,
+                    patterns,
+                    sink: directory,
+                }));
+            }
+            Err(_) => add_unreadable(sink, &mut parent.sink, bytes, &stat)?,
+        },
+    }
+    Ok(None)
+}
+
+/// What an entry of a directory is reported as, by [`classify`].
+pub(crate) enum Entry<'a> {
+    Special(Special),
+    /// An entry that is not a directory.
+    Stat(Stat),
+    /// A directory that cannot be opened.
+    Unreadable(Stat),
+    /// A directory to read, with the patterns for its entries, and the directory itself if it was
+    /// opened to check whether it is excluded.
+    Directory {
+        stat: Stat,
+        patterns: DirectoryPatterns<'a>,
+        entries: Option<Dir>,
+    },
+}
+
+/// What the entry `name` of the directory `parent` on `device`, whose entries `patterns` exclude,
+/// is reported as, `scanOne` in `scan.zig`. A directory is opened only if an option needs to look
+/// inside it, so that a scan with threads does not keep one open for each directory that waits.
+pub(crate) fn classify<'a>(
+    parent: BorrowedFd<'_>,
+    device: u64,
+    patterns: &DirectoryPatterns<'a>,
+    name: &CStr,
+    options: ScanOptions,
+) -> io::Result<Entry<'a>> {
+    let excluded = patterns.matches(name);
     // A pattern that matches any entry excludes it before `stat`.
     if excluded == Excluded::Always {
-        sink.add_special(&mut parent.sink, bytes, Special::Pattern)?;
-        return Ok(None);
+        return Ok(Entry::Special(Special::Pattern));
     }
 
-    let parent_fd = parent.entries.fd()?;
-    let Ok((mut stat, is_symlink)) = stat_at(parent_fd, name, false) else {
-        sink.add_special(&mut parent.sink, bytes, Special::ReadError)?;
-        return Ok(None);
+    let Ok((mut stat, is_symlink)) = stat_at(parent, name, false) else {
+        return Ok(Entry::Special(Special::ReadError));
     };
     if options.follow_symlinks
         && is_symlink
-        && let Ok((target, _)) = stat_at(parent_fd, name, true)
+        && let Ok((target, _)) = stat_at(parent, name, true)
         && target.entry_type != EntryType::Directory
     {
         stat = target;
         // Hard links are counted by device and inode, which a target on another filesystem
         // breaks.
-        if stat.entry_type == EntryType::HardLink && stat.device != parent.device {
+        if stat.entry_type == EntryType::HardLink && stat.device != device {
             stat.entry_type = EntryType::Regular;
             stat.link_count = 1;
         }
     }
 
-    if options.same_filesystem && stat.device != parent.device {
-        sink.add_special(&mut parent.sink, bytes, Special::OtherFilesystem)?;
-        return Ok(None);
+    if options.same_filesystem && stat.device != device {
+        return Ok(Entry::Special(Special::OtherFilesystem));
     }
     if stat.entry_type != EntryType::Directory {
-        sink.add_stat(&mut parent.sink, bytes, &stat)?;
-        return Ok(None);
+        return Ok(Entry::Stat(stat));
     }
     if excluded == Excluded::IfDirectory {
-        sink.add_special(&mut parent.sink, bytes, Special::Pattern)?;
-        return Ok(None);
+        return Ok(Entry::Special(Special::Pattern));
     }
 
-    let Ok(entries) = openat(
-        parent_fd,
+    let check_kernfs = options.exclude_kernfs && stat.device != device;
+    let entries = if check_kernfs || options.exclude_caches {
+        let Ok(entries) = open_directory(parent, name) else {
+            return Ok(Entry::Unreadable(stat));
+        };
+        let fd = entries.fd()?;
+        if check_kernfs && is_kernel_filesystem(fd) {
+            return Ok(Entry::Special(Special::KernelFilesystem));
+        }
+        if options.exclude_caches && is_cache_directory(fd) {
+            return Ok(Entry::Special(Special::Pattern));
+        }
+        Some(entries)
+    } else {
+        None
+    };
+    Ok(Entry::Directory {
+        stat,
+        patterns: patterns.enter(name),
+        entries,
+    })
+}
+
+/// Open the subdirectory `name` of `parent` to read its entries, without following a symlink.
+pub(crate) fn open_directory(parent: BorrowedFd<'_>, name: &CStr) -> rustix::io::Result<Dir> {
+    openat(
+        parent,
         name,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
     )
-    .and_then(Dir::new) else {
-        let mut directory = sink.add_directory(&mut parent.sink, bytes, &stat)?;
-        sink.set_read_error(&mut directory)?;
-        sink.finish_directory(directory, Some(&mut parent.sink))?;
-        return Ok(None);
-    };
-    let fd = entries.fd()?;
-    if options.exclude_kernfs && stat.device != parent.device && is_kernel_filesystem(fd) {
-        sink.add_special(&mut parent.sink, bytes, Special::KernelFilesystem)?;
-        return Ok(None);
-    }
-    if options.exclude_caches && is_cache_directory(fd) {
-        sink.add_special(&mut parent.sink, bytes, Special::Pattern)?;
-        return Ok(None);
-    }
+    .and_then(Dir::new)
+}
 
-    let directory = sink.add_directory(&mut parent.sink, bytes, &stat)?;
-    Ok(Some(Frame {
-        entries,
-        device: stat.device,
-        patterns: parent.patterns.enter(name),
-        sink: directory,
-    }))
+/// Report the directory `name` of `parent`, which cannot be opened, as a directory with a read
+/// error and no entries.
+pub(crate) fn add_unreadable<S: Sink>(
+    sink: &mut S,
+    parent: &mut S::Directory,
+    name: &[u8],
+    stat: &Stat,
+) -> io::Result<()> {
+    let mut directory = sink.add_directory(parent, name, stat)?;
+    sink.set_read_error(&mut directory)?;
+    sink.finish_directory(directory, Some(parent))
 }
 
 /// The largest link count that ncdu stores, in 31 bits.

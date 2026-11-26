@@ -45,6 +45,14 @@ pub fn open_error(error: &io::Error) -> &'static str {
     }
 }
 
+/// The Zig error of `pthread_create` (`std.Thread.spawn`), which ncdu prints by its name.
+pub fn spawn_error(error: &io::Error) -> &'static str {
+    match error.raw_os_error() {
+        Some(libc::EAGAIN) => "error.SystemResources",
+        _ => "error.Unexpected",
+    }
+}
+
 /// The description of an error of a seek to the end (`std.posix.lseek_END`).
 pub fn seek_error(error: &io::Error) -> &'static str {
     match error.raw_os_error() {

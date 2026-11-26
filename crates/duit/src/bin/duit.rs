@@ -13,15 +13,15 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use duit::{
-    Arg, Args, Config, OptionError, ScanUi, open_error, read_error, seek_error, stat_error,
-    strerror, write_error,
+    Arg, Args, Config, OptionError, ScanUi, open_error, read_error, seek_error, spawn_error,
+    stat_error, strerror, write_error,
 };
 use duit_format::{
     BINARY_SIGNATURE, BinaryExport, BinaryExportError, BinaryImportError, BinaryOpenError,
     BinaryReader, ImportError, JsonExport, JsonExportError, import,
 };
 use duit_model::{
-    DirectoryId, MemorySink, Producer, Progress, ProgressSink, Sink, Tree, TreeError,
+    DirectoryId, MemorySink, Producer, Progress, ProgressSink, Sink, Tree, TreeError, replay,
 };
 use duit_scan::{ScanError, ScanOptions, scan, stat_at};
 use duit_tui::{
@@ -210,7 +210,7 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
         );
     }
 
-    if import_file.is_none() && config.threads > 1 {
+    if import_file.is_none() && export_binary.is_some() && config.threads > 1 {
         return Err(b"A scan with more than one thread is not supported yet.\n".to_vec());
     }
     let scan_ui = config
@@ -316,8 +316,12 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
         config.compress.then_some(config.compress_level),
     )
     .map_err(|error| writing(&error))?;
-    fill(export, import_input, scan_directory, &config, &mut progress)
-        .map_or_else(|exit| exit, |()| Ok(ExitCode::SUCCESS))
+    let exported = if import_input.is_none() && config.threads > 1 {
+        export_from_memory(export, scan_directory, &config, &mut progress)
+    } else {
+        fill(export, import_input, scan_directory, &config, &mut progress)
+    };
+    exported.map_or_else(|exit| exit, |()| Ok(ExitCode::SUCCESS))
 }
 
 /// Run the browser that `open` opens, with the tree it reads, until the user quits, the loop at
@@ -557,8 +561,10 @@ fn refresh(
     if let Some(exit) = progress.exit.take() {
         return Err(exit);
     }
-    if let Err(ScanError::Sink(error)) = &scanned {
-        return Err(Err(writing(error)));
+    match &scanned {
+        Err(ScanError::Sink(error)) => return Err(Err(writing(error))),
+        Err(ScanError::Spawn(error)) => return Err(Err(spawning_thread(error))),
+        Ok(()) | Err(ScanError::Stat(_) | ScanError::Open(_)) => {}
     }
     *tree = progress.finish(memory)?;
     if scanned.is_err() {
@@ -813,6 +819,27 @@ fn fill<C: Consumer>(
         return Ok(output);
     }
 
+    let (consumer, root_error) = scan_into(consumer, scan_directory, config, progress)?;
+    let output = progress.finish(consumer)?;
+    if let Some(description) = root_error {
+        return Err(Err(opening_directory(description)));
+    }
+    progress.clear();
+    Ok(output)
+}
+
+/// A consumer after a scan, with the description of the error if the root could not be read.
+type Scanned<C> = (C, Option<&'static str>);
+
+/// Write the scan of `scan_directory` into `consumer`, and show its `progress`. Give back the
+/// consumer, with the description of the error if the root could not be read, which still ends an
+/// export, as in ncdu. An error is how duit ends instead.
+fn scan_into<C: Consumer>(
+    consumer: C,
+    scan_directory: Option<&[u8]>,
+    config: &Config,
+    progress: &mut ScanProgress,
+) -> Result<Scanned<C>, Result<ExitCode, Vec<u8>>> {
     // ncdu scans the absolute path if it can resolve one.
     let directory = scan_directory.unwrap_or(b".");
     let path = fs::canonicalize(OsStr::from_bytes(directory)).map_or_else(
@@ -821,6 +848,7 @@ fn fill<C: Consumer>(
     );
     // Arguments are C strings and cannot hold a NUL byte.
     let path = CString::new(path).map_err(|_| Err(opening_directory("Unexpected")))?;
+    let mut report = |state: &Progress| progress.report(state);
     let mut sink = ProgressSink::new(consumer, Producer::Scan, &mut report);
     let scanned = scan(&mut sink, &path, scan_options(config), &config.exclude);
     let consumer = sink.into_inner();
@@ -828,19 +856,56 @@ fn fill<C: Consumer>(
         consumer.discard();
         return Err(exit);
     }
-    // A failure at the root still ends the export, as in ncdu.
-    let root_error = match scanned {
-        Ok(()) => None,
-        Err(ScanError::Stat(error)) => Some(stat_error(&error)),
-        Err(ScanError::Open(error)) => Some(open_error(&error)),
-        Err(ScanError::Sink(error)) => return Err(Err(writing(&error))),
+    match scanned {
+        Ok(()) => Ok((consumer, None)),
+        Err(ScanError::Stat(error)) => Ok((consumer, Some(stat_error(&error)))),
+        Err(ScanError::Open(error)) => Ok((consumer, Some(open_error(&error)))),
+        // As `ui.die` in ncdu, which writes nothing more.
+        Err(ScanError::Spawn(error)) => {
+            consumer.discard();
+            Err(Err(spawning_thread(&error)))
+        }
+        Err(ScanError::Sink(error)) => Err(Err(writing(&error))),
+    }
+}
+
+/// Scan `scan_directory` with several threads into memory, and write the tree into `export` once
+/// the scan is done, as `createThreads` and `done` in `sink.zig` do, because a JSON export is
+/// written depth-first. The progress counts again from 0 for the export. Unlike ncdu, which
+/// crashes there, a root that cannot be read ends the export as with one thread.
+fn export_from_memory<W: Write>(
+    export: JsonExport<W>,
+    scan_directory: Option<&[u8]>,
+    config: &Config,
+    progress: &mut ScanProgress,
+) -> Result<(), Result<ExitCode, Vec<u8>>> {
+    let memory = MemorySink::without_stats(config.extended);
+    let (memory, root_error) = match scan_into(memory, scan_directory, config, progress) {
+        Ok(scanned) => scanned,
+        Err(exit) => {
+            export.discard();
+            return Err(exit);
+        }
     };
-    let output = progress.finish(consumer)?;
+    let tree = memory.finish(&mut |_, _| {});
+    let mut export = export;
+    if let Some(root) = tree.root() {
+        let mut report = |state: &Progress| progress.report(state);
+        let mut sink = ProgressSink::new(export, Producer::Replay, &mut report);
+        let replayed = replay(&tree, root, &mut sink);
+        export = sink.into_inner();
+        if let Some(exit) = progress.exit.take() {
+            export.discard();
+            return Err(exit);
+        }
+        replayed.map_err(|error| Err(writing(&error)))?;
+    }
+    progress.finish(export)?;
     if let Some(description) = root_error {
         return Err(Err(opening_directory(description)));
     }
     progress.clear();
-    Ok(output)
+    Ok(())
 }
 
 /// The options of a scan, from `config`.
@@ -850,6 +915,7 @@ fn scan_options(config: &Config) -> ScanOptions {
         follow_symlinks: config.follow_symlinks,
         exclude_kernfs: config.exclude_kernfs,
         exclude_caches: config.exclude_caches,
+        threads: config.threads,
     }
 }
 
@@ -1110,6 +1176,10 @@ fn binary_import_error(error: BinaryImportError) -> Vec<u8> {
 
 fn opening_directory(description: &str) -> Vec<u8> {
     format!("Error opening directory: {description}.\n").into_bytes()
+}
+
+fn spawning_thread(error: &io::Error) -> Vec<u8> {
+    format!("Error spawning thread: {}\n", spawn_error(error)).into_bytes()
 }
 
 fn writing(error: &io::Error) -> Vec<u8> {

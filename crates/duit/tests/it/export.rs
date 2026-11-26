@@ -171,6 +171,79 @@ fn options() {
     "#);
 }
 
+/// The items of `export` with the entries of each directory sorted, so that the order of
+/// `readdir` does not matter but the directory of each entry does. Each item is on a line of its
+/// own, followed by the `]` that close directories.
+fn sorted(export: &str) -> String {
+    let mut lines = export.lines();
+    let mut output = lines.next().unwrap_or_default().to_owned();
+    // The open directories, each with its item and its entries, in an array that holds the root.
+    let mut open: Vec<(String, Vec<String>)> = vec![(String::new(), Vec::new())];
+    for line in lines {
+        let (item, rest) = line.split_at(line.rfind('}').map_or(0, |end| end + 1));
+        match item.strip_prefix('[') {
+            Some(directory) => open.push((directory.to_owned(), Vec::new())),
+            None => {
+                if let Some((_, entries)) = open.last_mut() {
+                    entries.push(item.to_owned());
+                }
+            }
+        }
+        for _ in rest.matches(']') {
+            if let Some((directory, mut entries)) = open.pop() {
+                entries.sort();
+                let closed = format!("[{directory}\n{}]", entries.join("\n"));
+                match open.last_mut() {
+                    Some((_, parent)) => parent.push(closed),
+                    None => output.push_str(&closed),
+                }
+            }
+        }
+    }
+    output
+}
+
+/// A scan with several threads writes the export once the scan is done, from the tree in memory,
+/// as ncdu does. The entries of a directory are written in the opposite order of `readdir` then,
+/// and the export is otherwise that of a scan with one thread. The root has more directories than
+/// the threads read at once, with a hard link between two of them and an excluded file in each.
+#[test]
+fn threads() {
+    let directory = TempDir::new().expect("temporary directory is created");
+    let root = directory.path();
+    for index in 0..40 {
+        let path = root.join(format!("d{index:02}"));
+        fs::create_dir_all(path.join("sub")).expect("directory is created");
+        fs::write(path.join("file"), vec![0; 1000 * (index + 1)]).expect("file is written");
+        fs::write(path.join("skip"), b"x").expect("file is written");
+        fs::write(path.join("sub/nested"), b"x").expect("file is written");
+    }
+    fs::hard_link(root.join("d00/file"), root.join("d01/link")).expect("hard link is created");
+    for flags in [&["--exclude", "skip"][..], &["-e", "--exclude", "skip"]] {
+        let arguments = |threads| [&["-t", threads, "-o-"][..], flags].concat();
+        #[cfg(feature = "test-ncdu")]
+        assert_ncdu(root, &arguments("4"));
+        let export = |arguments: &[&str]| {
+            let output = duit(root, arguments);
+            assert!(output.status.success(), "{}", render(&output));
+            sorted(&text(&output.stdout))
+        };
+        assert_eq!(
+            export(&arguments("4")),
+            export(&arguments("1")),
+            "{flags:?}"
+        );
+    }
+    // Unlike ncdu, which crashes, a root that cannot be read ends the export as with one thread.
+    // A scan into memory ends as with one thread too.
+    for arguments in [&["-o-", "missing"][..], &["-0", "--quit-after-scan"]] {
+        let with_threads = |threads| duit(root, &[&["-t", threads][..], arguments].concat());
+        let output = with_threads("4");
+        assert_eq!(render(&output), render(&with_threads("1")), "{arguments:?}");
+        assert_eq!(output.status.success(), arguments[0] == "-0");
+    }
+}
+
 /// `-o FILE` writes the same export as `-o-` writes to standard output.
 #[test]
 fn file() {

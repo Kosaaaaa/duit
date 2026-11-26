@@ -521,18 +521,19 @@ fn ncdu() {
             follow_symlinks: true,
             exclude_kernfs: false,
             exclude_caches: true,
+            threads: 1,
         },
         &[b"excluded", b"*.d/", anchored.as_bytes()],
     );
 }
 
-/// The tree of a scan of `fixture` into memory.
-fn scan_tree(fixture: &Fixture) -> Tree {
+/// The tree of a scan of `fixture` into memory with `options`.
+fn scan_tree(fixture: &Fixture, options: ScanOptions) -> Tree {
     let mut memory = MemorySink::new(false);
     scan(
         &mut memory,
         &fixture.c_path(),
-        ScanOptions::default(),
+        options,
         &ExcludePatterns::default(),
     )
     .expect("scan succeeds");
@@ -624,7 +625,7 @@ fn refresh() {
     fixture.write("top/sub/grow", &[0; 100]);
     fixture.write("top/sub/swap", &[0; 9000]);
     fixture.write("top/sub/nested/old", &[0; 11_000]);
-    let tree = scan_tree(&fixture);
+    let tree = scan_tree(&fixture, ScanOptions::default());
 
     fs::remove_file(fixture.path("top/sub/gone")).expect("file is removed");
     fixture.write("top/sub/grow", &[0; 20_000]);
@@ -634,7 +635,10 @@ fn refresh() {
     fixture.write("top/sub/nested/new", &[0; 15_000]);
     fixture.write("top/sub/added", &[0; 17_000]);
     let refreshed = refresh_tree(tree, &[b"top", b"sub"]);
-    assert_eq!(summary(&refreshed), summary(&scan_tree(&fixture)));
+    assert_eq!(
+        summary(&refreshed),
+        summary(&scan_tree(&fixture, ScanOptions::default()))
+    );
 }
 
 /// A refresh of a directory with hard links, to each other and to a file outside of it, gives
@@ -647,10 +651,47 @@ fn refresh_hard_links() {
     fixture.hard_link("sub/inside", "outside");
     fixture.hard_link("sub/second", "sub/first");
     fixture.write("sub/third", &[0; 9000]);
-    let tree = scan_tree(&fixture);
+    let tree = scan_tree(&fixture, ScanOptions::default());
     fixture.hard_link("sub/fourth", "sub/third");
     let refreshed = refresh_tree(tree, &[b"sub"]);
-    assert_eq!(summary(&refreshed), summary(&scan_tree(&fixture)));
+    assert_eq!(
+        summary(&refreshed),
+        summary(&scan_tree(&fixture, ScanOptions::default()))
+    );
     let refreshed = refresh_tree(refreshed, &[]);
-    assert_eq!(summary(&refreshed), summary(&scan_tree(&fixture)));
+    assert_eq!(
+        summary(&refreshed),
+        summary(&scan_tree(&fixture, ScanOptions::default()))
+    );
+}
+
+/// A scan with several threads gives the tree of a scan with one, with the totals of every
+/// directory and the sizes of the hard links. The root has more directories than the threads read
+/// at once, a hard link between two of them, and a directory that cannot be read. With
+/// `--exclude-caches`, a directory is opened to check it before its parent is reported, and
+/// without, once a thread takes it. Assumes that the tests do not run as root, which ignores
+/// permissions.
+#[test]
+fn threads() {
+    let mut fixture = Fixture::new();
+    for index in 0..40 {
+        fixture.write(&format!("d{index:02}/file"), &vec![0; 1000 * (index + 1)]);
+        fixture.write(&format!("d{index:02}/sub/nested"), b"x");
+    }
+    fixture.hard_link("d01/link", "d00/file");
+    fixture.write("cache/CACHEDIR.TAG", CACHEDIR_TAG);
+    fixture.write("unreadable/file", b"x");
+    fixture.restrict("unreadable", 0o000);
+    for exclude_caches in [false, true] {
+        let one = ScanOptions {
+            exclude_caches,
+            ..ScanOptions::default()
+        };
+        let four = ScanOptions { threads: 4, ..one };
+        assert_eq!(
+            summary(&scan_tree(&fixture, four)),
+            summary(&scan_tree(&fixture, one)),
+            "exclude_caches: {exclude_caches}"
+        );
+    }
 }

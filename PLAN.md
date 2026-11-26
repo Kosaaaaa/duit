@@ -100,8 +100,20 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
 - **Tree memory: index-based arenas in safe Rust first.** Entries and names live in `Vec`-backed
   arenas and refer to each other by id. Budget: peak memory at most 1.25 times ncdu's. Over budget
   means a packed layout with documented `unsafe`, decided in M5.
-- **Threads: `std::thread` with a mutex and condvar queue.** Same model as upstream. No `rayon`, no
-  async. The default stays one thread, as in ncdu.
+- **Threads: `std::thread` with one writer, unlike ncdu.** At `scan.zig:271-293`, each ncdu thread
+  reads its directory entry by entry and reports every entry to the sink itself, so the sinks lock
+  what threads share. With `-t` above 1, duit threads take directories from a mutex and condvar
+  queue, last in first out as in ncdu, read and `stat` each one whole, and send it over a bounded
+  channel to the calling thread. That thread alone owns the sink, reports the entries of each
+  directory in the order of `readdir`, and finishes a directory once its entries and its
+  subdirectories are. The sinks stay single-threaded, and the tree is ncdu's, so `-o` writes the
+  same export. No `rayon`, no async. The default stays one thread, as in ncdu, which scans
+  depth-first without the queue. While no directory arrives, the calling thread lets the progress
+  handle an event every 100 ms, where ncdu's first thread handles one for each entry it reads. The
+  progress shows the directory that the calling thread reports, where ncdu shows a line for each
+  thread. A `-o` export with more than one thread is written from the tree after the scan, as in
+  ncdu, and a root that cannot be read ends it as with one thread, where ncdu 2.9.2 crashes: `done`
+  replays a tree whose root was never created at `sink.zig:265-268`.
 - **Errors: plain enums, and no error crate.** Every message is ncdu's, as bytes that need not be
   UTF-8, so an error carries what the caller needs to build that message, as `ScanError` does.
 - **Read errors: the directory whose `readdir` failed is marked, unlike ncdu.** At `scan.zig:283`,

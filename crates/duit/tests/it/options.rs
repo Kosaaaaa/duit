@@ -599,17 +599,9 @@ fn exclude_kernfs() {
 fn unsupported() {
     let directory = TempDir::new().expect("temporary directory is created");
     assert_snapshot!(table(directory.path(), &[
-        &["-t", "2", "-o-", "."],
-        &["-t", "2", "--quit-after-scan", "."],
+        &["-t", "2", "-O", "export.bin", "."],
     ]), @"
-    $ duit -t 2 -o- .
-    exit_code: 1
-    ----- stdout -----
-
-    ----- stderr -----
-    ^[[JA scan with more than one thread is not supported yet.
-
-    $ duit -t 2 --quit-after-scan .
+    $ duit -t 2 -O export.bin .
     exit_code: 1
     ----- stdout -----
 
