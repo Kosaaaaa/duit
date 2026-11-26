@@ -19,8 +19,9 @@ permissions: {}
 
 # Run it with workflow_dispatch and a tag like "v0.1.0", after the version bump is on `master`. The
 # tag must be a Cargo-style SemVer version, with an optional `v`, that matches the version of the
-# `duit` crate, and a prerelease suffix marks the GitHub Release as a prerelease. The default tag, "dry-run", builds
-# every artifact without publishing anything. On pull requests the workflow only runs `dist plan`.
+# `duit` crate, and a prerelease suffix marks the GitHub Release as a prerelease. The default tag,
+# "dry-run", builds every artifact without publishing anything. On pull requests the workflow only
+# runs `dist plan`.
 on:
   pull_request:
   workflow_dispatch:
