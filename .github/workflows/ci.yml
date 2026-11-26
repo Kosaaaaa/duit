@@ -132,6 +132,18 @@ jobs:
         run: cargo install --locked "typos-cli@${TYPOS_VERSION}"
       - run: typos
 
+  mandoc:
+    name: "check | mandoc"
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: "Install mandoc"
+        run: sudo apt-get update && sudo apt-get install --yes mandoc
+      - run: mandoc -T lint -W warning crates/duit/duit.1
+
   zizmor:
     name: "check | zizmor"
     timeout-minutes: 10
@@ -180,6 +192,7 @@ jobs:
       - shear
       - taplo
       - typos
+      - mandoc
       - zizmor
       - test
     timeout-minutes: 5

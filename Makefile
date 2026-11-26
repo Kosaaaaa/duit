@@ -3,7 +3,7 @@
 
 .DEFAULT_GOAL := help
 .PHONY: help build run test test-one test-ncdu snapshots fmt fmt-check clippy typos shear deny \
-	check bench tools hooks doc clean
+	man check bench tools hooks doc clean
 
 # Arguments for `make run`, e.g. `make run ARGS="-o- ."`.
 ARGS ?=
@@ -63,7 +63,10 @@ shear: ## Check for unused dependencies
 deny: ## Check licenses, sources, and bans of dependencies
 	cargo deny --all-features check licenses sources bans
 
-check: fmt-check clippy typos shear deny ## Run the CI checks except zizmor, then the tests the way CI does
+man: ## Lint the man page with mandoc
+	mandoc -T lint -W warning crates/duit/duit.1
+
+check: fmt-check clippy typos shear deny man ## Run the CI checks except zizmor, then the tests the way CI does
 	cargo nextest run --workspace --locked --profile ci --cargo-profile fast-build
 
 bench: ## Compare scan time and peak memory with ncdu 2.9.2, see BENCHMARKS.md
