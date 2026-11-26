@@ -234,7 +234,7 @@ ncdu is the oracle.
 - **CLI tests.** `std::process::Command` with `insta` snapshots in `crates/duit/tests/it/`.
 - **UI tests.** `ratatui`'s `TestBackend` with `insta` snapshots.
 - **Hostile input.** The importers read untrusted files. A table of malformed inputs must produce an
-  error and never a panic. A fuzz target follows in M6.
+  error and never a panic. The cargo-fuzz targets in `fuzz/` feed both importers arbitrary bytes.
 - **Benchmarks.** `hyperfine` against ncdu on a large tree, for scan time and peak resident memory,
   recorded in `BENCHMARKS.md` from M5.
 

@@ -62,6 +62,7 @@ shear: ## Check for unused dependencies
 
 deny: ## Check licenses, sources, and bans of dependencies
 	cargo deny --all-features check licenses sources bans
+	cargo deny --manifest-path fuzz/Cargo.toml --all-features check licenses sources bans
 
 man: ## Lint the man page with mandoc
 	mandoc -T lint -W warning crates/duit/duit.1

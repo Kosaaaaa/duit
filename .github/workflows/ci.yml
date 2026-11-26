@@ -80,6 +80,8 @@ jobs:
         run: cargo deny --all-features check sources
       - name: "Check bans"
         run: cargo deny --all-features check bans
+      - name: "Check the dependencies of the fuzz targets"
+        run: cargo deny --manifest-path fuzz/Cargo.toml --all-features check licenses sources bans
 
   shear:
     name: "check | cargo shear"

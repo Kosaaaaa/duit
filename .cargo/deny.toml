@@ -8,10 +8,12 @@ multiple-versions = "allow"
 
 [bans.build]
 # Every dependency that runs a build script must be listed here. Review the script
-# before adding a crate, and remove the entry when the crate leaves the lockfile.
+# before adding a crate, and remove the entry when the crate leaves both lockfiles.
 allow-build-scripts = [
   "getrandom",
   "libc",
+  # Compiles the bundled libFuzzer, for the targets in `fuzz/`, which have a lockfile of their own.
+  "libfuzzer-sys",
   "parking_lot_core",
   "proc-macro2",
   "quote",
@@ -47,4 +49,7 @@ allow = [
   "Unicode-3.0",
   "Zlib",
 ]
-exceptions = []
+exceptions = [
+  # libFuzzer, which the targets in `fuzz/` link, is under the LLVM license.
+  { crate = "libfuzzer-sys", allow = ["NCSA"] },
+]

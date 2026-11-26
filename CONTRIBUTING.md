@@ -69,6 +69,24 @@ python3 scripts/benchmark.py
 The results go to `target/benchmark/results.md`. [BENCHMARKS.md](BENCHMARKS.md) records the last
 run.
 
+### Fuzzing
+
+The `fuzz/` directory holds [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) targets for the
+importers, which read untrusted files: `json_import` for JSON exports, plain or compressed with
+zstd, and `bin_reader` for binary exports. It is a workspace of its own that needs a nightly
+toolchain, and CI does not build it. To run a target for five minutes, seeded with the golden files:
+
+```shell
+rustup toolchain install nightly
+cargo install --locked cargo-fuzz
+mkdir -p fuzz/corpus/json_import
+cargo +nightly fuzz run json_import fuzz/corpus/json_import crates/duit/tests/fixtures -- -max_total_time=300
+```
+
+The first directory collects the corpus. A crash is saved to `fuzz/artifacts/<target>/`, and
+`cargo +nightly fuzz run <target> <file>` runs it again. Add the input to the tests of the importer
+before fixing it.
+
 ## 🎨 Formatting
 
 ```shell
@@ -99,8 +117,11 @@ cargo shear --deny-warnings
 
 ### Licenses and sources of dependencies
 
+The fuzz targets have a lockfile of their own, which the second command checks:
+
 ```shell
 cargo deny --all-features check licenses sources bans
+cargo deny --manifest-path fuzz/Cargo.toml --all-features check licenses sources bans
 ```
 
 ### Man page
@@ -176,7 +197,7 @@ list item of an entry on one line, because GitHub renders every line break in th
 To release a version, for example `0.1.0`:
 
 1. Set the version in `[workspace.package]` and in the internal crates in `[workspace.dependencies]`
-   of the root `Cargo.toml`.
+   of the root `Cargo.toml`, and in the dependencies of `fuzz/Cargo.toml`, which CI does not build.
 2. Replace `Not released yet.` in the CHANGELOG.md entry with `Released on YYYY-MM-DD.`, update the
    status in `README.md`, which the archives include, and merge the change into `master`.
 3. Run the workflow with the default tag, `dry-run`, to build every artifact without publishing:
