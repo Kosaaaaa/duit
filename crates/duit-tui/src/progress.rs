@@ -11,11 +11,12 @@ use crate::ui::{FmtSize, Style, Window, shorten, to_utf8};
 /// What a scan or an import is doing, as `global.state` in `sink.zig`.
 #[derive(Debug, Clone, Copy)]
 pub enum ScanState<'a> {
-    /// The entries are being read, with the counters of a [`duit_model::Progress`].
+    /// The entries are being read, with the counters of a [`duit_model::Progress`] and the
+    /// directory that each thread reads, or `None` for a thread that waits for one.
     Running {
         files: u64,
         bytes: u64,
-        directory: Option<&'a [u8]>,
+        directories: &'a [Option<&'a [u8]>],
         last_error: Option<&'a [u8]>,
     },
     /// A refresh clears the counts of the directory that it scans again, `zeroing`.
@@ -65,19 +66,17 @@ impl Console {
             ScanState::Running {
                 files,
                 bytes,
-                directory,
+                directories,
                 last_error: _,
             } => {
                 let size = FmtSize::new(bytes, si);
-                let directory = to_utf8(directory.unwrap_or(b"(waiting)"));
-                let _ = write!(
-                    output,
-                    "{files} files / {}{}\n  #1: {}\n",
-                    size.number,
-                    size.unit,
-                    shorten(&directory, 73)
-                );
-                self.lines += 2;
+                let _ = writeln!(output, "{files} files / {}{}", size.number, size.unit);
+                self.lines += 1;
+                for (thread, directory) in directories.iter().enumerate() {
+                    let directory = to_utf8(directory.unwrap_or(b"(waiting)"));
+                    let _ = writeln!(output, "  #{}: {}", thread + 1, shorten(&directory, 73));
+                    self.lines += 1;
+                }
             }
             ScanState::CountingHardLinks { done, total } => {
                 output.push_str("Counting hardlinks...");
@@ -126,9 +125,9 @@ impl ScanScreen {
             ScanState::Running {
                 files,
                 bytes,
-                directory,
+                directories,
                 last_error,
-            } => self.draw_progress(buffer, files, bytes, directory, last_error, options),
+            } => self.draw_progress(buffer, files, bytes, directories, last_error, options),
             ScanState::Zeroing => {
                 let window = Window::new(buffer, scheme, 4, width, "Initializing");
                 window.text(buffer, 2, 2, "Clearing directory counts...", Style::Default);
@@ -158,37 +157,44 @@ impl ScanScreen {
         }
     }
 
-    /// The counters, the directory, the last error, the key that aborts, and the animation,
-    /// `drawProgress` in `sink.zig` with one thread.
+    /// The counters, the directory of each thread, the last error, the key that aborts, and the
+    /// animation, `drawProgress` in `sink.zig`. The threads get a row each, at most 10 fewer than
+    /// the rows of the terminal and at least one.
     fn draw_progress(
         &mut self,
         buffer: &mut Buffer,
         files: u64,
         bytes: u64,
-        directory: Option<&[u8]>,
+        directories: &[Option<&[u8]>],
         last_error: Option<&[u8]>,
         options: &BrowserOptions,
     ) {
         let width = buffer.area.width.saturating_sub(5);
-        let window = Window::new(buffer, options.color, 9, width, "Scanning...");
+        let rows = buffer.area.height.saturating_sub(10).max(1);
+        let directories = directories.get(..usize::from(rows)).unwrap_or(directories);
+        // At most `rows` threads, which is a `u16`.
+        let threads = u16::try_from(directories.len()).unwrap_or(rows);
+        let window = Window::new(buffer, options.color, 8 + threads, width, "Scanning...");
         let x = window.text(buffer, 2, 2, "Total items: ", Style::Default);
         window.number(buffer, 2, x, files, &options.thousands_separator);
         if width > 48 {
             let x = window.text(buffer, 2, 30, "size: ", Style::Default);
             window.size(buffer, 2, x, bytes, options.si);
         }
-        let directory = to_utf8(directory.unwrap_or(b"(waiting)"));
-        let directory = shorten(&directory, width.saturating_sub(6).into());
-        window.text(buffer, 3, 4, &directory, Style::Default);
+        for (row, directory) in (3..).zip(directories) {
+            let directory = to_utf8(directory.unwrap_or(b"(waiting)"));
+            let directory = shorten(&directory, width.saturating_sub(6).into());
+            window.text(buffer, row, 4, &directory, Style::Default);
+        }
         if let Some(path) = last_error {
-            let x = window.text(buffer, 5, 2, "Warning: ", Style::Bold);
-            let x = window.text(buffer, 5, x, "error scanning ", Style::Default);
+            let x = window.text(buffer, 4 + threads, 2, "Warning: ", Style::Bold);
+            let x = window.text(buffer, 4 + threads, x, "error scanning ", Style::Default);
             let path = to_utf8(path);
             let path = shorten(&path, width.saturating_sub(28).into());
-            window.text(buffer, 5, x, &path, Style::Default);
+            window.text(buffer, 4 + threads, x, &path, Style::Default);
             window.text(
                 buffer,
-                6,
+                5 + threads,
                 3,
                 "some directory sizes may not be correct.",
                 Style::Default,
@@ -199,9 +205,9 @@ impl ScanScreen {
         } else {
             (width.saturating_sub(18), "q", " to abort")
         };
-        let x = window.text(buffer, 7, x, "Press ", Style::Default);
-        let x = window.text(buffer, 7, x, key, Style::Key);
-        window.text(buffer, 7, x, action, Style::Default);
+        let x = window.text(buffer, 6 + threads, x, "Press ", Style::Default);
+        let x = window.text(buffer, 6 + threads, x, key, Style::Key);
+        window.text(buffer, 6 + threads, x, action, Style::Default);
         if self.animate && width > 40 {
             const TEXT: &str = "Scanning...";
             self.animation += 1;
@@ -216,7 +222,7 @@ impl ScanScreen {
             };
             if let Some(text) = TEXT.get(start..end) {
                 let column = u16::try_from(start).map_or(u16::MAX, |start| start + 2);
-                window.text(buffer, 7, column, text, Style::Default);
+                window.text(buffer, 6 + threads, column, text, Style::Default);
             }
         }
     }
@@ -291,13 +297,13 @@ mod tests {
             ScanState::Running {
                 files: 1,
                 bytes: 4096,
-                directory: Some(b"/root"),
+                directories: &[Some(b"/root")],
                 last_error: None,
             },
             ScanState::Running {
                 files: 1234,
                 bytes: 1 << 30,
-                directory: Some(b"/root/sub"),
+                directories: &[Some(b"/root/sub")],
                 last_error: None,
             },
             ScanState::CountingHardLinks { done: 0, total: 0 },
@@ -331,19 +337,39 @@ mod tests {
             ScanState::Running {
                 files: 0,
                 bytes: 0,
-                directory: Some(&long),
+                directories: &[Some(&long)],
                 last_error: None,
             },
             ScanState::Running {
                 files: 2,
                 bytes: 0,
-                directory: None,
+                directories: &[None],
                 last_error: None,
             },
         ];
         assert_snapshot!(draws(&mut Console::new(false), &states, false), @r"
         0 files /   0.0   B\n  #1: /\xFFaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n
         2 files /   0.0   B\n  #1: (waiting)\n
+        ");
+    }
+
+    /// With several threads, a line follows the counters for each thread, numbered from 1, with
+    /// `(waiting)` for a thread that waits for a directory, as `drawConsole` in `sink.zig` writes
+    /// them. The next draw erases every line.
+    #[test]
+    fn threads() {
+        let states = [
+            ScanState::Running {
+                files: 3,
+                bytes: 4096,
+                directories: &[Some(b"/root/first"), None, Some(b"/root/third")],
+                last_error: None,
+            },
+            ScanState::CountingHardLinks { done: 0, total: 0 },
+        ];
+        assert_snapshot!(draws(&mut Console::new(true), &states, false), @r"
+        3 files /   4.0 KiB\n  #1: /root/first\n  #2: (waiting)\n  #3: /root/third\n
+        ^[[1F^[[2K^[[1F^[[2K^[[1F^[[2K^[[1F^[[2KCounting hardlinks...\n
         ");
     }
 }

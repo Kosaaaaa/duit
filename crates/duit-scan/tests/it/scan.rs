@@ -7,12 +7,14 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::PathBuf;
 #[cfg(feature = "test-ncdu")]
 use std::process::Command;
-use std::time::{Duration, SystemTime};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime};
 
 #[cfg(feature = "test-ncdu")]
 use duit_format::JsonExport;
 use duit_model::{
-    DirectoryId, EntryKind, EntryType, Extended, MemorySink, Sink, Special, Stat, Tree,
+    DirectoryId, EntryKind, EntryType, Extended, MemorySink, Producer, Progress, ProgressSink,
+    Sink, Special, Stat, Tree,
 };
 use duit_scan::{ExcludePatterns, ScanOptions, scan};
 use insta::assert_snapshot;
@@ -705,5 +707,63 @@ fn threads() {
             summary(&scan_tree(&fixture, one)),
             "exclude_caches: {exclude_caches}"
         );
+    }
+}
+
+/// With several threads, the progress shows the directory that each thread reads, from when it
+/// takes the directory until the calling thread takes its entries, as `setDir` in `sink.zig` sets
+/// `current_dir` of each thread, and none for a thread that waits. No thread reads before the
+/// root is created. Once the root is reported, the calling thread waits in the progress, so that
+/// the directories that were read fill the channel and each thread waits to send one more.
+#[test]
+fn thread_directories() {
+    let fixture = Fixture::new();
+    for index in 0..24 {
+        fixture.write(&format!("d{index:02}/file"), b"x");
+    }
+    let mut first = None;
+    let mut reading = None;
+    let mut record = |progress: &Progress| {
+        if first.is_none() {
+            first = Some(progress.directories());
+        } else if reading.is_none() && progress.files() > 0 {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut directories = progress.directories();
+            while directories.iter().any(Option::is_none) && Instant::now() < deadline {
+                thread::yield_now();
+                directories = progress.directories();
+            }
+            reading = Some(directories);
+        }
+        Ok(())
+    };
+    let mut sink = ProgressSink::new(MemorySink::new(false), Producer::Scan, &mut record);
+    let options = ScanOptions {
+        threads: 3,
+        ..ScanOptions::default()
+    };
+    scan(
+        &mut sink,
+        &fixture.c_path(),
+        options,
+        &ExcludePatterns::default(),
+    )
+    .expect("scan succeeds");
+    drop(sink);
+    assert_eq!(first, Some(vec![None; 3]));
+    let directories: Vec<Vec<u8>> = (0..24)
+        .map(|index| {
+            fixture
+                .path(&format!("d{index:02}"))
+                .as_os_str()
+                .as_bytes()
+                .to_vec()
+        })
+        .collect();
+    let reading = reading.expect("the root is reported");
+    assert_eq!(reading.len(), 3);
+    for directory in reading {
+        let directory = directory.expect("each thread reads a directory");
+        assert!(directories.contains(&directory), "{}", name(&directory));
     }
 }

@@ -110,13 +110,16 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
   same export. No `rayon`, no async. The default stays one thread, as in ncdu, which scans
   depth-first without the queue. While no directory arrives, the calling thread lets the progress
   handle an event every 100 ms, where ncdu's first thread handles one for each entry it reads. The
-  progress shows the directory that the calling thread reports, where ncdu shows a line for each
-  thread. A `-o` export with more than one thread is written from the tree after the scan, as in
-  ncdu, and a root that cannot be read ends it as with one thread, where ncdu 2.9.2 crashes: `done`
-  replays a tree whose root was never created at `sink.zig:265-268`. A `-O` export with more than
-  one thread is written as the calling thread reports the scan, into one buffer as with one thread,
-  where each ncdu thread fills a buffer of its own (`bin_export.zig:88-149`). The bytes of the file
-  differ from ncdu's, and it holds the items of a scan with one thread.
+  progress shows a line for each thread, as ncdu does: the directory from when the thread takes it
+  until the calling thread takes its entries, which stands for ncdu reporting them, and `(waiting)`
+  while it waits for one. No thread reads yet when the root is created, where ncdu's first thread
+  shows the root at its first event. A `-o` export with more than one thread is written from the
+  tree after the scan, as in ncdu, and a root that cannot be read ends it as with one thread, where
+  ncdu 2.9.2 crashes: `done` replays a tree whose root was never created at `sink.zig:265-268`. A
+  `-O` export with more than one thread is written as the calling thread reports the scan, into one
+  buffer as with one thread, where each ncdu thread fills a buffer of its own
+  (`bin_export.zig:88-149`). The bytes of the file differ from ncdu's, and it holds the items of a
+  scan with one thread.
 - **Errors: plain enums, and no error crate.** Every message is ncdu's, as bytes that need not be
   UTF-8, so an error carries what the caller needs to build that message, as `ScanError` does.
 - **Read errors: the directory whose `readdir` failed is marked, unlike ncdu.** At `scan.zig:283`,

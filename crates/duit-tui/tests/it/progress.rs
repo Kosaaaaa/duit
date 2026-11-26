@@ -15,7 +15,7 @@ const UPDATE_DELAY: Duration = Duration::from_millis(100);
 const RUNNING: ScanState<'static> = ScanState::Running {
     files: 1234,
     bytes: 1 << 30,
-    directory: Some(b"/root/sub"),
+    directories: &[Some(b"/root/sub")],
     last_error: None,
 };
 
@@ -101,7 +101,7 @@ fn running_error() {
     let state = ScanState::Running {
         files: 5,
         bytes: 20480,
-        directory: Some(&directory),
+        directories: &[Some(&directory)],
         last_error: Some(&error),
     };
     let options = BrowserOptions {
@@ -158,7 +158,7 @@ fn widths() {
     let state = ScanState::Running {
         files: 1_234_567,
         bytes: 4096,
-        directory: None,
+        directories: &[None],
         last_error: None,
     };
     let options = BrowserOptions {
@@ -230,6 +230,73 @@ fn widths() {
     "   │                                               │  "
     "   │                              Press q to abort │  "
     "   └───────────────────────────────────────────────┘  "
+    "#);
+}
+
+/// With several threads, the box has a row for the directory of each thread, or `(waiting)` for a
+/// thread that waits for one, and the warning and the key that aborts move down with them, as
+/// `drawProgress` in `sink.zig` draws them. The rows of the threads are at most 10 fewer than the
+/// rows of the terminal, and at least one.
+#[test]
+fn threads() {
+    let state = ScanState::Running {
+        files: 1234,
+        bytes: 1 << 30,
+        directories: &[Some(b"/root/first"), None, Some(b"/root/third")],
+        last_error: Some(b"/root/unreadable"),
+    };
+    let mut rendered = String::new();
+    for height in [13, 12, 11] {
+        let mut screen = ScanScreen::new(UPDATE_DELAY);
+        let terminal = draw(
+            &mut screen,
+            &state,
+            &BrowserOptions::default(),
+            (60, height),
+        );
+        let _ = writeln!(rendered, "{height} rows:");
+        rendered.push_str(&terminal.backend().to_string());
+    }
+    assert_snapshot!(rendered, @r#"
+    13 rows:
+    "                                                            "
+    "   ┌── Scanning... ──────────────────────────────────────┐  "
+    "   │                                                     │  "
+    "   │ Total items: 1,234          size:   1.0 GiB         │  "
+    "   │   /root/first                                       │  "
+    "   │   (waiting)                                         │  "
+    "   │   /root/third                                       │  "
+    "   │                                                     │  "
+    "   │ Warning: error scanning /root/unreadable            │  "
+    "   │  some directory sizes may not be correct.           │  "
+    "   │ Sc                                 Press q to abort │  "
+    "   └─────────────────────────────────────────────────────┘  "
+    "                                                            "
+    12 rows:
+    "                                                            "
+    "   ┌── Scanning... ──────────────────────────────────────┐  "
+    "   │                                                     │  "
+    "   │ Total items: 1,234          size:   1.0 GiB         │  "
+    "   │   /root/first                                       │  "
+    "   │   (waiting)                                         │  "
+    "   │                                                     │  "
+    "   │ Warning: error scanning /root/unreadable            │  "
+    "   │  some directory sizes may not be correct.           │  "
+    "   │ Sc                                 Press q to abort │  "
+    "   └─────────────────────────────────────────────────────┘  "
+    "                                                            "
+    11 rows:
+    "                                                            "
+    "   ┌── Scanning... ──────────────────────────────────────┐  "
+    "   │                                                     │  "
+    "   │ Total items: 1,234          size:   1.0 GiB         │  "
+    "   │   /root/first                                       │  "
+    "   │                                                     │  "
+    "   │ Warning: error scanning /root/unreadable            │  "
+    "   │  some directory sizes may not be correct.           │  "
+    "   │ Sc                                 Press q to abort │  "
+    "   └─────────────────────────────────────────────────────┘  "
+    "                                                            "
     "#);
 }
 

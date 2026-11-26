@@ -102,7 +102,8 @@ fn table(cases: &[Case<'_>]) -> String {
 /// With `-1`, the scan or the import writes its progress to standard error once the update delay
 /// has passed, and erases it when it is done, if standard error is a terminal that takes ANSI
 /// escapes. `-q` and `--slow-ui-updates` raise the update delay to 2 s, and `--fast-ui-updates`
-/// sets it back to 100 ms.
+/// sets it back to 100 ms. An import has one thread whatever `-t` says, as `json_import.zig` calls
+/// `createThreads(1)`, so it shows one line for it.
 #[test]
 fn line() {
     let arguments: &[&str] = &["-1", "-f", "-", "-o", "export.json"];
@@ -116,12 +117,14 @@ fn line() {
         "-o",
         "export.json",
     ];
+    let threads: &[&str] = &["-t", "3", "-1", "-f", "-", "-o", "export.json"];
     assert_snapshot!(table(&[
         (arguments, To::Pipe, To::Pipe, "xterm"),
         (arguments, To::Pipe, To::Terminal, "xterm"),
         (arguments, To::Pipe, To::Terminal, "dumb"),
         (quiet, To::Pipe, To::Terminal, "xterm"),
         (fast, To::Pipe, To::Terminal, "xterm"),
+        (threads, To::Pipe, To::Terminal, "xterm"),
     ]), @"
     $ TERM=xterm duit -1 -f - -o export.json (stdout: Pipe, stderr: Pipe)
     2 files /  12.0 KiB
@@ -142,6 +145,11 @@ fn line() {
     ^[[J
 
     $ TERM=xterm duit --slow-ui-updates --fast-ui-updates -1 -f - -o export.json (stdout: Pipe, stderr: Terminal)
+    2 files /  12.0 KiB^M
+      #1: /root^M
+    ^[[1F^[[2K^[[1F^[[2K^[[J
+
+    $ TERM=xterm duit -t 3 -1 -f - -o export.json (stdout: Pipe, stderr: Terminal)
     2 files /  12.0 KiB^M
       #1: /root^M
     ^[[1F^[[2K^[[1F^[[2K^[[J

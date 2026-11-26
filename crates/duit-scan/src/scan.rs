@@ -2,8 +2,11 @@ use std::ffi::CStr;
 use std::fs::File;
 use std::io::{self, Read};
 use std::os::fd::{AsFd, BorrowedFd};
+use std::sync::Arc;
 
-use duit_model::{BLOCKS_MAX, EntryType, Extended, Sink, Special, Stat};
+use duit_model::{
+    BLOCKS_MAX, DirectoryPath, EntryType, Extended, Sink, Special, Stat, ThreadDirectories,
+};
 use rustix::fs::{AtFlags, CWD, Dir, FileType, Mode, OFlags, openat, statat};
 
 use crate::{DirectoryPatterns, ExcludePatterns, Excluded, threads};
@@ -41,11 +44,11 @@ pub enum ScanError {
 }
 
 /// A directory whose entries are being read.
-struct Frame<'a, D> {
-    entries: Dir,
-    device: u64,
-    patterns: DirectoryPatterns<'a>,
-    sink: D,
+pub(crate) struct Frame<'a, D> {
+    pub(crate) entries: Dir,
+    pub(crate) device: u64,
+    pub(crate) patterns: DirectoryPatterns<'a>,
+    pub(crate) sink: D,
 }
 
 /// Scan the directory at `path` and report its tree to `sink`, in the order of `readdir`. The path
@@ -74,6 +77,11 @@ pub fn scan<S: Sink>(
     )
     .and_then(Dir::new)
     .map_err(|error| ScanError::Open(error.into()))?;
+    let threads = (options.threads > 1).then(|| {
+        let threads = Arc::new(ThreadDirectories::new(options.threads));
+        sink.threads(Arc::clone(&threads));
+        threads
+    });
     let root = sink
         .create_root(path.to_bytes(), &stat)
         .map_err(ScanError::Sink)?;
@@ -83,15 +91,9 @@ pub fn scan<S: Sink>(
         patterns: exclude.for_path(path),
         sink: root,
     };
-    if options.threads > 1 {
-        return threads::walk(
-            sink,
-            frame.sink,
-            frame.entries,
-            frame.device,
-            frame.patterns,
-            options,
-        );
+    if let Some(threads) = threads {
+        let root = DirectoryPath::root(path.to_bytes());
+        return threads::walk(sink, frame, root, &threads, options);
     }
     walk(sink, vec![frame], options).map_err(ScanError::Sink)
 }
