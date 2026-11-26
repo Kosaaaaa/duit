@@ -298,7 +298,7 @@ Done when scan time and peak memory are at or below ncdu's, or the gap is docume
 
 Man page, changelog, prebuilt binaries with cargo-dist for Linux and macOS, crates.io, and fuzzing.
 
-Done when `0.1.0` is published.
+Done when `0.1.0` is published. Done.
 
 M1 comes first because it has no UI: its output can be compared with ncdu's by a machine from the
 first day.
