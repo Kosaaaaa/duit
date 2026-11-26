@@ -681,7 +681,9 @@ fn refresh_hard_links() {
 
 /// A scan with several threads gives the tree of a scan with one, with the totals of every
 /// directory and the sizes of the hard links. The root has more directories than the threads read
-/// at once, a hard link between two of them, and a directory that cannot be read. With
+/// at once, a hard link between two of them, a directory that cannot be read, and a directory
+/// with more entries than a thread sends at once, whose subdirectories can be finished before the
+/// rest of its entries arrive. With
 /// `--exclude-caches`, a directory is opened to check it before its parent is reported, and
 /// without, once a thread takes it. Assumes that the tests do not run as root, which ignores
 /// permissions.
@@ -693,6 +695,12 @@ fn threads() {
         fixture.write(&format!("d{index:02}/sub/nested"), b"x");
     }
     fixture.hard_link("d01/link", "d00/file");
+    for index in 0..200 {
+        fixture.write(&format!("wide/f{index:03}"), b"x");
+    }
+    for index in 0..4 {
+        fixture.write(&format!("wide/s{index}/file"), b"x");
+    }
     fixture.write("cache/CACHEDIR.TAG", CACHEDIR_TAG);
     fixture.write("unreadable/file", b"x");
     fixture.restrict("unreadable", 0o000);
