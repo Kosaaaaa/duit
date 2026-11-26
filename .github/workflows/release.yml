@@ -33,9 +33,9 @@ on:
         type: string
 
 env:
-  # Keep the version in sync with `cargo-dist-version` in `dist-workspace.toml`. A release asset can be
-  # replaced, so the installer is checked against its SHA-256 before it runs. The installer checks the
-  # archive it downloads against the checksums it embeds.
+  # Keep the version in sync with `cargo-dist-version` in `dist-workspace.toml`. A release asset can
+  # be replaced, so the installer is checked against its SHA-256 before it runs. The installer
+  # checks the archive it downloads against the checksums it embeds.
   DIST_INSTALLER_URL: https://github.com/axodotdev/cargo-dist/releases/download/v0.34.0/cargo-dist-installer.sh
   DIST_INSTALLER_SHA256: abb014a8486f08a3c2d9dd8bbf2c646c62fab61b1f1c9ff5bf2811ab305d17b1
 
@@ -72,13 +72,14 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           if [[ -n "$TAG" && "$TAG" != "dry-run" ]]; then
-            # The release tag is created on the commit the workflow runs on, which must be reviewed.
+            # The release tag is created on the commit that the workflow runs on, which must be
+            # reviewed.
             if [[ "$GITHUB_REF" != "refs/heads/master" ]]; then
               echo "::error::Releases are published from master, not $GITHUB_REF"
               exit 1
             fi
-            # `gh release create` reuses an existing tag and ignores `--target`, so the tag would not
-            # point at the commit that the archives are built from.
+            # `gh release create` reuses an existing tag and ignores `--target`, so the tag would
+            # not point at the commit that the archives are built from.
             if lookup="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --silent 2>&1)"; then
               echo "::error::Tag $TAG already exists"
               exit 1
