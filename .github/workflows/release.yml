@@ -77,6 +77,12 @@ jobs:
               echo "::error::Releases are published from master, not $GITHUB_REF"
               exit 1
             fi
+            # `gh release create` reuses an existing tag and ignores `--target`, so the tag would not
+            # point at the commit that the archives are built from.
+            if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --silent 2>/dev/null; then
+              echo "::error::Tag $TAG already exists"
+              exit 1
+            fi
             dist host --steps=create "--tag=$TAG" --output-format=json > plan-dist-manifest.json
           else
             dist plan --output-format=json > plan-dist-manifest.json
