@@ -186,5 +186,7 @@ To release a version, for example `0.1.0`:
    exists already.
 5. Publish the crates from that tag by hand: `cargo publish --workspace`.
 
-`.github/workflows/release.yml` is maintained by hand, so that it passes zizmor. After a dist
-upgrade, compare it with the output of `dist generate`.
+`.github/workflows/release.yml` is maintained by hand, so that it passes zizmor. A dist upgrade
+changes `cargo-dist-version` in `dist-workspace.toml` together with `DIST_INSTALLER_URL` and
+`DIST_INSTALLER_SHA256` in the workflow, which fails when the versions differ. After the upgrade,
+compare the workflow with the output of `dist generate`.
