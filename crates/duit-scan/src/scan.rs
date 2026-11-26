@@ -55,9 +55,9 @@ pub(crate) struct Frame<'a, D> {
 /// is reported as given, so a caller that wants an absolute path resolves it first.
 ///
 /// With one thread, the tree is reported depth-first. With more, as `-t` in ncdu, threads read
-/// whole directories while the calling thread reports them, so the entries of a directory follow
-/// in one go, while other directories that are not finished yet may get entries in between. Each
-/// directory is finished once its entries and its subdirectories are. Only a sink that keeps every
+/// directories while the calling thread reports them, so the entries of a directory follow in the
+/// order of `readdir`, in parts, while other directories that are not finished yet may get entries
+/// in between. Each directory is finished once its entries and its subdirectories are. Only a sink that keeps every
 /// directory apart, such as the tree in memory, takes such a scan.
 ///
 /// Fails if the root cannot be read, before `sink` sees anything, if a thread cannot be started,

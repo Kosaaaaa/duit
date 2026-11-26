@@ -1,10 +1,12 @@
 //! A scan with several threads, `-t` in ncdu. Unlike ncdu, whose threads each report to the sink,
-//! the threads read and `stat` whole directories and send them to the calling thread, which alone
-//! reports them to the sink. A [`Sink`] then needs no locks, and the progress is counted in one
-//! place.
+//! the threads read and `stat` directories and send their entries in parts to the calling thread,
+//! which alone reports them to the sink. A [`Sink`] then needs no locks, and the progress is
+//! counted in one place.
 
 use std::ffi::CString;
 use std::io;
+use std::mem;
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
@@ -12,14 +14,20 @@ use std::time::Duration;
 
 use duit_model::{DirectoryPath, Sink, ThreadDirectories};
 use rustix::fs::Dir;
+use rustix::io::fcntl_dupfd_cloexec;
 
 use crate::scan::{Entry, Frame, add_unreadable, classify, open_directory};
 use crate::{DirectoryPatterns, ScanError, ScanOptions};
 
-/// How many directories that were read wait for the calling thread before the threads that read
-/// more wait too, as the size of the queue in `State` in `scan.zig` bounds the directories that
-/// wait there.
+/// How many parts of directories that were read wait for the calling thread before the threads
+/// that read more wait too, as the size of the queue in `State` in `scan.zig` bounds the
+/// directories that wait there.
 const LISTINGS_MAX: usize = 16;
+
+/// How many entries a part of a directory holds at most. The threads send a directory in parts,
+/// so that the channel holds at most [`LISTINGS_MAX`] times as many entries, however large a
+/// directory is, where ncdu reports each entry as it reads it.
+const PART_ENTRIES: usize = 64;
 
 /// How long the calling thread waits for a directory before the sink can handle an event, so that
 /// the progress is drawn and its keys are read while a large directory is read.
@@ -41,19 +49,43 @@ enum Location {
     /// The root, which is opened before the threads start.
     Open(Dir),
     /// A subdirectory, by its name in its parent.
-    At(Arc<Dir>, CString),
+    At(Arc<Parent>, CString),
 }
 
-/// The entries of a directory, as a thread read them.
+/// A directory that its subdirectories are opened in.
+enum Parent {
+    /// A copy of the descriptor of a directory, for the subdirectories in the parts that are sent
+    /// while the thread reads on.
+    Copy(OwnedFd),
+    /// A directory that was read to the end.
+    Read(Dir),
+}
+
+impl Parent {
+    fn fd(&self) -> io::Result<BorrowedFd<'_>> {
+        match self {
+            Self::Copy(fd) => Ok(fd.as_fd()),
+            Self::Read(directory) => Ok(directory.fd()?),
+        }
+    }
+}
+
+/// A part of the entries of a directory, as a thread read them. The parts of a directory follow
+/// each other in the order of `readdir`, and the last one ends the directory.
 struct Listing<'a> {
     /// The index of the directory in [`Directories`].
     index: usize,
-    /// The entries, in the order of `readdir`. A directory among them is not open.
+    /// At most [`PART_ENTRIES`] entries, in the order of `readdir`. A directory among them is not
+    /// open.
     entries: Vec<(CString, Entry<'a>)>,
-    /// Whether the directory could not be opened, or `readdir` failed before the end.
+    /// Whether this is the last part of the directory.
+    last: bool,
+    /// Whether the directory could not be opened, or `readdir` failed before the end, in the last
+    /// part.
     read_error: bool,
-    /// The directory, which its subdirectories are opened in, or `None` if it could not be opened.
-    directory: Option<Arc<Dir>>,
+    /// The directory, which the subdirectories among the entries are opened in, or `None` if they
+    /// cannot be opened.
+    directory: Option<Arc<Parent>>,
     /// The path of the directory, which the paths of its subdirectories are joined to.
     path: Arc<DirectoryPath>,
 }
@@ -124,8 +156,8 @@ struct Open<D> {
     sink: D,
     /// The index of the parent, or `None` for the root.
     parent: Option<usize>,
-    /// The listing of the directory, until it is reported, and its subdirectories that are not
-    /// finished.
+    /// The listing of the directory, until its last part is reported, and its subdirectories
+    /// that are not finished.
     waiting: usize,
 }
 
@@ -256,7 +288,8 @@ fn receive<'a, S: Sink>(
 }
 
 /// Report the entries of `listing` to `sink`, queue its subdirectories, and finish the directories
-/// that are done then. Return whether the root is finished.
+/// that are done then, once it is the last part of its directory. Return whether the root is
+/// finished.
 fn report<'a, S: Sink>(
     sink: &mut S,
     listing: Listing<'a>,
@@ -266,6 +299,7 @@ fn report<'a, S: Sink>(
     let Listing {
         index,
         entries,
+        last,
         read_error,
         directory: opened,
         path,
@@ -282,7 +316,8 @@ fn report<'a, S: Sink>(
             Entry::Stat(stat) => sink.add_stat(&mut directory.sink, bytes, &stat)?,
             Entry::Unreadable(stat) => add_unreadable(sink, &mut directory.sink, bytes, &stat)?,
             Entry::Directory { stat, patterns, .. } => {
-                // A listing of a directory that could not be opened has no entries.
+                // A part whose directory has no descriptor for its subdirectories reports them as
+                // directories that cannot be opened.
                 let Some(parent) = &opened else {
                     add_unreadable(sink, &mut directory.sink, bytes, &stat)?;
                     continue;
@@ -307,15 +342,18 @@ fn report<'a, S: Sink>(
     if read_error {
         sink.set_read_error(&mut directory.sink)?;
     }
-    directory.waiting = directory.waiting.saturating_sub(1);
+    if last {
+        directory.waiting = directory.waiting.saturating_sub(1);
+    }
     let slot = directories.open.get_mut(index).ok_or_else(missing)?;
     *slot = Some(directory);
     directories.finish(sink, index)
 }
 
 /// Read the directories of `queue` and send them to `listings` until the scan is over, `run` of
-/// `Thread` in `scan.zig`. The progress shows the directory from when `thread` takes it until it
-/// is sent, as ncdu shows it until its entries are reported, and none while `thread` waits.
+/// `Thread` in `scan.zig`. The progress shows the directory from when `thread` takes it until its
+/// last part is sent, as ncdu shows it until its entries are reported, and none while `thread`
+/// waits.
 fn read_directories<'a>(
     thread: usize,
     queue: &Queue<'a>,
@@ -325,33 +363,44 @@ fn read_directories<'a>(
 ) {
     while let Some(job) = queue.pop() {
         threads.set(thread, Some(Arc::clone(&job.path)));
-        let sent = listings.send(read(job, options));
+        let sent = read(job, options, &mut |listing| listings.send(listing).is_ok());
         threads.set(thread, None);
-        if sent.is_err() {
+        if !sent {
             return;
         }
     }
 }
 
-/// Read and classify the entries of the directory of `job`.
-fn read(job: Job<'_>, options: ScanOptions) -> io::Result<Listing<'_>> {
+/// Read and classify the entries of the directory of `job`, and pass them to `send` in parts.
+/// Return `false` once `send` does, as the calling thread takes no more.
+fn read<'a>(
+    job: Job<'a>,
+    options: ScanOptions,
+    send: &mut dyn FnMut(io::Result<Listing<'a>>) -> bool,
+) -> bool {
     let mut listing = Listing {
         index: job.index,
         entries: Vec::new(),
+        last: true,
         read_error: false,
         directory: None,
         path: job.path,
     };
-    let mut entries = match job.location {
-        Location::Open(entries) => entries,
-        Location::At(parent, name) => {
-            let Ok(entries) = open_directory(parent.fd()?, &name) else {
-                listing.read_error = true;
-                return Ok(listing);
-            };
-            entries
-        }
+    let opened = match job.location {
+        Location::Open(entries) => Ok(entries),
+        Location::At(parent, name) => match parent.fd() {
+            Ok(parent) => open_directory(parent, &name),
+            Err(error) => return send(Err(error)),
+        },
     };
+    let Ok(mut entries) = opened else {
+        listing.read_error = true;
+        return send(Ok(listing));
+    };
+    // Only a directory with subdirectories in a part before the last needs a copy of its
+    // descriptor, so that most directories take no more than one.
+    let mut copy = None;
+    let mut part_directories = false;
     loop {
         match entries.read() {
             Some(Ok(entry)) => {
@@ -359,14 +408,44 @@ fn read(job: Job<'_>, options: ScanOptions) -> io::Result<Listing<'_>> {
                 if name == c"." || name == c".." {
                     continue;
                 }
-                let mut entry_kind =
-                    classify(entries.fd()?, job.device, &job.patterns, name, options)?;
+                let classified = entries
+                    .fd()
+                    .map_err(io::Error::from)
+                    .and_then(|parent| classify(parent, job.device, &job.patterns, name, options));
+                let mut entry_kind = match classified {
+                    Ok(entry_kind) => entry_kind,
+                    Err(error) => return send(Err(error)),
+                };
                 // The thread that reads a subdirectory opens it again, so that the directories
                 // that wait do not hold a descriptor each.
                 if let Entry::Directory { entries, .. } = &mut entry_kind {
                     *entries = None;
+                    part_directories = true;
                 }
                 listing.entries.push((name.to_owned(), entry_kind));
+                if listing.entries.len() == PART_ENTRIES {
+                    // Without a copy, the subdirectories of the part cannot be opened, as when
+                    // `openat` fails for lack of descriptors.
+                    if part_directories && copy.is_none() {
+                        copy = entries
+                            .fd()
+                            .and_then(|fd| fcntl_dupfd_cloexec(fd, 0))
+                            .ok()
+                            .map(|fd| Arc::new(Parent::Copy(fd)));
+                    }
+                    part_directories = false;
+                    let part = Listing {
+                        index: listing.index,
+                        entries: mem::take(&mut listing.entries),
+                        last: false,
+                        read_error: false,
+                        directory: copy.clone(),
+                        path: Arc::clone(&listing.path),
+                    };
+                    if !send(Ok(part)) {
+                        return false;
+                    }
+                }
             }
             // As in a scan with one thread, the directory that failed to read is marked.
             Some(Err(_)) => {
@@ -376,6 +455,6 @@ fn read(job: Job<'_>, options: ScanOptions) -> io::Result<Listing<'_>> {
             None => break,
         }
     }
-    listing.directory = Some(Arc::new(entries));
-    Ok(listing)
+    listing.directory = Some(copy.unwrap_or_else(|| Arc::new(Parent::Read(entries))));
+    send(Ok(listing))
 }
