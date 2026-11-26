@@ -117,8 +117,11 @@ cargo shear --deny-warnings
 
 ### Licenses and sources of dependencies
 
+The fuzz targets have a lockfile of their own, which the second command checks:
+
 ```shell
 cargo deny --all-features check licenses sources bans
+cargo deny --manifest-path fuzz/Cargo.toml --all-features check licenses sources bans
 ```
 
 ### Man page
