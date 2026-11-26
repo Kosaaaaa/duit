@@ -10,11 +10,14 @@ mod progress;
 /// The text of each line of the screen of `terminal`, quoted, then one line of attributes per
 /// line: `R` for reverse video, `B` for bold, `#` for both, and `.` for neither. When a cell has a
 /// color, the foreground and the background colors of each line follow, as one [`color_code`] per
-/// cell.
+/// cell. The version of duit is replaced by `[VERSION]` so that snapshots survive a version bump.
 fn render(terminal: &Terminal<TestBackend>) -> String {
     let buffer = terminal.backend().buffer();
     let (width, height) = (buffer.area.width, buffer.area.height);
-    let mut screen = terminal.backend().to_string();
+    let mut screen = terminal
+        .backend()
+        .to_string()
+        .replace(env!("CARGO_PKG_VERSION"), "[VERSION]");
     for row in 0..height {
         for column in 0..width {
             let modifier = buffer[(column, row)].modifier;
