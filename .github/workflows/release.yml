@@ -72,6 +72,11 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           if [[ -n "$TAG" && "$TAG" != "dry-run" ]]; then
+            # The release tag is created on the commit the workflow runs on, which must be reviewed.
+            if [[ "$GITHUB_REF" != "refs/heads/master" ]]; then
+              echo "::error::Releases are published from master, not $GITHUB_REF"
+              exit 1
+            fi
             dist host --steps=create "--tag=$TAG" --output-format=json > plan-dist-manifest.json
           else
             dist plan --output-format=json > plan-dist-manifest.json
