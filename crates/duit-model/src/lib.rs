@@ -2,7 +2,7 @@
 
 pub use mem_sink::{MemoryDirectory, MemorySink};
 pub use mem_src::replay;
-pub use progress::{Producer, Progress, ProgressSink};
+pub use progress::{DirectoryPath, Producer, Progress, ProgressSink, ThreadDirectories};
 pub use sink::Sink;
 pub use stat::{EntryType, Extended, Special, Stat};
 pub use tree::{

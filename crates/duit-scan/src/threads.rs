@@ -10,10 +10,10 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::Duration;
 
-use duit_model::Sink;
+use duit_model::{DirectoryPath, Sink, ThreadDirectories};
 use rustix::fs::Dir;
 
-use crate::scan::{Entry, add_unreadable, classify, open_directory};
+use crate::scan::{Entry, Frame, add_unreadable, classify, open_directory};
 use crate::{DirectoryPatterns, ScanError, ScanOptions};
 
 /// How many directories that were read wait for the calling thread before the threads that read
@@ -32,6 +32,8 @@ struct Job<'a> {
     patterns: DirectoryPatterns<'a>,
     /// The index of the directory in [`Directories`].
     index: usize,
+    /// The path that the progress shows while a thread reads the directory.
+    path: Arc<DirectoryPath>,
 }
 
 /// Where the directory of a [`Job`] is.
@@ -52,6 +54,8 @@ struct Listing<'a> {
     read_error: bool,
     /// The directory, which its subdirectories are opened in, or `None` if it could not be opened.
     directory: Option<Arc<Dir>>,
+    /// The path of the directory, which the paths of its subdirectories are joined to.
+    path: Arc<DirectoryPath>,
 }
 
 /// The directories that wait for a thread, taken last in first out as from `State` in `scan.zig`,
@@ -180,26 +184,26 @@ fn missing() -> io::Error {
     io::Error::other("a directory of the scan is missing")
 }
 
-/// Read the tree below `root`, whose `entries` are open and on `device`, with `options.threads`
-/// threads, and report it to `sink`, whose handle of the root is `root`.
+/// Read the tree below the root of `frame`, at `path`, with `options.threads` threads, and report
+/// it to `sink`. Each thread sets the directory it reads in `threads`.
 pub(crate) fn walk<S: Sink>(
     sink: &mut S,
-    root: S::Directory,
-    entries: Dir,
-    device: u64,
-    patterns: DirectoryPatterns<'_>,
+    frame: Frame<'_, S::Directory>,
+    path: Arc<DirectoryPath>,
+    threads: &ThreadDirectories,
     options: ScanOptions,
 ) -> Result<(), ScanError> {
     let queue = Queue::new();
     queue.push(Job {
-        location: Location::Open(entries),
-        device,
-        patterns,
+        location: Location::Open(frame.entries),
+        device: frame.device,
+        patterns: frame.patterns,
         index: 0,
+        path,
     });
     let mut directories = Directories {
         open: vec![Some(Open {
-            sink: root,
+            sink: frame.sink,
             parent: None,
             waiting: 1,
         })],
@@ -207,11 +211,12 @@ pub(crate) fn walk<S: Sink>(
     };
     thread::scope(|scope| {
         let (sender, receiver) = mpsc::sync_channel(LISTINGS_MAX);
-        for _ in 0..options.threads {
+        for number in 0..options.threads {
             let sender = sender.clone();
             let queue = &queue;
-            let spawned = thread::Builder::new()
-                .spawn_scoped(scope, move || read_directories(queue, &sender, options));
+            let spawned = thread::Builder::new().spawn_scoped(scope, move || {
+                read_directories(number, queue, &sender, threads, options);
+            });
             if let Err(error) = spawned {
                 queue.close();
                 return Err(ScanError::Spawn(error));
@@ -263,6 +268,7 @@ fn report<'a, S: Sink>(
         entries,
         read_error,
         directory: opened,
+        path,
     } = listing;
     let mut directory = directories
         .open
@@ -289,6 +295,7 @@ fn report<'a, S: Sink>(
                 });
                 directory.waiting += 1;
                 queue.push(Job {
+                    path: DirectoryPath::child(&path, bytes),
                     location: Location::At(Arc::clone(parent), name),
                     device: stat.device,
                     patterns,
@@ -307,14 +314,20 @@ fn report<'a, S: Sink>(
 }
 
 /// Read the directories of `queue` and send them to `listings` until the scan is over, `run` of
-/// `Thread` in `scan.zig`.
+/// `Thread` in `scan.zig`. The progress shows the directory from when `thread` takes it until it
+/// is sent, as ncdu shows it until its entries are reported, and none while `thread` waits.
 fn read_directories<'a>(
+    thread: usize,
     queue: &Queue<'a>,
     listings: &SyncSender<io::Result<Listing<'a>>>,
+    threads: &ThreadDirectories,
     options: ScanOptions,
 ) {
     while let Some(job) = queue.pop() {
-        if listings.send(read(job, options)).is_err() {
+        threads.set(thread, Some(Arc::clone(&job.path)));
+        let sent = listings.send(read(job, options));
+        threads.set(thread, None);
+        if sent.is_err() {
             return;
         }
     }
@@ -327,6 +340,7 @@ fn read(job: Job<'_>, options: ScanOptions) -> io::Result<Listing<'_>> {
         entries: Vec::new(),
         read_error: false,
         directory: None,
+        path: job.path,
     };
     let mut entries = match job.location {
         Location::Open(entries) => entries,

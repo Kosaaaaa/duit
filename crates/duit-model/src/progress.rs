@@ -1,5 +1,6 @@
 use std::io;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::{Sink, Special, Stat};
 
@@ -34,6 +35,8 @@ pub struct Progress {
     /// The sink clears the counts of the directory that a refresh scans again, `zeroing` in
     /// `sink.zig`.
     zeroing: bool,
+    /// The directory that each thread reads, for a scan with several threads.
+    threads: Option<Arc<ThreadDirectories>>,
 }
 
 impl Progress {
@@ -52,6 +55,16 @@ impl Progress {
     /// the root is finished.
     pub fn directory(&self) -> Option<&[u8]> {
         (!self.open.is_empty()).then_some(self.path.as_slice())
+    }
+
+    /// The path of the directory that each thread reads, as `drawProgress` in `sink.zig` shows a
+    /// line for each, or `None` for a thread that waits for one. A producer without threads has
+    /// one, which reads [`Progress::directory`].
+    pub fn directories(&self) -> Vec<Option<Vec<u8>>> {
+        match &self.threads {
+            Some(threads) => threads.paths(),
+            None => vec![self.directory().map(<[u8]>::to_vec)],
+        }
     }
 
     /// The path of the last entry that could not be read: a directory that failed to read, or an
@@ -150,6 +163,98 @@ impl Drop for Node {
         while let Some(node) = parent {
             parent = Rc::into_inner(node).and_then(|mut node| node.parent.take());
         }
+    }
+}
+
+/// A directory that a thread of a scan reads, by its name and its parent, as `Dir` in `sink.zig`
+/// keeps them to join its path. A thread holds the path while the directory waits for it.
+#[derive(Debug)]
+pub struct DirectoryPath {
+    name: Box<[u8]>,
+    parent: Option<Arc<Self>>,
+}
+
+impl DirectoryPath {
+    /// The root, at `path`.
+    pub fn root(path: &[u8]) -> Arc<Self> {
+        Arc::new(Self {
+            name: path.into(),
+            parent: None,
+        })
+    }
+
+    /// The subdirectory `name` of `parent`.
+    pub fn child(parent: &Arc<Self>, name: &[u8]) -> Arc<Self> {
+        Arc::new(Self {
+            name: name.into(),
+            parent: Some(Arc::clone(parent)),
+        })
+    }
+
+    /// The path, as `Dir.path` in `sink.zig` joins it.
+    fn join(&self) -> Vec<u8> {
+        let mut names = Vec::new();
+        let mut next = Some(self);
+        while let Some(current) = next {
+            names.push(&current.name);
+            next = current.parent.as_deref();
+        }
+        let mut path = Vec::new();
+        for (depth, name) in names.into_iter().rev().enumerate() {
+            push_name(&mut path, depth == 0, name);
+        }
+        path
+    }
+}
+
+impl Drop for DirectoryPath {
+    /// Drop the parents that only this path holds one at a time, so that a deep tree does not
+    /// overflow the stack.
+    fn drop(&mut self) {
+        let mut parent = self.parent.take();
+        while let Some(path) = parent {
+            parent = Arc::into_inner(path).and_then(|mut path| path.parent.take());
+        }
+    }
+}
+
+/// The directory that each thread of a scan reads, `current_dir` of each `Thread` in `sink.zig`,
+/// which the threads set and the progress shows.
+#[derive(Debug)]
+pub struct ThreadDirectories {
+    directories: Box<[Mutex<Option<Arc<DirectoryPath>>>]>,
+}
+
+impl ThreadDirectories {
+    /// The directories of `threads` threads, which read none yet.
+    pub fn new(threads: usize) -> Self {
+        Self {
+            directories: (0..threads).map(|_| Mutex::new(None)).collect(),
+        }
+    }
+
+    /// Set the directory that `thread` reads, or `None` while it waits for one, `setDir` in
+    /// `sink.zig`.
+    pub fn set(&self, thread: usize, directory: Option<Arc<DirectoryPath>>) {
+        if let Some(slot) = self.directories.get(thread) {
+            // A thread that panics while it holds the lock leaves a path or none, so a poisoned
+            // lock is used as it is.
+            *slot.lock().unwrap_or_else(PoisonError::into_inner) = directory;
+        }
+    }
+
+    /// The path of the directory that each thread reads, joined while its lock is held, as
+    /// `drawProgress` in `sink.zig` joins it.
+    fn paths(&self) -> Vec<Option<Vec<u8>>> {
+        self.directories
+            .iter()
+            .map(|slot| {
+                slot.lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .as_deref()
+                    .map(DirectoryPath::join)
+            })
+            .collect()
     }
 }
 
@@ -339,13 +444,19 @@ impl<S: Sink> Sink for ProgressSink<'_, S> {
     fn idle(&mut self) -> io::Result<()> {
         (self.handle_event)(&self.progress)
     }
+
+    /// The progress shows the directory of each thread from then on.
+    fn threads(&mut self, threads: Arc<ThreadDirectories>) {
+        self.progress.threads = Some(threads);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::io;
+    use std::sync::Arc;
 
-    use super::{Producer, Progress, ProgressSink};
+    use super::{DirectoryPath, Producer, Progress, ProgressSink, ThreadDirectories};
     use crate::{EntryType, MemorySink, Sink, Special, Stat};
 
     /// The counters and the directory at each event of the entries that `build` adds, as a
@@ -515,6 +626,57 @@ mod tests {
                 (text("/"), text("/second/unreadable")),
             ]
         );
+    }
+
+    /// With several threads, an event shows the directory that each thread reads, joined as
+    /// `Dir.path` in `sink.zig` joins it, or none for a thread that waits for one, as `setDir` in
+    /// `sink.zig` sets `current_dir`. Without them, it shows the directory being read.
+    #[test]
+    fn threads() {
+        let threads = Arc::new(ThreadDirectories::new(2));
+        let mut events = Vec::new();
+        let mut record = |progress: &Progress| {
+            events.push(progress.directories());
+            Ok(())
+        };
+        let mut sink = ProgressSink::new(MemorySink::new(false), Producer::Scan, &mut record);
+        sink.threads(Arc::clone(&threads));
+        let root_path = DirectoryPath::root(b"/");
+        let child_path = DirectoryPath::child(&root_path, b"child");
+        let built = (|| -> io::Result<()> {
+            let mut root = sink.create_root(b"/", &directory())?;
+            threads.set(0, Some(Arc::clone(&root_path)));
+            sink.idle()?;
+            threads.set(1, Some(DirectoryPath::child(&child_path, b"nested")));
+            sink.add_special(&mut root, b"excluded", Special::Pattern)?;
+            threads.set(0, None);
+            sink.idle()?;
+            threads.set(1, None);
+            sink.finish_directory(root, None)
+        })();
+        built.expect("entries are added");
+        drop(sink);
+        let path = |path: &[u8]| Some(path.to_vec());
+        assert_eq!(
+            events,
+            [
+                vec![None, None],
+                vec![path(b"/"), None],
+                vec![path(b"/"), path(b"/child/nested")],
+                vec![None, path(b"/child/nested")],
+            ]
+        );
+
+        let mut events = Vec::new();
+        let mut record = |progress: &Progress| {
+            events.push(progress.directories());
+            Ok(())
+        };
+        let mut sink = ProgressSink::new(MemorySink::new(false), Producer::Scan, &mut record);
+        sink.create_root(b"root", &directory())
+            .expect("root is added");
+        drop(sink);
+        assert_eq!(events, [vec![path(b"root")]]);
     }
 
     /// A replay of the tree handles an event before each item when the count of files has bits 0

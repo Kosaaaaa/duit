@@ -1,6 +1,7 @@
 use std::io;
+use std::sync::Arc;
 
-use crate::{Special, Stat};
+use crate::{Special, Stat, ThreadDirectories};
 
 /// A consumer of entries, such as an export or the in-memory tree.
 ///
@@ -75,4 +76,9 @@ pub trait Sink {
     fn idle(&mut self) -> io::Result<()> {
         Ok(())
     }
+
+    /// Called by a scan with several threads before [`Sink::create_root`], with the directory
+    /// that each thread reads, as `createThreads` in `sink.zig` creates them, so that a sink that
+    /// shows the progress can show them.
+    fn threads(&mut self, _threads: Arc<ThreadDirectories>) {}
 }

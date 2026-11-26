@@ -966,11 +966,15 @@ impl ScanProgress {
     fn report(&mut self, progress: &Progress) -> io::Result<()> {
         if progress.zeroing() {
             self.handle_event(&ScanState::Zeroing, true);
-        } else {
+        } else if self.drawn.elapsed() > self.update_delay {
+            // The paths are joined only for a draw, as the scan reports an event for each entry.
+            let directories = progress.directories();
+            let directories: Vec<Option<&[u8]>> =
+                directories.iter().map(Option::as_deref).collect();
             let state = ScanState::Running {
                 files: progress.files(),
                 bytes: progress.bytes(),
-                directory: progress.directory(),
+                directories: &directories,
                 last_error: progress.last_error(),
             };
             self.handle_event(&state, false);
