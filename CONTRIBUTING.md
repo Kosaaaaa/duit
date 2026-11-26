@@ -170,6 +170,9 @@ binaries, packs each with `LICENSE`, `README.md`, and `duit.1`, and attaches the
 Release together with a shell installer. Its release notes are the entry for the version in
 [CHANGELOG.md](CHANGELOG.md). The workflow never publishes to crates.io.
 
+dist finds that entry by the version in its heading, such as `## 0.1.0`. Keep each paragraph and
+list item of an entry on one line, because GitHub renders every line break in the release notes.
+
 To release a version, for example `0.1.0`:
 
 1. Set the version in `[workspace.package]` and in the internal crates in `[workspace.dependencies]`
