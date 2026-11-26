@@ -197,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "duit"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "duit-format",
  "duit-model",
@@ -212,7 +212,7 @@ dependencies = [
 
 [[package]]
 name = "duit-format"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "duit-model",
  "insta",
@@ -221,11 +221,11 @@ dependencies = [
 
 [[package]]
 name = "duit-model"
-version = "0.0.1"
+version = "0.1.0"
 
 [[package]]
 name = "duit-scan"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "duit-format",
  "duit-model",
@@ -237,7 +237,7 @@ dependencies = [
 
 [[package]]
 name = "duit-tui"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "crossterm",
  "duit-format",
