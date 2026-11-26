@@ -4,7 +4,8 @@ use std::io;
 use crate::tree::{DirectoryId, EntryExtended, EntryId, FileKind, Tree, add_blocks};
 use crate::{EntryType, Sink, Special, Stat};
 
-/// A [`Sink`] that builds a [`Tree`] in memory, with the totals of each directory.
+/// A [`Sink`] that builds a [`Tree`] in memory, with the totals of each directory unless it is
+/// [`MemorySink::without_stats`].
 ///
 /// The sizes of hard links are added to their directories when the tree is finished, by
 /// [`Tree::add_all_stats`], so that each inode counts once in each directory.
@@ -13,6 +14,10 @@ pub struct MemorySink {
     tree: Tree,
     /// Whether to keep the extended information, as with `-e`.
     extended: bool,
+    /// Whether to count the totals of each directory, `global.stats` in `mem_sink.zig`. Without
+    /// them, each directory keeps the sizes of its own [`Stat`], which [`crate::replay`] needs to
+    /// give the entries to an export as they were added.
+    stats: bool,
     /// The directory of the tree that a refresh scans again, `global.root` in `mem_sink.zig`, or
     /// `None` for a new tree.
     refresh: Option<DirectoryId>,
@@ -68,7 +73,18 @@ impl MemorySink {
         Self {
             tree: Tree::default(),
             extended,
+            stats: true,
             refresh: None,
+        }
+    }
+
+    /// A sink like [`MemorySink::new`] that does not count the totals of the directories, nor
+    /// the sizes of the hard links, so that [`crate::replay`] gives the entries to a sink with the
+    /// data they were added with.
+    pub fn without_stats(extended: bool) -> Self {
+        Self {
+            stats: false,
+            ..Self::new(extended)
         }
     }
 
@@ -79,6 +95,7 @@ impl MemorySink {
         Self {
             tree,
             extended,
+            stats: true,
             refresh: Some(directory),
         }
     }
@@ -90,9 +107,13 @@ impl MemorySink {
     /// `scan.zig` defers `done`. The directory was not cleared then, so the directories above it
     /// count its totals twice, as in ncdu.
     ///
-    /// `progress` gets the progress of [`Tree::add_all_stats`].
+    /// `progress` gets the progress of [`Tree::add_all_stats`]. A sink without stats returns the
+    /// tree as it is.
     pub fn finish(self, progress: &mut dyn FnMut(usize, usize)) -> Tree {
         let mut tree = self.tree;
+        if !self.stats {
+            return tree;
+        }
         if let Some(directory) = self.refresh.or(tree.root()) {
             let data = tree.directory(directory);
             let entry = tree.entry(data.entry);
@@ -126,9 +147,12 @@ impl MemorySink {
         EntryExtended::of(stat, self.extended)
     }
 
-    /// Count an entry with `stat` in the totals of `directory`. The sizes of a hard link are left
-    /// to [`Tree::add_all_stats`].
+    /// Count an entry with `stat` in the totals of `directory`, unless the sink is without stats.
+    /// The sizes of a hard link are left to [`Tree::add_all_stats`].
     fn count(&mut self, directory: &MemoryDirectory, stat: &Stat) {
+        if !self.stats {
+            return;
+        }
         let data = self.tree.directory_mut(directory.directory);
         data.items = data.items.saturating_add(1);
         let id = data.entry;
@@ -283,6 +307,9 @@ impl Sink for MemorySink {
             let gone: HashSet<EntryId> = directory.previous.values().copied().collect();
             self.tree
                 .retain(directory.directory, |id| !gone.contains(&id));
+        }
+        if !self.stats {
+            return Ok(());
         }
         let id = self.tree.directory(directory.directory).entry;
         let data = self.tree.directory_mut(directory.directory);

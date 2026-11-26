@@ -2,10 +2,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::io;
 
-use duit_format::import;
+use duit_format::{JsonExport, import};
 use duit_model::{
     DirectoryId, EntryId, EntryKind, EntryType, Extended, MemoryDirectory, MemorySink, Sink,
-    Special, Stat, Tree,
+    Special, Stat, Tree, replay,
 };
 use insta::assert_snapshot;
 
@@ -16,6 +16,18 @@ use crate::json_export::{directory, file};
 const SOURCE: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../duit/tests/fixtures/source.json"
+));
+
+/// The JSON export that ncdu 2.9.2 wrote of [`SOURCE`].
+const SOURCE_JSON: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../duit/tests/fixtures/tree.json"
+));
+
+/// The JSON export that ncdu 2.9.2 wrote of [`SOURCE`] with `-e`.
+const SOURCE_JSON_EXTENDED: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../duit/tests/fixtures/tree-extended.json"
 ));
 
 /// The binary export that ncdu 2.9.2 wrote of [`SOURCE`].
@@ -42,6 +54,26 @@ fn tree_of(input: &[u8], extended: bool) -> Tree {
     let mut sink = MemorySink::new(extended);
     import(&mut sink, rest, head).expect("input is imported");
     sink.finish(&mut |_, _| {})
+}
+
+/// Import the JSON export `input` into a [`JsonExport`] with timestamp 0 and return the export.
+fn reexport(input: &[u8], extended: bool) -> Vec<u8> {
+    let (head, rest) = input.split_at(8);
+    let mut export = JsonExport::new(Vec::new(), 0, extended, None).expect("header is written");
+    import(&mut export, rest, head).expect("input is imported");
+    export.finish().expect("export is flushed")
+}
+
+/// Import the JSON export `input` into a [`MemorySink`] without stats, replay the tree into a
+/// [`JsonExport`] with timestamp 0, and return the export.
+fn replayed(input: &[u8], extended: bool) -> Vec<u8> {
+    let (head, rest) = input.split_at(8);
+    let mut sink = MemorySink::without_stats(extended);
+    import(&mut sink, rest, head).expect("input is imported");
+    let tree = sink.finish(&mut |_, _| {});
+    let mut export = JsonExport::new(Vec::new(), 0, extended, None).expect("header is written");
+    replay(&tree, root(&tree), &mut export).expect("tree is replayed");
+    export.finish().expect("export is flushed")
 }
 
 /// The tree that `build` adds to a [`MemorySink`].
@@ -254,6 +286,42 @@ fn golden_blocks() {
     let totals = totals(&tree);
     assert_eq!(totals.len(), 8);
     assert_eq!(totals, ncdu_totals(BLOCKS_BINARY));
+}
+
+/// A tree without stats keeps the sizes of each directory itself, so a replay writes the entries
+/// that were imported, which give the totals that ncdu wrote. The replay writes the entries of a
+/// directory in the reverse order of the import, so a second replay writes them in order again.
+#[test]
+fn replay_golden() {
+    for (input, extended) in [(SOURCE_JSON, false), (SOURCE_JSON_EXTENDED, true)] {
+        let once = replayed(input, extended);
+        assert_eq!(
+            totals(&tree_of(&once, extended)),
+            ncdu_totals(SOURCE_BINARY)
+        );
+        assert_eq!(replayed(&once, extended), reexport(input, extended));
+    }
+}
+
+/// A directory on another device than its parent keeps its device, which the directories below it
+/// inherit.
+#[test]
+fn replay_devices() {
+    let input: &[u8] = br#"[1,2,{},[{"name":"/root","dev":1},
+    [{"name":"other","dev":4},[{"name":"inherits"}]],
+    [{"name":"back","dev":1}]]]"#;
+    assert_eq!(
+        replayed(&replayed(input, false), false),
+        reexport(input, false)
+    );
+}
+
+/// The read error of the root is not replayed, as in ncdu.
+#[test]
+fn replay_root_read_error() {
+    let input: &[u8] = br#"[1,2,{},[{"name":"/root","read_error":true},{"name":"file"}]]"#;
+    let readable: &[u8] = br#"[1,2,{},[{"name":"/root"},{"name":"file"}]]"#;
+    assert_eq!(replayed(input, false), reexport(readable, false));
 }
 
 /// The hard links of [`TREE`]: links in one directory, links in two directories, links that are
