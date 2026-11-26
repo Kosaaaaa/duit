@@ -176,7 +176,7 @@ list item of an entry on one line, because GitHub renders every line break in th
 To release a version, for example `0.1.0`:
 
 1. Set the version in `[workspace.package]` and in the internal crates in `[workspace.dependencies]`
-   of the root `Cargo.toml`, and update the snapshots that show it.
+   of the root `Cargo.toml`.
 2. Replace `Not released yet.` in the CHANGELOG.md entry with `Released on YYYY-MM-DD.`, update the
    status in `README.md`, which the archives include, and merge the change into `master`.
 3. Run the workflow with the default tag, `dry-run`, to build every artifact without publishing:
