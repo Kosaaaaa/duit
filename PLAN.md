@@ -292,7 +292,7 @@ Done when every flag in `ncdu.1` and every key works. This is parity. Done.
 Scan threads (`-t`), the memory layout decision, and benchmarks. A JSON export (`-o`) of a scan with
 more than one thread is written from the in-memory tree after the scan, which needs `mem_src.zig`.
 
-Done when scan time and peak memory are at or below ncdu's, or the gap is documented.
+Done when scan time and peak memory are at or below ncdu's, or the gap is documented. Done.
 
 ### M6: Release
 
