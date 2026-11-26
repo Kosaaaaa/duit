@@ -113,7 +113,10 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
   progress shows the directory that the calling thread reports, where ncdu shows a line for each
   thread. A `-o` export with more than one thread is written from the tree after the scan, as in
   ncdu, and a root that cannot be read ends it as with one thread, where ncdu 2.9.2 crashes: `done`
-  replays a tree whose root was never created at `sink.zig:265-268`.
+  replays a tree whose root was never created at `sink.zig:265-268`. A `-O` export with more than
+  one thread is written as the calling thread reports the scan, into one buffer as with one thread,
+  where each ncdu thread fills a buffer of its own (`bin_export.zig:88-149`). The bytes of the file
+  differ from ncdu's, and it holds the items of a scan with one thread.
 - **Errors: plain enums, and no error crate.** Every message is ncdu's, as bytes that need not be
   UTF-8, so an error carries what the caller needs to build that message, as `ScanError` does.
 - **Read errors: the directory whose `readdir` failed is marked, unlike ncdu.** At `scan.zig:283`,
@@ -172,8 +175,10 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
   crafted export costs that work at each open. No budget separates such a file from one that ncdu
   writes: with `-t` above 8, each scan thread writes the entries of a shared parent into a block of
   its own (`bin_export.zig:394`), so a directory also rotates through more than 8 blocks, and
-  `--export-block-size 16000` makes each of those blocks almost 16 MiB. Revisit this in M5, when
-  duit writes such exports with `-t` itself.
+  `--export-block-size 16000` makes each of those blocks almost 16 MiB. duit writes a `-t` export
+  from one thread into one series of blocks, as with `-t 1`, so its own exports never rotate a
+  directory through a block per thread. The cache keeps ncdu's size anyway, as duit reads the
+  exports of ncdu too.
 - **Running a command: the shell is started by Rust's `std::process::Command`, unlike ncdu.** ncdu's
   `runCmd` (`ui.zig:655`) starts it with Zig's `std.process.Child`, which runs its own `PATH` search
   over `execve`. libc runs the search for Rust, and differs at two edges. A file without `#!` that

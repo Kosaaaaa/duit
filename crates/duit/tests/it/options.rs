@@ -594,28 +594,6 @@ fn exclude_kernfs() {
     "#);
 }
 
-/// Modes and options that duit does not implement yet are rejected before anything is written.
-#[test]
-fn unsupported() {
-    let directory = TempDir::new().expect("temporary directory is created");
-    assert_snapshot!(table(directory.path(), &[
-        &["-t", "2", "-O", "export.bin", "."],
-    ]), @"
-    $ duit -t 2 -O export.bin .
-    exit_code: 1
-    ----- stdout -----
-
-    ----- stderr -----
-    ^[[JA scan with more than one thread is not supported yet.
-    ");
-    assert_eq!(
-        fs::read_dir(directory.path())
-            .expect("directory is read")
-            .count(),
-        0
-    );
-}
-
 /// The help ends the parsing, so an argument after it is not checked.
 #[test]
 fn help() {

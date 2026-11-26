@@ -210,9 +210,6 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
         );
     }
 
-    if import_file.is_none() && export_binary.is_some() && config.threads > 1 {
-        return Err(b"A scan with more than one thread is not supported yet.\n".to_vec());
-    }
     let scan_ui = config
         .scan_ui
         .unwrap_or(match export_json.or(export_binary) {
