@@ -91,6 +91,10 @@ lto = "fat"
 # The terminal is therefore restored from the panic hook, not from a `Drop` guard.
 panic = "abort"
 
+# The profile that `dist` builds the release archives with.
+[profile.dist]
+inherits = "release"
+
 # Mimics the `release` profile, but keeps debug information and skips LTO so that
 # benchmark and profiling builds stay fast to compile.
 [profile.profiling]
