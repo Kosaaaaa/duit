@@ -11,7 +11,11 @@
   minimumReleaseAge: "7 days",
   enabledManagers: ["github-actions", "cargo", "custom.regex"],
   cargo: {
-    managerFilePatterns: ["/^Cargo\\.toml$/", "/^crates/.*Cargo\\.toml$/"],
+    managerFilePatterns: [
+      "/^Cargo\\.toml$/",
+      "/^crates/.*Cargo\\.toml$/",
+      "/^fuzz/Cargo\\.toml$/",
+    ],
   },
   packageRules: [
     {
