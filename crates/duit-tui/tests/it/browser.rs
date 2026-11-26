@@ -285,7 +285,7 @@ fn redact_times(screen: &str) -> String {
 fn default_columns() {
     let tree = tree_of(SOURCE, false);
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &[], (80, 18)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 KiB S   4.0 KiB [###########] /src                                      "
     "!   4.0 KiB             [####       ] /unreadable                               "
@@ -334,7 +334,7 @@ fn shared_column_unique() {
         ..imported()
     };
     assert_snapshot!(screen(&tree, root(&tree), &options, &[], (80, 18)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 KiB U  12.0 KiB [###########] /src                                      "
     "!   4.0 KiB U   4.0 KiB [####       ] /unreadable                               "
@@ -382,7 +382,7 @@ fn shared_column_off() {
         ..imported()
     };
     assert_snapshot!(screen(&tree, root(&tree), &options, &[], (80, 18)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 KiB [###########] /src                                                  "
     "!   4.0 KiB [####       ] /unreadable                                           "
@@ -432,7 +432,7 @@ fn si_apparent_size() {
         ..imported()
     };
     assert_snapshot!(screen(&tree, root(&tree), &options, &[], (80, 18)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "    9.4 kB S 300.0  B [           ] /src                                        "
     "!   4.1 kB            [           ] /unreadable                                 "
@@ -481,7 +481,7 @@ fn hidden_shown() {
         ..BrowserOptions::default()
     };
     assert_snapshot!(screen(&tree, root(&tree), &options, &[], (80, 14)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [readonly]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [readonly]"
     "--- /data ----------------------------------------------------------------------"
     "   40.0 KiB             [###########]  .big                                     "
     "   24.0 KiB             [######     ] /photos                                   "
@@ -523,7 +523,7 @@ fn hidden_hidden() {
         ..BrowserOptions::default()
     };
     assert_snapshot!(screen(&tree, root(&tree), &options, &[], (80, 9)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help                   "
     "--- /data ----------------------------------------------------------------------"
     "   24.0 KiB [######     ] /photos                                               "
     "   10.0 KiB [##         ]  notes.txt                                            "
@@ -555,7 +555,7 @@ fn graph_eighth_block_percent() {
         ..imported()
     };
     assert_snapshot!(screen(&tree, root(&tree), &options, &[], (80, 9)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /graph ---------------------------------------------------------------------"
     "   44.0 KiB [ 48.6% ███████████]  a                                             "
     "   30.0 KiB [ 33.1% ███████▌   ]  b                                             "
@@ -585,7 +585,7 @@ fn graph_half_block() {
         ..imported()
     };
     assert_snapshot!(screen(&tree, root(&tree), &options, &[], (80, 9)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /graph ---------------------------------------------------------------------"
     "   44.0 KiB [███████████]  a                                                    "
     "   30.0 KiB [███████▌   ]  b                                                    "
@@ -616,7 +616,7 @@ fn percent_without_graph() {
         ..imported()
     };
     assert_snapshot!(screen(&tree, root(&tree), &options, &[], (80, 9)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /graph ---------------------------------------------------------------------"
     "   44.0 KiB [ 48.6%]  a                                                         "
     "   30.0 KiB [ 33.1%]  b                                                         "
@@ -651,7 +651,7 @@ fn item_count() {
         ..imported()
     };
     assert_snapshot!(screen(&tree, root(&tree), &options, &[], (80, 7)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /items ---------------------------------------------------------------------"
     "    0.0   B [           ] 12,345 /many                                          "
     "    0.0   B [           ]  1,234 /thousands                                     "
@@ -680,7 +680,7 @@ fn mtime() {
         ..imported()
     };
     assert_snapshot!(redact_times(&screen(&tree, root(&tree), &options, &[], (80, 8))), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /mtime ---------------------------------------------------------------------"
     "    4.0 KiB [########   ]                   no mtime  nomtime                   "
     "    4.0 KiB [########   ]  2024-01-03 HH:MM:SS +ZZZZ  early.txt                 "
@@ -709,7 +709,7 @@ fn mtime_parent_row() {
     };
     let old = subdirectory(&tree, b"old");
     assert_snapshot!(redact_times(&screen(&tree, old, &options, &[], (80, 5))), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /mtime/old -----------------------------------------------------------------"
     "                           2024-01-04 HH:MM:SS +ZZZZ /..                        "
     "    4.0 KiB [###########]  2024-01-04 HH:MM:SS +ZZZZ  new.txt                   "
@@ -735,7 +735,7 @@ fn sort_name_bytes_directories_first() {
         ..imported()
     };
     assert_snapshot!(screen(&tree, root(&tree), &options, &[], (80, 9)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /names ---------------------------------------------------------------------"
     "e   4.0 KiB [###########] /dir                                                  "
     ">   0.0   B [           ] /zfs                                                  "
@@ -766,7 +766,7 @@ fn sort_name_natural_descending() {
         ..imported()
     };
     assert_snapshot!(screen(&tree, root(&tree), &options, &[], (80, 9)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /names ---------------------------------------------------------------------"
     ">   0.0   B [           ] /zfs                                                  "
     "    4.0 KiB [###########]  file10                                               "
@@ -794,7 +794,7 @@ fn subdirectory_cursor() {
     let tree = tree_of(SOURCE, false);
     let src = subdirectory(&tree, b"src");
     assert_snapshot!(screen(&tree, src, &imported(), &[Key::Down], (80, 6)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project/src -----------------------------------------------------"
     "                          /..                                                   "
     "    8.0 KiB [###########]  main.rs                                              "
@@ -814,7 +814,7 @@ fn subdirectory_cursor() {
 fn scroll_to_cursor() {
     let tree = tree_of(SOURCE, false);
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &[Key::Down; 9], (80, 8)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "    0.0   B             [           ]  sparse                                   "
     "    0.0   B             [           ]  raw \xFF\xFE                             "
@@ -845,7 +845,7 @@ fn narrow_terminal() {
         ..imported()
     };
     assert_snapshot!(screen(&tree, root(&tree), &options, &[], (31, 9)), @r#"
-    "duit 0.0.1 ~ Use the [imported]"
+    "duit 0.1.0 ~ Use the [imported]"
     "--- /data ---------------------"
     "   24.0 KiB      1 /photos     "
     "   10.0 KiB         notes.txt  "
@@ -871,7 +871,7 @@ fn narrow_terminal() {
 fn page_down_to_end() {
     let tree = tree_of(SOURCE, false);
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &[Key::PageDown; 3], (80, 8)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "@   0.0   B             [           ]  socket                                   "
     "^   0.0   B             [           ] /proc                                     "
@@ -896,7 +896,7 @@ fn end_page_up() {
     let tree = tree_of(SOURCE, false);
     let keys = [Key::End, Key::Down, Key::PageUp, Key::Up];
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 8)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "    0.0   B             [           ]  raw \xFF\xFE                             "
     "    0.0   B             [           ]  quote " backslash \...\x09 control \x01 é"
@@ -940,7 +940,7 @@ fn enter_parent_restores_view() {
         Key::Char('h'),
     ];
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 5)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "!   4.0 KiB             [####       ] /unreadable                               "
     "e   4.0 KiB             [####       ] /empty                                    "
@@ -959,7 +959,7 @@ fn enter_subdirectory_restores_cursor() {
     let tree = tree_of(SOURCE, false);
     let keys = [Key::Right, Key::Down, Key::Down, Key::Left, Key::Right];
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 6)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project/src -----------------------------------------------------"
     "                          /..                                                   "
     "    8.0 KiB [###########]  main.rs                                              "
@@ -980,7 +980,7 @@ fn enter_parent_row() {
     let tree = tree_of(SOURCE, false);
     let keys = [Key::Down, Key::Down, Key::Enter, Key::Enter];
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 8)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 KiB S   4.0 KiB [###########] /src                                      "
     "!   4.0 KiB             [####       ] /unreadable                               "
@@ -1034,7 +1034,7 @@ fn enter_parent_cuts_path() {
     );
     let keys = [Key::Down, Key::Right, Key::Left];
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 5)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /data ----------------------------------------------------------------------"
     "    8.0 KiB [###########]  big                                                  "
     "e   4.0 KiB [########   ] /sub                                                  "
@@ -1055,7 +1055,7 @@ fn sort_keeps_cursor() {
     let mut keys = vec![Key::Down; 9];
     keys.push(Key::Char('n'));
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 8)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     ">   0.0   B             [           ] /mnt                                      "
     "<   0.0   B             [           ]  node_modules                             "
@@ -1080,7 +1080,7 @@ fn sort_keeps_cursor() {
 fn sort_first_key() {
     let tree = tree_of(SOURCE, false);
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &[Key::Char('n')], (80, 8)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "    4.0 KiB             [####       ]  README.md                                "
     "H   4.0 KiB             [####       ]  also-linked                              "
@@ -1105,7 +1105,7 @@ fn sort_name_toggle() {
     let tree = tree_of(NAMES.as_bytes(), false);
     let keys = [Key::Char('n'), Key::Char('n')];
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 9)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /names ---------------------------------------------------------------------"
     ">   0.0   B [           ] /zfs                                                  "
     "    4.0 KiB [###########]  file10                                               "
@@ -1132,7 +1132,7 @@ fn sort_apparent_size_ascending() {
     let tree = tree_of(SOURCE, false);
     let keys = [Key::Char('a'), Key::Char('s')];
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 10)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "    2.0   B             [           ]  raw \xFF\xFE                             "
     "H 300.0   B             [           ]  also-linked                              "
@@ -1164,7 +1164,7 @@ fn sort_item_count_ascending() {
     );
     let keys = [Key::Char('c'), Key::Char('C'), Key::Char('C')];
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 7)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /items ---------------------------------------------------------------------"
     "    0.0   B [           ]         file                                          "
     "    0.0   B [           ]      3 /few                                           "
@@ -1191,7 +1191,7 @@ fn sort_mtime_ascending() {
     };
     let keys = [Key::Char('m'), Key::Char('M'), Key::Char('M')];
     assert_snapshot!(redact_times(&screen(&tree, root(&tree), &options, &keys, (80, 8))), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /mtime ---------------------------------------------------------------------"
     "    4.0 KiB [########   ]                   no mtime  nomtime                   "
     "    4.0 KiB [########   ]  2024-01-03 HH:MM:SS +ZZZZ  early.txt                 "
@@ -1227,7 +1227,7 @@ fn sort_directories_first_toggle() {
     let tree = tree_of(NAMES.as_bytes(), false);
     let keys = [Key::Char('n'), Key::Char('t')];
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 9)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /names ---------------------------------------------------------------------"
     "e   4.0 KiB [###########] /dir                                                  "
     ">   0.0   B [           ] /zfs                                                  "
@@ -1254,7 +1254,7 @@ fn hide_hidden_keeps_cursor() {
     let tree = tree_of(HIDDEN.as_bytes(), false);
     let keys = [Key::Down, Key::Down, Key::Char('e')];
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 9)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /data ----------------------------------------------------------------------"
     "   24.0 KiB [######     ] /photos                                               "
     "   10.0 KiB [##         ]  notes.txt                                            "
@@ -1281,7 +1281,7 @@ fn hide_hidden_cursor_entry() {
     let tree = tree_of(HIDDEN.as_bytes(), false);
     let keys = [Key::Down, Key::Down, Key::Down, Key::Char('e')];
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 9)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /data ----------------------------------------------------------------------"
     "   24.0 KiB [######     ] /photos                                               "
     "   10.0 KiB [##         ]  notes.txt                                            "
@@ -1375,7 +1375,7 @@ fn quit_confirmation() {
     };
     let keys = [Key::Down, Key::Down, Key::Char('q')];
     assert_snapshot!(screen(&tree, root(&tree), &options, &keys, (80, 10)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 KiB S   4.0 KiB [###########] /src                                      "
     "!   4.0 KiB             [####┌── Confirm quit ────┐                             "
@@ -1452,7 +1452,7 @@ fn quit_keys() {
 fn refresh_disabled_imported() {
     let tree = tree_of(SOURCE, false);
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &[Key::Char('r')], (80, 12)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 KiB S   4.0 KiB [###########] /src                                      "
     "!   4.0 Ki┌── Message ───────────────────────────────────────────────┐          "
@@ -1512,7 +1512,7 @@ fn refresh_disabled() {
         ..BrowserOptions::default()
     };
     assert_snapshot!(screen(&tree, root(&tree), &options, &[Key::Char('r')], (80, 12)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help                   "
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 KiB S   4.0 KiB [###########] /src                                      "
     "!   4.0 Ki┌── Message ───────────────────────────────────────────────┐          "
@@ -1549,7 +1549,7 @@ fn shell_disabled() {
         ..BrowserOptions::default()
     };
     assert_snapshot!(screen(&tree, root(&tree), &options, &[Key::Char('b')], (80, 12)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help                   "
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 KiB S   4.0 KiB [###########] /src                                      "
     "!   4.0 Ki┌── Message ───────────────────────────────────────────────┐          "
@@ -1581,7 +1581,7 @@ fn shell_disabled() {
 fn delete_disabled_imported() {
     let tree = tree_of(SOURCE, false);
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &[Key::Char('d')], (80, 12)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 KiB S   4.0 KiB [###########] /src                                      "
     "!   4.0 Ki┌── Message ───────────────────────────────────────────────┐          "
@@ -1619,7 +1619,7 @@ fn delete_disabled() {
     };
     let keys = [Key::Down, Key::Down, Key::Enter, Key::Char('d')];
     assert_snapshot!(screen(&tree, root(&tree), &options, &keys, (80, 12)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [readonly]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [readonly]"
     "--- /home/user/project/empty ---------------------------------------------------"
     "                          /..                                                   "
     "          ┌── Message ───────────────────────────────────────────────┐          "
@@ -1734,7 +1734,7 @@ fn delete_confirmation() {
     let tree = tree_of(SOURCE, false);
     let options = BrowserOptions::default();
     assert_snapshot!(screen(&tree, root(&tree), &options, &[Key::Char('d')], (80, 12)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help                   "
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 KiB S   4.0 KiB [###########] /src                                      "
     "!   4.0 Ki┌── Confirm delete ────────────────────────────────────────┐          "
@@ -1777,7 +1777,7 @@ fn delete_confirmation_keys() {
         Key::Left,
     ];
     assert_snapshot!(screen(&tree, root(&tree), &options, &keys, (80, 12)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help                   "
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 KiB S   4.0 KiB [###########] /src                                      "
     "!   4.0 Ki┌── Confirm delete ────────────────────────────────────────┐          "
@@ -1842,7 +1842,7 @@ fn delete_file() {
         (80, 12),
     );
     assert_snapshot!(redact_directory(&screen, &directory), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help                   "
     "--- [DIR] ----------------------------------------------------------------------"
     "   32.0 KiB [###########] /top                                                  "
     "   12.0 KiB [####       ]  c.txt                                                "
@@ -1891,7 +1891,7 @@ fn delete_directory() {
         (80, 12),
     );
     assert_snapshot!(redact_directory(&screen, &directory), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help                   "
     "--- [DIR] ----------------------------------------------------------------------"
     "   12.0 KiB [###########]  c.txt                                                "
     "    8.0 KiB [########   ] /top                                                  "
@@ -1943,7 +1943,7 @@ fn delete_cursor() {
         (80, 12),
     );
     assert_snapshot!(redact_directory(&screen, &directory), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help                   "
     "--- [DIR]/top ------------------------------------------------------------------"
     "                          /..                                                   "
     "                                                                                "
@@ -1992,7 +1992,7 @@ fn delete_without_confirmation() {
         (80, 12),
     );
     assert_snapshot!(redact_directory(&rendered, &directory), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help                   "
     "--- [DIR] ----------------------------------------------------------------------"
     "   32.0 KiB [###########] /top                                                  "
     "    4.0 KiB [#          ]  a.txt                                                "
@@ -2048,7 +2048,7 @@ fn delete_hard_link() {
         (80, 12),
     );
     assert_snapshot!(redact_directory(&screen, &directory), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help                   "
     "--- [DIR] ----------------------------------------------------------------------"
     "    8.0 KiB S   4.0 KiB [###########] /sub                                      "
     "                                                                                "
@@ -2297,7 +2297,7 @@ fn delete_command_confirmation() {
     let mut keys = [Key::Down; 8];
     keys[7] = Key::Char('d');
     assert_snapshot!(screen(&tree, root(&tree), &options, &keys, (80, 12)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help                   "
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 KiB S   4.0 KiB [###########] /src                                      "
     "!   4.0 Ki┌── Confirm delete ────────────────────────────────────────┐          "
@@ -2337,7 +2337,7 @@ fn delete_command_removed() {
     let keys = [Key::Down, Key::Down, Key::Char('d'), Key::Left, Key::Enter];
     let screen = command_screen(&tree, &options, &keys, None);
     assert_snapshot!(redact_directory(&screen, &directory), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help                   "
     "--- [DIR] ----------------------------------------------------------------------"
     "   32.0 KiB [###########] /top                                                  "
     "   12.0 KiB [####       ]  c.txt                                                "
@@ -2384,7 +2384,7 @@ fn delete_command_changed() {
     let keys = [Key::Down, Key::Down, Key::Char('d')];
     let screen = command_screen(&tree, &options, &keys, Some(stat));
     assert_snapshot!(redact_directory(&screen, &directory), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help                   "
     "--- [DIR] ----------------------------------------------------------------------"
     "   32.0 KiB [###########] /top                                                  "
     "   20.0 KiB [########   ]  b.txt                                                "
@@ -2432,7 +2432,7 @@ fn delete_command_hard_link() {
     let keys = [Key::Down, Key::Down, Key::Char('d')];
     let screen = command_screen(&tree, &options, &keys, Some(stat));
     assert_snapshot!(redact_directory(&screen, &directory), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                   "
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help                   "
     "--- [DIR] ----------------------------------------------------------------------"
     "   32.0 KiB [###########] /top                                                  "
     "   12.0 KiB [####       ]  c.txt                                                "
@@ -2465,7 +2465,7 @@ fn info_file() {
     let tree = tree_of(SOURCE, false);
     let keys = [Key::Down, Key::Down, Key::Down, Key::Char('i')];
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 14)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 KiB S   4.0 KiB [###########] /src                                      "
     "!   4.0 Ki┌── Item info ─────────────────────────────────────────────┐          "
@@ -2503,7 +2503,7 @@ fn info_directory() {
     let tree = tree_of(SOURCE, false);
     let keys = [Key::Char('i')];
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 18)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 Ki┌── Item info ─────────────────────────────────────────────┐          "
     "!   4.0 Ki│                                                          │          "
@@ -2554,7 +2554,7 @@ fn info_extended_hard_link() {
     };
     let keys = [Key::Down, Key::Down, Key::Down, Key::Down, Key::Char('i')];
     assert_snapshot!(redact_times(&screen(&tree, root(&tree), &options, &keys, (80, 16))), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.4 kB S   4.1 kB [###########] /src                                        "
     "!   4.1 kB┌── Item info ───────────────────────────1:Info───2:Links──┐          "
@@ -2600,7 +2600,7 @@ fn info_extended_without_mtime() {
     };
     let keys = [Key::End, Key::Up, Key::Up, Key::Char('i')];
     assert_snapshot!(screen(&tree, root(&tree), &options, &keys, (80, 14)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /mtime ---------------------------------------------------------------------"
     "    8.0 Ki┌── Item info ─────────────────────────────────────────────┐          "
     "    4.0 Ki│                                                          │          "
@@ -2637,7 +2637,7 @@ fn info_read_error() {
     let tree = tree_of(SOURCE, false);
     let keys = [Key::End, Key::Char('i')];
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 14)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "e   4.0 KiB             [####       ] /empty                                    "
     "    4.0 Ki┌── Item info ─────────────────────────────────────────────┐          "
@@ -2683,7 +2683,7 @@ fn info_links() {
         Key::Down,
     ];
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 16)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 Ki┌── Item info ───────────────────────────1:Info───2:Links──┐          "
     "!   4.0 Ki│                                                          │          "
@@ -2731,7 +2731,7 @@ fn info_links_scroll() {
         Key::PageUp,
     ];
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 16)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /links ---------------------------------------------------------------------"
     "    8.0 Ki┌── Item info ───────────────────────────1:Info───2:Links──┐          "
     "H   4.0 Ki│                                                          │          "
@@ -2784,7 +2784,7 @@ fn info_links_enter() {
         Key::Char('h'),
     ];
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 6)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "H   4.0 KiB [########   ]  linked                                               "
     "                                                                                "
@@ -2891,7 +2891,7 @@ fn help() {
     let tree = tree_of(SOURCE, false);
     let keys = [Key::Char('?')];
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 18)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 Ki┌── ncdu help ────────────────1:Keys───2:Format───3:About──┐          "
     "!   4.0 Ki│                                                          │          "
@@ -2936,7 +2936,7 @@ fn help_scroll() {
     let tree = tree_of(SOURCE, false);
     let keys = [&[Key::Char('?')], &[Key::Char('j'); 11][..]].concat();
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 18)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 Ki┌── ncdu help ────────────────1:Keys───2:Format───3:About──┐          "
     "!   4.0 Ki│                                                          │          "
@@ -2981,7 +2981,7 @@ fn help_format() {
     let tree = tree_of(SOURCE, false);
     let keys = [Key::Char('?'), Key::Char('2')];
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 18)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 Ki┌── ncdu help ────────────────1:Keys───2:Format───3:About──┐          "
     "!   4.0 Ki│                                                          │          "
@@ -3026,7 +3026,7 @@ fn help_about() {
     let tree = tree_of(SOURCE, false);
     let keys = [Key::Char('?'), Key::Char('3')];
     assert_snapshot!(screen(&tree, root(&tree), &imported(), &keys, (80, 18)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 Ki┌── ncdu help ────────────────1:Keys───2:Format───3:About──┐          "
     "!   4.0 Ki│                                                          │          "
@@ -3035,7 +3035,7 @@ fn help_about() {
     "H   4.0 Ki│                                          Disk            │          "
     "    0.0   │                                          Usage           │          "
     "    0.0   │                                                          │          "
-    "    0.0   │                                          0.0.1           │rol \x01 é"
+    "    0.0   │                                          0.1.0           │rol \x01 é"
     "@   0.0   │                                                          │          "
     "^   0.0   │          Written by Yorhel <projects@yorhel.nl>          │          "
     "<   0.0   │               https://dev.yorhel.nl/ncdu                 │          "
@@ -3205,7 +3205,7 @@ fn color_off() {
     let tree = tree_of(SOURCE, false);
     let options = colored(ColorScheme::Off);
     assert_snapshot!(screen(&tree, root(&tree), &options, &[], (100, 8)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                             [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help                             [imported]"
     "--- /home/user/project -----------------------------------------------------------------------------"
     "   16.0 KiB S   4.0 KiB [ 50.0% ##############]      2                   no mtime /src              "
     "!   4.0 KiB             [ 12.5% ####          ]      0                   no mtime /unreadable       "
@@ -3232,7 +3232,7 @@ fn color_dark() {
     let tree = tree_of(SOURCE, false);
     let options = colored(ColorScheme::Dark);
     assert_snapshot!(screen(&tree, root(&tree), &options, &[], (100, 8)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                             [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help                             [imported]"
     "--- /home/user/project -----------------------------------------------------------------------------"
     "   16.0 KiB S   4.0 KiB [ 50.0% ##############]      2                   no mtime /src              "
     "!   4.0 KiB             [ 12.5% ####          ]      0                   no mtime /unreadable       "
@@ -3274,7 +3274,7 @@ fn color_dark_background() {
     let tree = tree_of(SOURCE, false);
     let options = colored(ColorScheme::DarkBackground);
     assert_snapshot!(screen(&tree, root(&tree), &options, &[], (100, 8)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                             [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help                             [imported]"
     "--- /home/user/project -----------------------------------------------------------------------------"
     "   16.0 KiB S   4.0 KiB [ 50.0% ##############]      2                   no mtime /src              "
     "!   4.0 KiB             [ 12.5% ####          ]      0                   no mtime /unreadable       "
@@ -3322,7 +3322,7 @@ fn color_dark_info() {
     };
     let keys = [Key::Down, Key::Down, Key::Down, Key::Down, Key::Char('i')];
     assert_snapshot!(redact_times(&screen(&tree, root(&tree), &options, &keys, (80, 16))), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.4 kB S   4.1 kB [###########] /src                                        "
     "!   4.1 kB┌── Item info ───────────────────────────1:Info───2:Links──┐          "
@@ -3401,7 +3401,7 @@ fn color_dark_background_info() {
     };
     let keys = [Key::Down, Key::Down, Key::Down, Key::Down, Key::Char('i')];
     assert_snapshot!(redact_times(&screen(&tree, root(&tree), &options, &keys, (80, 16))), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.4 kB S   4.1 kB [###########] /src                                        "
     "!   4.1 kB┌── Item info ───────────────────────────1:Info───2:Links──┐          "
@@ -3486,7 +3486,7 @@ fn color_dark_info_links() {
         Key::Down,
     ];
     assert_snapshot!(screen(&tree, root(&tree), &options, &keys, (80, 16)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 Ki┌── Item info ───────────────────────────1:Info───2:Links──┐          "
     "!   4.0 Ki│                                                          │          "
@@ -3562,7 +3562,7 @@ fn color_dark_help() {
         ..imported()
     };
     assert_snapshot!(screen(&tree, root(&tree), &options, &[Key::Char('?')], (80, 18)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 Ki┌── ncdu help ────────────────1:Keys───2:Format───3:About──┐          "
     "!   4.0 Ki│                                                          │          "
@@ -3646,7 +3646,7 @@ fn color_dark_background_help() {
         ..imported()
     };
     assert_snapshot!(screen(&tree, root(&tree), &options, &[Key::Char('?')], (80, 18)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 Ki┌── ncdu help ────────────────1:Keys───2:Format───3:About──┐          "
     "!   4.0 Ki│                                                          │          "
@@ -3731,7 +3731,7 @@ fn color_dark_help_format() {
     };
     let keys = [Key::Char('?'), Key::Char('2')];
     assert_snapshot!(screen(&tree, root(&tree), &options, &keys, (80, 18)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 Ki┌── ncdu help ────────────────1:Keys───2:Format───3:About──┐          "
     "!   4.0 Ki│                                                          │          "
@@ -3817,7 +3817,7 @@ fn color_dark_help_about() {
     };
     let keys = [Key::Char('?'), Key::Char('3')];
     assert_snapshot!(screen(&tree, root(&tree), &options, &keys, (80, 18)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help         [imported]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help         [imported]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 Ki┌── ncdu help ────────────────1:Keys───2:Format───3:About──┐          "
     "!   4.0 Ki│                                                          │          "
@@ -3826,7 +3826,7 @@ fn color_dark_help_about() {
     "H   4.0 Ki│                                          Disk            │          "
     "    0.0   │                                          Usage           │          "
     "    0.0   │                                                          │          "
-    "    0.0   │                                          0.0.1           │rol \x01 é"
+    "    0.0   │                                          0.1.0           │rol \x01 é"
     "@   0.0   │                                                          │          "
     "^   0.0   │          Written by Yorhel <projects@yorhel.nl>          │          "
     "<   0.0   │               https://dev.yorhel.nl/ncdu                 │          "
@@ -3897,7 +3897,7 @@ fn color_dark_help_about() {
 #[test]
 fn from_file() {
     assert_snapshot!(file_screen("tree.ncdu", &imported(), &[], (80, 18)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help        [from file]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help        [from file]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 KiB S   4.0 KiB [###########] /src                                      "
     "!   4.0 KiB             [####       ] /unreadable                               "
@@ -3941,7 +3941,7 @@ fn from_file() {
 #[test]
 fn from_file_subdirectory() {
     assert_snapshot!(file_screen("tree.ncdu", &imported(), &[Key::Enter], (80, 6)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help        [from file]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help        [from file]"
     "--- /home/user/project/src -----------------------------------------------------"
     "                          /..                                                   "
     "    8.0 KiB [###########]  main.rs                                              "
@@ -3961,7 +3961,7 @@ fn from_file_subdirectory() {
 fn from_file_enter_parent() {
     let keys = [Key::Down, Key::Enter, Key::Left];
     assert_snapshot!(file_screen("tree.ncdu", &imported(), &keys, (80, 6)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help        [from file]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help        [from file]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 KiB S   4.0 KiB [###########] /src                                      "
     "!   4.0 KiB             [####       ] /unreadable                               "
@@ -3997,7 +3997,7 @@ fn from_file_loading() {
         })
         .expect("key is handled");
     assert_snapshot!(render(&terminal), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help        [from file]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help        [from file]"
     "--- /home/user/project/src -----------------------------------------------------"
     "                                                                                "
     "                                                                                "
@@ -4106,7 +4106,7 @@ fn from_file_mtime() {
     let keys = [Key::Char('m'), Key::Char('M')];
     let screen = file_screen("tree-extended.ncdu", &options, &keys, (100, 18));
     assert_snapshot!(redact_times(&screen), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help                            [from file]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help                            [from file]"
     "--- /home/user/project -----------------------------------------------------------------------------"
     "    0.0   B             [              ]  2023-11-14 HH:MM:SS +ZZZZ  sparse                         "
     "@   0.0   B             [              ]  2023-11-14 HH:MM:SS +ZZZZ  socket                         "
@@ -4150,7 +4150,7 @@ fn from_file_mtime() {
 fn from_file_blocks() {
     let keys = [Key::Char('n'), Key::Enter];
     assert_snapshot!(file_screen("blocks.ncdu", &imported(), &keys, (80, 10)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help        [from file]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help        [from file]"
     "--- /blocks/directory-0 --------------------------------------------------------"
     "                          /..                                                   "
     "    4.0 KiB [###########]  file-with-a-long-name-0                              "
@@ -4186,7 +4186,7 @@ fn from_file_links() {
         Key::Char('2'),
     ];
     assert_snapshot!(file_screen("tree.ncdu", &imported(), &keys, (80, 18)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help        [from file]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help        [from file]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 KiB S   4.0 KiB [###########] /src                                      "
     "!   4.0 KiB             [####       ] /unreadable                               "
@@ -4239,7 +4239,7 @@ fn from_file_links_down() {
         Key::Down,
     ];
     assert_snapshot!(file_screen("tree.ncdu", &imported(), &keys, (80, 18)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help        [from file]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help        [from file]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 KiB S   4.0 KiB [###########] /src                                      "
     "!   4.0 KiB             [####       ] /unreadable                               "
@@ -4282,7 +4282,7 @@ fn from_file_links_down() {
 #[test]
 fn from_file_refresh() {
     assert_snapshot!(file_screen("tree.ncdu", &imported(), &[Key::Char('r')], (80, 12)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help        [from file]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help        [from file]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 KiB S   4.0 KiB [###########] /src                                      "
     "!   4.0 Ki┌── Message ───────────────────────────────────────────────┐          "
@@ -4313,7 +4313,7 @@ fn from_file_refresh() {
 #[test]
 fn from_file_delete() {
     assert_snapshot!(file_screen("tree.ncdu", &imported(), &[Key::Char('d')], (80, 12)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help        [from file]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help        [from file]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 KiB S   4.0 KiB [###########] /src                                      "
     "!   4.0 Ki┌── Message ───────────────────────────────────────────────┐          "
@@ -4345,7 +4345,7 @@ fn from_file_delete() {
 fn from_file_message_closes() {
     let keys = [Key::Char('d'), Key::Down];
     assert_snapshot!(file_screen("tree.ncdu", &imported(), &keys, (80, 6)), @r#"
-    "duit 0.0.1 ~ Use the arrow keys to navigate, press ? for help        [from file]"
+    "duit 0.1.0 ~ Use the arrow keys to navigate, press ? for help        [from file]"
     "--- /home/user/project ---------------------------------------------------------"
     "   16.0 KiB S   4.0 KiB [###########] /src                                      "
     "!   4.0 KiB             [####       ] /unreadable                               "
