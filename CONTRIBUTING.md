@@ -103,6 +103,18 @@ cargo shear --deny-warnings
 cargo deny --all-features check licenses sources bans
 ```
 
+### Man page
+
+The man page `crates/duit/duit.1` is linted with [mandoc](https://mandoc.bsd.lv/), which macOS ships
+and Linux distributions package as `mandoc`:
+
+```shell
+mandoc -T lint -W warning crates/duit/duit.1
+```
+
+`-W warning` leaves out style messages, such as a referenced manual that is not installed, which
+depend on the manuals of the machine.
+
 ## 🪝 Git hooks
 
 Hooks are optional. [prek](https://prek.j178.dev/) runs the formatting and spelling checks before a

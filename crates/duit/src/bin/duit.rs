@@ -85,7 +85,7 @@ Interface options:
   --delete-command CMD       Command to run for file deletion
   --color SCHEME             off / dark / dark-bg
 
-Refer to `man ncdu` for more information.
+Refer to `man duit` for more information.
 ";
 
 fn main() -> ExitCode {

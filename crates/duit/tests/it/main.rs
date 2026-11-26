@@ -82,6 +82,7 @@ fn render_as_duit(output: &Output) -> String {
         .replace("ncdu <options>", "duit <options>")
         .replace("quitting ncdu", "quitting duit")
         .replace("see ncdu -h", "see duit -h")
+        .replace("`man ncdu`", "`man duit`")
 }
 
 /// The bytes of an output as text, with control characters other than newline and tab shown as
