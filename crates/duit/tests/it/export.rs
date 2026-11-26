@@ -205,8 +205,11 @@ fn sorted(export: &str) -> String {
 
 /// A scan with several threads writes the export once the scan is done, from the tree in memory,
 /// as ncdu does. The entries of a directory are written in the opposite order of `readdir` then,
-/// and the export is otherwise that of a scan with one thread. The root has more directories than
-/// the threads read at once, with a hard link between two of them and an excluded file in each.
+/// and the export is otherwise that of a scan with one thread. A binary export is written as the
+/// scan goes, as with one thread, so the order of its items differs, but not the items, over
+/// blocks small enough that entries refer to entries in other blocks. The root has more
+/// directories than the threads read at once, with a hard link between two of them and an excluded
+/// file in each.
 #[test]
 fn threads() {
     let directory = TempDir::new().expect("temporary directory is created");
@@ -219,6 +222,8 @@ fn threads() {
         fs::write(path.join("sub/nested"), b"x").expect("file is written");
     }
     fs::hard_link(root.join("d00/file"), root.join("d01/link")).expect("hard link is created");
+    // Outside of the scanned directory, so that no binary export scans another.
+    let exports = TempDir::new().expect("temporary directory is created");
     for flags in [&["--exclude", "skip"][..], &["-e", "--exclude", "skip"]] {
         let arguments = |threads| [&["-t", threads, "-o-"][..], flags].concat();
         #[cfg(feature = "test-ncdu")]
@@ -233,10 +238,32 @@ fn threads() {
             export(&arguments("1")),
             "{flags:?}"
         );
+        let binary = |threads| {
+            let file = exports.path().join(format!("threads-{threads}.ncdu"));
+            let file = file.to_str().expect("path is UTF-8");
+            let arguments = [
+                &["-t", threads, "-O", file, "--export-block-size", "4"][..],
+                flags,
+            ]
+            .concat();
+            let output = duit(root, &arguments);
+            assert!(output.status.success(), "{}", render(&output));
+            // The index block ends with its header, whose length counts 8 bytes per data block.
+            let written = fs::read(file).expect("export is written");
+            let header: [u8; 4] = written[written.len() - 4..].try_into().expect("4 bytes");
+            let blocks = ((u32::from_be_bytes(header) & 0x0fff_ffff) - 16) / 8;
+            assert!(blocks >= 2, "{blocks} data blocks");
+            export(&["-f", file, "-o-", "-e"])
+        };
+        assert_eq!(binary("4"), binary("1"), "{flags:?}");
     }
     // Unlike ncdu, which crashes, a root that cannot be read ends the export as with one thread.
-    // A scan into memory ends as with one thread too.
-    for arguments in [&["-o-", "missing"][..], &["-0", "--quit-after-scan"]] {
+    // A binary export and a scan into memory end as with one thread too.
+    for arguments in [
+        &["-o-", "missing"][..],
+        &["-O-", "missing"],
+        &["-0", "--quit-after-scan"],
+    ] {
         let with_threads = |threads| duit(root, &[&["-t", threads][..], arguments].concat());
         let output = with_threads("4");
         assert_eq!(render(&output), render(&with_threads("1")), "{arguments:?}");

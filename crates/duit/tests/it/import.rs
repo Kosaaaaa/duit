@@ -573,8 +573,8 @@ fn binary_stdin() {
     ");
 }
 
-/// A scan written over many blocks, by duit or by ncdu with several threads, reads as ncdu reads
-/// it, and two conversions give back the export of the scan.
+/// A scan written over many blocks, by duit or by ncdu, with one thread or several, reads as ncdu
+/// reads it, and two conversions give back the export of the scan.
 #[test]
 fn binary_blocks() {
     let directory = fixture();
@@ -624,6 +624,19 @@ fn binary_blocks() {
             .success()
         );
         assert_ncdu(root, &["-f", "threads.ncdu", "-o-", "-e"]);
+        assert!(
+            duit(
+                root,
+                &[
+                    &["-O", "duit-threads.ncdu", "-e", "-t", "4", "tree"][..],
+                    &block_size
+                ]
+                .concat()
+            )
+            .status
+            .success()
+        );
+        assert_ncdu(root, &["-f", "duit-threads.ncdu", "-o-", "-e"]);
         assert!(
             ncdu(
                 root,
