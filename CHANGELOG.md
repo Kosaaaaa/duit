@@ -2,7 +2,7 @@
 
 ## 0.1.0
 
-Not released yet.
+Released on 2026-11-26.
 
 The first release of duit, a drop-in replacement for ncdu 2.9.2 with the same flags, keys, config files, and export formats.
 
