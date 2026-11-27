@@ -738,6 +738,9 @@ fn thread_directories() {
     .expect("scan succeeds");
     drop(sink);
     assert_eq!(first, Some(vec![None; 3]));
+    // The thread that reads the root also reads each subdirectory that does not fit in the queue,
+    // and reads the root again after it. No other thread reads the root.
+    let root = fixture.c_path().into_bytes();
     let directories: Vec<Vec<u8>> = (0..24)
         .map(|index| {
             fixture
@@ -746,9 +749,17 @@ fn thread_directories() {
                 .as_bytes()
                 .to_vec()
         })
+        .chain([root.clone()])
         .collect();
     let reading = reading.expect("the root is reported");
     assert_eq!(reading.len(), 3);
+    assert!(
+        reading
+            .iter()
+            .filter(|directory| directory.as_ref() == Some(&root))
+            .count()
+            <= 1
+    );
     for directory in reading {
         let directory = directory.expect("each thread reads a directory");
         assert!(directories.contains(&directory), "{}", name(&directory));
