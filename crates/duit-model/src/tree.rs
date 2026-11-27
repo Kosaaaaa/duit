@@ -266,8 +266,8 @@ impl Names {
     }
 }
 
-/// The data that a directory has on top of its [`Entry`].
-#[derive(Debug, Clone)]
+/// The data that a directory has on top of its [`Entry`], as [`Tree::directory`] reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Directory {
     pub entry: EntryId,
     /// The directory that holds this one, or `None` for the root.
@@ -284,7 +284,61 @@ pub struct Directory {
     pub read_error: bool,
     /// An entry below this directory, at any depth, could not be read.
     pub sub_error: bool,
+}
+
+const READ_ERROR_BIT: u32 = 1 << 30;
+const SUB_ERROR_BIT: u32 = 1 << 31;
+
+/// A directory as the tree stores it, in 20 bytes. Its shared sizes, which only the directories
+/// above a hard link with links elsewhere have, are in [`Tree::shared`].
+#[derive(Debug, Clone)]
+pub(crate) struct DirectoryNode {
+    pub(crate) entry: EntryId,
+    pub(crate) parent: Option<DirectoryId>,
+    pub(crate) items: u32,
+    /// The device identifier in the low 30 bits, as `DevId` in `model.zig`, then the read error
+    /// and the error below the directory, as `Dir.Packed`.
+    pack: u32,
     sub: Option<EntryId>,
+}
+
+const _: () = assert!(size_of::<DirectoryNode>() == 20);
+
+impl DirectoryNode {
+    pub(crate) fn device(&self) -> DeviceId {
+        DeviceId(
+            NonZeroU32::new(self.pack & !(READ_ERROR_BIT | SUB_ERROR_BIT))
+                .unwrap_or(NonZeroU32::MIN),
+        )
+    }
+
+    pub(crate) fn set_device(&mut self, device: DeviceId) {
+        self.pack = (self.pack & (READ_ERROR_BIT | SUB_ERROR_BIT)) | device.0.get();
+    }
+
+    pub(crate) fn read_error(&self) -> bool {
+        self.pack & READ_ERROR_BIT != 0
+    }
+
+    pub(crate) fn set_read_error(&mut self, read_error: bool) {
+        self.set_bit(READ_ERROR_BIT, read_error);
+    }
+
+    pub(crate) fn sub_error(&self) -> bool {
+        self.pack & SUB_ERROR_BIT != 0
+    }
+
+    pub(crate) fn set_sub_error(&mut self, sub_error: bool) {
+        self.set_bit(SUB_ERROR_BIT, sub_error);
+    }
+
+    fn set_bit(&mut self, bit: u32, value: bool) {
+        if value {
+            self.pack |= bit;
+        } else {
+            self.pack &= !bit;
+        }
+    }
 }
 
 /// The data that a hard link has on top of its [`Entry`]. Its device is that of its parent.
@@ -347,9 +401,9 @@ impl Link {
 
 type Inode = (DeviceId, u64);
 
-fn link_inode(links: &[Link], directories: &[Directory], link: LinkId) -> Inode {
+fn link_inode(links: &[Link], directories: &[DirectoryNode], link: LinkId) -> Inode {
     let link = &links[link.index()];
-    (directories[link.parent.index()].device, link.inode())
+    (directories[link.parent.index()].device(), link.inode())
 }
 
 #[derive(Debug, Default, Clone)]
@@ -389,7 +443,9 @@ impl EntryExtended {
 #[derive(Debug, Default, Clone)]
 pub struct Tree {
     entries: Vec<Node>,
-    directories: Vec<Directory>,
+    directories: Vec<DirectoryNode>,
+    /// The shared sizes of the directories that have any, in blocks and bytes.
+    shared: HashMap<DirectoryId, (u64, u64), BuildHasherDefault<IdentifierHasher>>,
     links: Vec<Link>,
     /// The first link to each inode, found by the inode of the link.
     inodes: HashTable<LinkId>,
@@ -462,8 +518,19 @@ impl Tree {
         self.extended.get(index).map(|(_, extended)| extended)
     }
 
-    pub fn directory(&self, id: DirectoryId) -> &Directory {
-        &self.directories[id.index()]
+    pub fn directory(&self, id: DirectoryId) -> Directory {
+        let node = &self.directories[id.index()];
+        let (shared_blocks, shared_size) = self.shared.get(&id).copied().unwrap_or_default();
+        Directory {
+            entry: node.entry,
+            parent: node.parent,
+            items: node.items,
+            device: node.device(),
+            shared_blocks,
+            shared_size,
+            read_error: node.read_error(),
+            sub_error: node.sub_error(),
+        }
     }
 
     pub fn link(&self, id: LinkId) -> &Link {
@@ -556,17 +623,15 @@ impl Tree {
     ) -> Result<DirectoryId, TreeError> {
         let directory = DirectoryId(identifier(self.directories.len())?);
         let entry = self.push(EntryKind::Directory(directory), stat, extended, name)?;
-        self.directories.push(Directory {
+        let mut node = DirectoryNode {
             entry,
             parent,
             items: 0,
-            device,
-            shared_blocks: 0,
-            shared_size: 0,
-            read_error: false,
-            sub_error: false,
+            pack: 0,
             sub: None,
-        });
+        };
+        node.set_device(device);
+        self.directories.push(node);
         if let Some(parent) = parent {
             self.link_first(parent, entry);
         }
@@ -637,7 +702,7 @@ impl Tree {
         &mut self.entries[id.index()]
     }
 
-    pub(crate) fn directory_mut(&mut self, id: DirectoryId) -> &mut Directory {
+    pub(crate) fn directory_mut(&mut self, id: DirectoryId) -> &mut DirectoryNode {
         &mut self.directories[id.index()]
     }
 
@@ -655,10 +720,17 @@ impl Tree {
     ) {
         let directory = &mut self.directories[id.index()];
         directory.items = items;
-        directory.shared_blocks = shared_blocks;
-        directory.shared_size = shared_size;
-        directory.read_error = read_error;
-        directory.sub_error = sub_error;
+        directory.set_read_error(read_error);
+        directory.set_sub_error(sub_error);
+        self.set_shared(id, (shared_blocks, shared_size));
+    }
+
+    fn set_shared(&mut self, id: DirectoryId, shared: (u64, u64)) {
+        if shared == (0, 0) {
+            self.shared.remove(&id);
+        } else {
+            self.shared.insert(id, shared);
+        }
     }
 
     pub(crate) fn extended_mut(&mut self, id: EntryId) -> Option<&mut EntryExtended> {
@@ -673,7 +745,7 @@ impl Tree {
         match self.kind(id) {
             EntryKind::Directory(directory) => {
                 let directory = &self.directories[directory.index()];
-                directory.read_error || directory.sub_error
+                directory.read_error() || directory.sub_error()
             }
             EntryKind::Special(Special::ReadError) => true,
             EntryKind::HardLink(_)
@@ -721,8 +793,8 @@ impl Tree {
             if let EntryKind::Directory(directory) = self.kind(id) {
                 let data = &mut self.directories[directory.index()];
                 data.items = 0;
-                data.read_error = false;
-                data.sub_error = false;
+                data.set_read_error(false);
+                data.set_sub_error(false);
                 stack.extend(self.entries(directory));
             }
         }
@@ -834,7 +906,7 @@ impl Tree {
         if !self.refill(id, stat, extended) {
             return None;
         }
-        self.directories[directory.index()].device = device;
+        self.directories[directory.index()].set_device(device);
         Some(directory)
     }
 
@@ -1002,11 +1074,17 @@ impl Tree {
         };
         let scratch = mem::take(&mut self.scratch);
         for (&directory, &count) in &scratch.directories {
-            let data = &mut self.directories[directory.index()];
             if count < totals.link_count {
-                data.shared_blocks = data.shared_blocks.saturating_add(totals.blocks);
-                data.shared_size = data.shared_size.saturating_add(totals.size);
+                let (blocks, size) = self.shared.get(&directory).copied().unwrap_or_default();
+                self.set_shared(
+                    directory,
+                    (
+                        blocks.saturating_add(totals.blocks),
+                        size.saturating_add(totals.size),
+                    ),
+                );
             }
+            let data = &self.directories[directory.index()];
             let entry = &mut self.entries[data.entry.index()];
             entry.set_blocks(add_blocks(entry.blocks(), totals.blocks));
             entry.size = entry.size.saturating_add(totals.size);
@@ -1020,11 +1098,17 @@ impl Tree {
         };
         let scratch = mem::take(&mut self.scratch);
         for (&directory, &count) in &scratch.directories {
-            let data = &mut self.directories[directory.index()];
             if count < totals.link_count {
-                data.shared_blocks = data.shared_blocks.saturating_sub(totals.blocks);
-                data.shared_size = data.shared_size.saturating_sub(totals.size);
+                let (blocks, size) = self.shared.get(&directory).copied().unwrap_or_default();
+                self.set_shared(
+                    directory,
+                    (
+                        blocks.saturating_sub(totals.blocks),
+                        size.saturating_sub(totals.size),
+                    ),
+                );
             }
+            let data = &self.directories[directory.index()];
             let entry = &mut self.entries[data.entry.index()];
             entry.set_blocks(entry.blocks().saturating_sub(totals.blocks));
             entry.size = entry.size.saturating_sub(totals.size);
@@ -1143,7 +1227,7 @@ impl Tree {
     /// up to date, and the directories above it are not changed.
     pub fn update_sub_error(&mut self, directory: DirectoryId) {
         let sub_error = self.entries(directory).any(|id| self.has_error(id));
-        self.directories[directory.index()].sub_error = sub_error;
+        self.directories[directory.index()].set_sub_error(sub_error);
     }
 }
 

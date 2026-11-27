@@ -189,7 +189,7 @@ impl Sink for MemorySink {
         let data = self.tree.directory(root);
         let (id, parent) = (data.entry, data.parent);
         self.tree.zero_stats(id, parent);
-        self.tree.directory_mut(root).device = device;
+        self.tree.directory_mut(root).set_device(device);
         let entry = self.tree.entry_mut(id);
         entry.set_blocks(stat.blocks);
         entry.size = stat.size;
@@ -216,7 +216,7 @@ impl Sink for MemorySink {
         let data = self.tree.directory_mut(directory.directory);
         data.items = data.items.saturating_add(1);
         if special == Special::ReadError {
-            data.sub_error = true;
+            data.set_sub_error(true);
         }
         self.add_file(
             directory,
@@ -276,7 +276,9 @@ impl Sink for MemorySink {
     }
 
     fn set_read_error(&mut self, directory: &mut MemoryDirectory) -> io::Result<()> {
-        self.tree.directory_mut(directory.directory).read_error = true;
+        self.tree
+            .directory_mut(directory.directory)
+            .set_read_error(true);
         Ok(())
     }
 
@@ -297,9 +299,9 @@ impl Sink for MemorySink {
         let data = self.tree.directory_mut(directory.directory);
         data.items = data.items.saturating_add(directory.items);
         if directory.sub_error {
-            data.sub_error = true;
+            data.set_sub_error(true);
         }
-        let (items, read_error, sub_error) = (data.items, data.read_error, data.sub_error);
+        let (items, read_error, sub_error) = (data.items, data.read_error(), data.sub_error());
         let entry = self.tree.entry_mut(id);
         entry.set_blocks(add_blocks(entry.blocks(), directory.blocks));
         entry.size = entry.size.saturating_add(directory.size);
