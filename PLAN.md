@@ -161,13 +161,17 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
 - **Binary import: an item that is reached twice is an error, and nesting has no depth limit, unlike
   ncdu.** ncdu follows the references between items without a check: on an entry that refers to
   itself it loops forever, on a directory that contains itself it overflows its stack, and an entry
-  that two directories share is written twice. duit keeps the set of the items that it read, which
-  costs memory in proportion to the number of items, and stops with `Error reading item X from file`
-  at the second visit. ncdu reads nested directories and skips nested CBOR values by recursion, and
-  it crashes on an index block too short to hold the root reference. duit keeps stacks of its own,
-  and stops with `Error reading from file` on that index. Those stacks are on the heap and have no
-  limit either, so memory grows with the depth, as the set grows with the number of items. A limit
-  would be an error that ncdu does not have.
+  that two directories share is written twice. duit stops with `Error reading item X from file` at
+  the second visit. An export with one thread writes each directory after its entries, so the import
+  reads its items from the last to the first, and as long as each item has a lower reference than
+  the one before it, duit keeps only that reference. At the first item that breaks the order, as in
+  an export with several threads, duit reads the items before it again to collect the set of the
+  items that it read, which from then on costs memory in proportion to the number of items. ncdu
+  reads nested directories and skips nested CBOR values by recursion, and it crashes on an index
+  block too short to hold the root reference. duit keeps stacks of its own, and stops with
+  `Error reading from file` on that index. Those stacks are on the heap and have no limit either, so
+  memory grows with the depth, as the set grows with the number of items. A limit would be an error
+  that ncdu does not have.
 - **Browsing a binary export: an entry that is reached twice in one directory is an error, unlike
   ncdu.** ncdu follows the references between the entries of a directory without a check when it
   opens the directory (`browser.zig:150-178`), so on an entry that refers back to one before it, it

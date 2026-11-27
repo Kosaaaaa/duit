@@ -65,6 +65,8 @@ pub struct BinaryReader<R> {
     root: u64,
     blocks: Vec<Block>,
     lookups: u64,
+    /// The compressed data block read last, kept for the next.
+    compressed: Vec<u8>,
 }
 
 struct Block {
@@ -80,6 +82,37 @@ struct Item {
     read_error: bool,
     previous: Option<u64>,
     last_entry: Option<u64>,
+}
+
+impl Item {
+    fn new() -> Self {
+        Self {
+            kind: ItemType::Stat(EntryType::Directory),
+            stat: Stat::default(),
+            name: Vec::new(),
+            read_error: false,
+            previous: None,
+            last_entry: None,
+        }
+    }
+}
+
+/// The items that [`BinaryReader::import`] has read, to stop at an item that it reaches a second
+/// time.
+///
+/// An export with one thread writes the entries of a directory before the directory, and numbers
+/// its blocks in the order that it writes them, so the import reads it from the end to the start:
+/// each item has a lower reference than the item read before it, and none can be a second visit.
+/// While that holds, only the last reference is kept. At the first item that breaks it, the import
+/// reads the items before it again to collect the set of all of them, which grows with each item
+/// after that. An export with several threads, as from `ncdu -t`, fills the blocks of its threads
+/// side by side, so it takes the set.
+enum Visited {
+    /// Every item had a lower reference than the one before it. `last` is the reference of the
+    /// item read last, and `count` the number of items read after the root.
+    Descending { last: u64, count: u64 },
+    /// The references of all the items read.
+    All(HashSet<u64>),
 }
 
 struct ListedItem {
@@ -161,6 +194,7 @@ impl<R: Read + Seek> BinaryReader<R> {
             root,
             blocks: Vec::with_capacity(CACHED_BLOCKS),
             lookups: 0,
+            compressed: Vec::new(),
         })
     }
 
@@ -169,18 +203,15 @@ impl<R: Read + Seek> BinaryReader<R> {
     ///
     /// Each entry has the device of its directory unless it has its own. A stack of the open
     /// directories replaces recursion, so that deep nesting cannot overflow the call stack, and an
-    /// item that is reached a second time is an error, so that references in a cycle end.
+    /// item that is reached a second time is an error, so that references in a cycle end. See
+    /// [`Visited`] for how the items read so far are kept.
     pub fn import<S: Sink>(&mut self, sink: &mut S) -> Result<(), BinaryImportError> {
         let root = self.root();
-        let mut item = Item {
-            kind: ItemType::Stat(EntryType::Directory),
-            stat: Stat::default(),
-            name: Vec::new(),
-            read_error: false,
-            previous: None,
-            last_entry: None,
+        let mut item = Item::new();
+        let mut visited = Visited::Descending {
+            last: root,
+            count: 0,
         };
-        let mut visited = HashSet::from([root]);
         self.read_item(root, 0, &mut item)?;
         let ItemType::Stat(EntryType::Directory) = item.kind else {
             return Err(BinaryImportError::Corrupt { itemref: root });
@@ -207,9 +238,7 @@ impl<R: Read + Seek> BinaryReader<R> {
                 }
                 continue;
             };
-            if !visited.insert(itemref) {
-                return Err(BinaryImportError::Corrupt { itemref });
-            }
+            self.visit(&mut visited, itemref)?;
             self.read_item(itemref, open.device, &mut item)?;
             open.next = item.previous;
             let child = add_entry(
@@ -230,6 +259,58 @@ impl<R: Read + Seek> BinaryReader<R> {
             }
         }
         Ok(())
+    }
+
+    /// Record that [`BinaryReader::import`] reads `itemref` next, or return an error if it read
+    /// the item before.
+    fn visit(&mut self, visited: &mut Visited, itemref: u64) -> Result<(), BinaryImportError> {
+        match visited {
+            Visited::Descending { last, count } if itemref < *last => {
+                *last = itemref;
+                *count += 1;
+            }
+            Visited::Descending { count, .. } => {
+                let mut all = self.replay(*count)?;
+                if !all.insert(itemref) {
+                    return Err(BinaryImportError::Corrupt { itemref });
+                }
+                *visited = Visited::All(all);
+            }
+            Visited::All(all) => {
+                if !all.insert(itemref) {
+                    return Err(BinaryImportError::Corrupt { itemref });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The references of the root and of the first `count` items after it that
+    /// [`BinaryReader::import`] read, in the same order, which it already read once without an
+    /// error.
+    fn replay(&mut self, count: u64) -> Result<HashSet<u64>, BinaryImportError> {
+        let root = self.root();
+        let mut item = Item::new();
+        self.read_item(root, 0, &mut item)?;
+        let mut visited = HashSet::from([root]);
+        let mut next = vec![item.last_entry];
+        let mut left = count;
+        while left > 0
+            && let Some(open) = next.last_mut()
+        {
+            let Some(itemref) = *open else {
+                next.pop();
+                continue;
+            };
+            visited.insert(itemref);
+            left -= 1;
+            self.read_item(itemref, 0, &mut item)?;
+            *open = item.previous;
+            if item.kind == ItemType::Stat(EntryType::Directory) {
+                next.push(item.last_entry);
+            }
+        }
+        Ok(visited)
     }
 
     /// Read the directory at `itemref` and its entries into a [`Listing`], as the browser opens a
@@ -384,8 +465,10 @@ impl<R: Read + Seek> BinaryReader<R> {
         if length <= HEADER_LENGTH + NUMBER_LENGTH + FOOTER_LENGTH {
             return Err(corrupt());
         }
-        let mut block = vec![0; length - HEADER_LENGTH - FOOTER_LENGTH];
-        read_at(&mut self.input, &mut block, offset + HEADER_LENGTH as u64).map_err(|error| {
+        let block = &mut self.compressed;
+        block.clear();
+        block.resize(length - HEADER_LENGTH - FOOTER_LENGTH, 0);
+        read_at(&mut self.input, block, offset + HEADER_LENGTH as u64).map_err(|error| {
             if error.kind() == io::ErrorKind::UnexpectedEof {
                 corrupt()
             } else {
