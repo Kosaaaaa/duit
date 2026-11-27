@@ -23,10 +23,14 @@ pub enum ScanState<'a> {
     Zeroing,
     /// The tree in memory adds the sizes of its hard links, and is `done` with that many of `total`
     /// inodes, which are shown once `total` is not 0.
-    CountingHardLinks { done: usize, total: usize },
+    CountingHardLinks {
+        done: usize,
+        total: usize,
+    },
     /// A refresh could not open the directory at `path`, and waits for a key, `err`.
-    Error { path: &'a [u8] },
-    /// The scan or the import is done.
+    Error {
+        path: &'a [u8],
+    },
     Done,
 }
 
@@ -42,9 +46,7 @@ pub enum ScanKey {
 /// The progress lines of `-1` on standard error, `drawConsole` in `sink.zig`.
 #[derive(Debug)]
 pub struct Console {
-    /// Whether standard error takes ANSI escapes, so that each draw can erase the lines before it.
     ansi: bool,
-    /// The number of lines that the last draw wrote.
     lines: usize,
 }
 
@@ -96,11 +98,8 @@ impl Console {
 /// `drawProgress` and `drawError`, and `keyInput`.
 #[derive(Debug)]
 pub struct ScanScreen {
-    /// Whether the update delay is under 1 s, so that the screen animates.
     animate: bool,
-    /// The step of the animation, `animation_pos` in `drawProgress`.
     animation: usize,
-    /// `q` was pressed with `--confirm-quit`, `need_confirm_quit` in `sink.zig`.
     confirming_quit: bool,
 }
 
@@ -119,7 +118,6 @@ impl ScanScreen {
         let width = frame.area().width.saturating_sub(5);
         let buffer = frame.buffer_mut();
         let scheme = options.color;
-        // ncurses erases the screen to the background of the `default` style before each frame.
         buffer.set_style(buffer.area, scheme.style(Style::Default));
         match *state {
             ScanState::Running {
@@ -157,9 +155,6 @@ impl ScanScreen {
         }
     }
 
-    /// The counters, the directory of each thread, the last error, the key that aborts, and the
-    /// animation, `drawProgress` in `sink.zig`. The threads get a row each, at most 10 fewer than
-    /// the rows of the terminal and at least one.
     fn draw_progress(
         &mut self,
         buffer: &mut Buffer,
@@ -172,7 +167,6 @@ impl ScanScreen {
         let width = buffer.area.width.saturating_sub(5);
         let rows = buffer.area.height.saturating_sub(10).max(1);
         let directories = directories.get(..usize::from(rows)).unwrap_or(directories);
-        // At most `rows` threads, which is a `u16`.
         let threads = u16::try_from(directories.len()).unwrap_or(rows);
         let window = Window::new(buffer, options.color, 8 + threads, width, "Scanning...");
         let x = window.text(buffer, 2, 2, "Total items: ", Style::Default);
@@ -214,7 +208,6 @@ impl ScanScreen {
             if self.animation >= TEXT.len() * 2 {
                 self.animation = 0;
             }
-            // The text is written from the left, then erased from the left.
             let (start, end) = if self.animation < TEXT.len() {
                 (0, self.animation + 1)
             } else {
@@ -272,8 +265,6 @@ mod tests {
 
     use super::{Console, ScanState};
 
-    /// The bytes that `console` writes for each of `states`, one line each, with ESC as `^[` and
-    /// newlines as `\n`.
     fn draws(console: &mut Console, states: &[ScanState<'_>], si: bool) -> String {
         let mut output = String::new();
         for state in states {
@@ -289,8 +280,6 @@ mod tests {
         output
     }
 
-    /// Each draw erases the lines of the one before it, when the terminal takes ANSI escapes, as
-    /// `drawConsole` in `sink.zig` does. Once the scan is done, the lines are erased.
     #[test]
     fn erase() {
         let states = [
@@ -328,8 +317,6 @@ mod tests {
         ");
     }
 
-    /// The directory is converted to UTF-8 and shortened to 73 columns, and `(waiting)` stands
-    /// for none.
     #[test]
     fn directory() {
         let long = [b"/\xff".as_slice(), &[b'a'; 100]].concat();
@@ -353,9 +340,6 @@ mod tests {
         ");
     }
 
-    /// With several threads, a line follows the counters for each thread, numbered from 1, with
-    /// `(waiting)` for a thread that waits for a directory, as `drawConsole` in `sink.zig` writes
-    /// them. The next draw erases every line.
     #[test]
     fn threads() {
         let states = [

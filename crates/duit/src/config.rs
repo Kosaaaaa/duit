@@ -105,7 +105,6 @@ impl Config {
             Arg::Long(b"cross-file-system") => self.same_filesystem = false,
             Arg::Short(b'e') | Arg::Long(b"extended") => self.extended = true,
             Arg::Long(b"no-extended") => self.extended = false,
-            // A second `-r` also disables the shell.
             Arg::Short(b'r') if self.can_delete == Some(false) => self.can_shell = Some(false),
             Arg::Short(b'r') => self.can_delete = Some(false),
             Arg::Long(b"enable-shell") => self.can_shell = Some(true),
@@ -216,8 +215,7 @@ impl Config {
             }
             Arg::Long(b"export-block-size") => {
                 let value = args.value()?;
-                // ncdu parses the value into 14 bits.
-                let kibibytes = parse_number(value, (1 << 14) - 1)
+                let kibibytes = parse_number(value, u64::MAX)
                     .and_then(|kibibytes| usize::try_from(kibibytes).ok())
                     .filter(|kibibytes| (4..=16000).contains(kibibytes))
                     .ok_or_else(|| invalid_number(b"for --export-block-size", value))?;
@@ -265,7 +263,6 @@ impl Config {
         Ok(())
     }
 
-    /// Apply the options in the config file at `path`, and return whether the file exists.
     fn read_config_file(&mut self, path: &Path) -> Result<bool, Vec<u8>> {
         let name = path.as_os_str().as_bytes();
         let file = match File::open(path) {
@@ -302,9 +299,6 @@ impl Config {
         Ok(true)
     }
 
-    /// Apply a line of the config file `path`: an option and its value. A line that starts with
-    /// `@` stops at its first error without failing. Empty lines and lines that start with `#` are
-    /// skipped.
     fn apply_config_line(&mut self, path: &[u8], line: &[u8]) -> Result<(), Vec<u8>> {
         let line = trim_end(trim_start(line));
         let (ignore_errors, line) = match line.strip_prefix(b"@") {
@@ -314,7 +308,6 @@ impl Config {
         if line.is_empty() || line.starts_with(b"#") {
             return Ok(());
         }
-        // The option ends at the first space, tab, or `=`, and the rest of the line is its value.
         let arguments = match line
             .iter()
             .position(|byte| matches!(byte, b' ' | b'\t' | b'='))
@@ -350,12 +343,8 @@ impl Config {
     }
 }
 
-/// The end of the messages about a config file that ncdu prints itself.
 const IGNORE_CONFIG_HINT: &[u8] = b"Run with --ignore-config to skip reading config files.\n";
 
-/// The user config file of `program`: `$XDG_CONFIG_HOME/<program>/config`, or
-/// `$HOME/.config/<program>/config` if `XDG_CONFIG_HOME` is not set. An empty variable counts as
-/// set, and makes the path relative.
 fn user_config_file(program: &str) -> Option<PathBuf> {
     if let Some(base) = env::var_os("XDG_CONFIG_HOME") {
         return Some(Path::new(&base).join(program).join("config"));
@@ -425,10 +414,7 @@ fn parse_number(value: &[u8], max: u64) -> Option<u64> {
     (!negative || number == 0).then_some(number)
 }
 
-/// Add the patterns in the file at `path`, one per line, to `exclude`. Empty lines are skipped.
-/// Fails with ncdu's description of the error.
 fn read_exclude_file(path: &[u8], exclude: &mut ExcludePatterns) -> Result<(), &'static str> {
-    // ncdu opens the path as a C string, which ends at the first NUL byte.
     let file =
         File::open(OsStr::from_bytes(until_nul(path))).map_err(|error| open_error(&error))?;
     let mut lines = LineReader::new(file);

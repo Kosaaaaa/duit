@@ -7,7 +7,6 @@ use insta::assert_snapshot;
 #[cfg(feature = "test-ncdu")]
 use crate::ncdu_import;
 
-/// Run `build` against a [`JsonExport`] with timestamp 0 and return the export as bytes.
 fn write_export(
     extended: bool,
     build: impl FnOnce(&mut JsonExport<Vec<u8>>) -> io::Result<()>,
@@ -17,7 +16,6 @@ fn write_export(
     export.finish().expect("export is flushed")
 }
 
-/// Like [`write_export`], compressed with zstd at `level`.
 fn write_compressed(
     level: u8,
     build: impl FnOnce(&mut JsonExport<Vec<u8>>) -> io::Result<()>,
@@ -27,12 +25,6 @@ fn write_compressed(
     export.finish().expect("export is flushed")
 }
 
-/// Like [`write_export`], with the version replaced by `[VERSION]` so that snapshots survive a
-/// version bump.
-///
-/// With the `test-ncdu` feature, the export is also imported by ncdu and exported again. ncdu
-/// must write the same items back. The snapshots, not this check, prove that duit writes the
-/// fields that ncdu writes for the same entry.
 fn export(
     extended: bool,
     build: impl FnOnce(&mut JsonExport<Vec<u8>>) -> io::Result<()>,
@@ -43,8 +35,6 @@ fn export(
     String::from_utf8_lossy(&output).replace(env!("CARGO_PKG_VERSION"), "[VERSION]")
 }
 
-/// Assert that `ncdu -f- -o-` writes the same items as `output`. The first line holds the
-/// metadata block, which differs between the two programs.
 #[cfg(feature = "test-ncdu")]
 fn assert_ncdu_reexport(output: &[u8], extended: bool) {
     let result = ncdu_import(output, if extended { &["-o-", "-e"] } else { &["-o-"] });
@@ -112,14 +102,12 @@ fn read_error() {
     let output = export(false, |export| {
         let mut root = export.create_root(b"/root", &directory(1))?;
 
-        // Written: the error is set before the first child.
         let mut before = export.add_directory(&mut root, b"before", &directory(1))?;
         export.set_read_error(&mut before)?;
         export.set_read_error(&mut before)?;
         export.add_stat(&mut before, b"file", &file(1, 1))?;
         export.finish_directory(before, Some(&mut root))?;
 
-        // Dropped: the error is set after the first child.
         let mut after = export.add_directory(&mut root, b"after", &directory(1))?;
         export.add_stat(&mut after, b"file", &file(1, 1))?;
         export.set_read_error(&mut after)?;
@@ -257,7 +245,6 @@ fn disk_usage_saturates() {
     "#);
 }
 
-/// A root with enough files of different names and sizes to fill several 64 KiB buffers.
 pub(crate) fn many_files(export: &mut JsonExport<Vec<u8>>) -> io::Result<()> {
     let mut root = export.create_root(b"/root", &directory(1))?;
     for index in 0..5000 {
@@ -267,7 +254,6 @@ pub(crate) fn many_files(export: &mut JsonExport<Vec<u8>>) -> io::Result<()> {
     export.finish_directory(root, None)
 }
 
-/// A compressed export is one zstd frame that decompresses to the export without compression.
 #[test]
 fn compressed() {
     let compressed = write_compressed(4, many_files);
@@ -275,7 +261,6 @@ fn compressed() {
     assert_eq!(output, write_export(false, many_files));
 }
 
-/// A higher compression level writes a smaller export.
 #[test]
 fn compress_level() {
     let fastest = write_compressed(1, many_files);
@@ -339,7 +324,6 @@ fn extended_enabled() {
     "#);
 }
 
-/// A writer whose every write fails.
 pub(crate) struct BrokenPipe;
 
 impl Write for BrokenPipe {
@@ -365,8 +349,6 @@ fn write_error() {
     assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
 }
 
-/// A writer that accepts every write and fails to flush, as a buffered writer does when the
-/// buffered bytes cannot be written.
 pub(crate) struct FailingFlush;
 
 impl Write for FailingFlush {
@@ -395,7 +377,6 @@ fn flush_error() {
     }
 }
 
-/// As in ncdu, a name longer than 10756 bytes ends the export with an error.
 #[test]
 fn path_too_long() {
     let result = |length: usize| {

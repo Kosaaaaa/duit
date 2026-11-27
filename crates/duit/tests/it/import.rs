@@ -9,14 +9,13 @@ use std::thread;
 use insta::assert_snapshot;
 use tempfile::TempDir;
 
+use crate::{
+    BINARY_SIGNATURE, BLOCK_HEADER_LENGTH, binary_file, binary_frames, block_start, data_blocks,
+    duit, index_block, item, reference, render, table, text,
+};
 #[cfg(feature = "test-ncdu")]
 use crate::{assert_ncdu, ncdu, render_as_duit};
-use crate::{
-    binary_file, binary_frames, block_start, duit, index_block, item, reference, render, table,
-    text,
-};
 
-/// An export with every kind of entry, extended fields, and a name that is not UTF-8.
 const EXPORT: &[u8] = b"[1,2,{\"progname\":\"ncdu\",\"progver\":\"2.9.2\",\"timestamp\":1},
 [{\"name\":\"/root\",\"asize\":4096,\"dsize\":4096,\"dev\":1,\"uid\":501,\"gid\":20,\"mode\":16877,\"mtime\":1},
 {\"name\":\"file\",\"asize\":100,\"dsize\":4096,\"uid\":501,\"gid\":20,\"mode\":33188,\"mtime\":1700000000},
@@ -28,8 +27,8 @@ const EXPORT: &[u8] = b"[1,2,{\"progname\":\"ncdu\",\"progver\":\"2.9.2\",\"time
 {\"name\":\"raw \\u00e9 \xff\xfe\"}]]
 ";
 
-/// A directory with [`EXPORT`], plain and compressed, the inputs of the error cases, and the
-/// longest name that an import accepts.
+const JSON_EXPORT_MAX_NAME_LENGTH: usize = (64 * 1024 - 1000) / 6;
+
 fn fixture() -> TempDir {
     let directory = TempDir::new().expect("temporary directory is created");
     let write = |name: &str, contents: &[u8]| {
@@ -42,17 +41,15 @@ fn fixture() -> TempDir {
     );
     write("short.json", b"[1,0,{}");
     write("malformed.json", b"[1,0,{},[{\"name\":\"a\",}]]");
-    // A name that does not fit in a block of 4 KiB, and that is too long for a JSON export.
     write(
         "long.json",
         &[
             &b"[1,2,{},[{\"name\":\"/root\"},{\"name\":\""[..],
-            &[b'a'; 10757],
+            &[b'a'; JSON_EXPORT_MAX_NAME_LENGTH + 1],
             b"\"}]]",
         ]
         .concat(),
     );
-    // The longest name that an import accepts, as in ncdu.
     write(
         "longest.json",
         &[
@@ -66,7 +63,6 @@ fn fixture() -> TempDir {
     directory
 }
 
-/// Run `program` with `arguments` in `directory` and `input` on standard input.
 fn with_input(program: &OsStr, directory: &Path, arguments: &[&str], input: &[u8]) -> Output {
     let mut child = Command::new(program)
         .current_dir(directory)
@@ -87,8 +83,6 @@ fn with_input(program: &OsStr, directory: &Path, arguments: &[&str], input: &[u8
     })
 }
 
-/// `-f` imports an export, from a file or from standard input, plain or compressed, and `-o`
-/// writes it again. `-e` keeps the extended fields.
 #[test]
 fn import() {
     let directory = fixture();
@@ -163,7 +157,6 @@ fn import() {
     }
 }
 
-/// An import of an export, plain or compressed, writes the export of the scan again.
 #[test]
 fn round_trip() {
     let directory = fixture();
@@ -185,7 +178,6 @@ fn round_trip() {
     }
 }
 
-/// `-c` compresses the export of an import.
 #[test]
 fn import_compress() {
     let directory = fixture();
@@ -200,7 +192,6 @@ fn import_compress() {
     assert_eq!(text(&export), text(&plain.stdout));
 }
 
-/// The scan directory and the options that only change the scan have no effect on an import.
 #[test]
 fn scan_options() {
     let directory = fixture();
@@ -227,7 +218,6 @@ fn scan_options() {
     );
 }
 
-/// duit imports what ncdu exports, and writes what ncdu writes for that import.
 #[cfg(feature = "test-ncdu")]
 #[test]
 fn ncdu_export() {
@@ -247,8 +237,6 @@ fn ncdu_export() {
     }
 }
 
-/// A file that cannot be read, is too short, or is not a valid export ends the import with an
-/// error, and nothing is written to the export.
 #[test]
 fn errors() {
     let directory = fixture();
@@ -354,8 +342,6 @@ fn errors() {
     ----- stderr -----
     ^[[JError writing data: path too long.
     ");
-    // As in ncdu, the export file is created before the import is read. A binary export starts
-    // with its signature, and a block is written only once it is full.
     assert_eq!(
         fs::read(directory.path().join("export.out")).expect("export file is created"),
         b""
@@ -369,8 +355,6 @@ fn errors() {
     }
 }
 
-/// `-O` writes an import as a binary export, which ncdu reads as it reads its own conversion of
-/// the same import.
 #[test]
 fn binary_export() {
     let directory = fixture();
@@ -418,9 +402,6 @@ fn binary_export() {
     ");
 }
 
-/// `-f` reads a binary export, written by duit or by ncdu, into the JSON export of `-o` or the
-/// binary export of `-O`. Each directory lists its entries in the reverse order of the export, as
-/// in ncdu, so a second conversion restores the order of the first.
 #[test]
 fn binary() {
     let directory = fixture();
@@ -520,7 +501,6 @@ fn binary() {
         }
     }
 
-    // Without `-e`, the extended fields are dropped, and `-c` compresses the JSON export.
     let output = duit(root, &["-f", "duit.ncdu", "-c", "-o", "export.zst"]);
     assert!(output.status.success());
     let compressed = fs::read(root.join("export.zst")).expect("export is written");
@@ -529,7 +509,6 @@ fn binary() {
     assert_eq!(text(&export), text(&plain.stdout));
 }
 
-/// A binary export is read with random access, so standard input must be a file, not a pipe.
 #[test]
 fn binary_stdin() {
     let directory = fixture();
@@ -573,8 +552,6 @@ fn binary_stdin() {
     ");
 }
 
-/// A scan written over many blocks, by duit or by ncdu, with one thread or several, reads as ncdu
-/// reads it, and two conversions give back the export of the scan.
 #[test]
 fn binary_blocks() {
     let directory = fixture();
@@ -601,10 +578,8 @@ fn binary_blocks() {
                 .success()
         );
     }
-    // The index block ends with its header, whose length counts 8 bytes per data block.
     let first = fs::read(root.join("first.ncdu")).expect("export is written");
-    let header: [u8; 4] = first[first.len() - 4..].try_into().expect("4 bytes");
-    let blocks = ((u32::from_be_bytes(header) & 0x0fff_ffff) - 16) / 8;
+    let blocks = data_blocks(&first);
     assert!(blocks >= 4, "{blocks} data blocks");
     let second = duit(root, &["-f", "second.ncdu", "-o-", "-e"]);
     assert_eq!(render(&second), render(&scan));
@@ -656,17 +631,12 @@ fn binary_blocks() {
     }
 }
 
-/// An item of a directory named `r` with `fields`.
 fn directory_item(fields: &[u8]) -> Vec<u8> {
     item(&[b"\x00\x00\x01\x41r", fields].concat())
 }
 
-/// A file named `f`.
 const FILE: &[u8] = b"\xbf\x00\x01\x01\x41f\xff";
 
-/// The fields of the entries that ncdu reads from a binary export, beyond what it writes itself:
-/// text names, CBOR tags, unknown keys and types, maps of definite length, and fields that a
-/// later field of the same key overrides.
 #[test]
 fn binary_items() {
     let directory = fixture();
@@ -749,14 +719,13 @@ fn binary_items() {
     "#);
 }
 
-/// A malformed binary export ends the import with ncdu's message, never a panic, and nothing is
-/// written to the export.
-///
-/// The rows marked as unlike ncdu are those that ncdu does not survive or reads differently. It
-/// crashes on an index without a root reference, on a directory that contains itself, and on
-/// directories or skipped values nested deeper than its stack holds, and it loops forever on an
-/// entry that refers to itself. An item that is reached a second time is an error in duit, so two
-/// directories that share an entry are one too, while ncdu writes the entry twice.
+enum Ncdu {
+    Same,
+    Crashes,
+    Loops,
+    ReadsOtherwise,
+}
+
 #[test]
 fn binary_malformed() {
     let directory = fixture();
@@ -764,15 +733,15 @@ fn binary_malformed() {
     let signature: &[u8] = b"\xbfncduEX1";
     let file_then_root = [FILE, &directory_item(b"\x0c\x26")].concat();
     let frame = zstd::bulk::compress(FILE, 3).expect("block is compressed");
-    // An empty directory, then directories of the same length that each hold the one before.
     let mut deep_directories = b"\xbf\x00\x00\x01\x41d\x06\xf4\xff".to_vec();
     for _ in 0..1_000_000 {
         deep_directories.extend_from_slice(b"\xbf\x00\x00\x01\x41d\x0c\x28\xff");
     }
     let deep_root = u64::try_from(deep_directories.len() - 9).expect("offset fits");
     let mut renumbered = binary_file(&[&directory_item(b"")], 0);
-    // The number in the header of block 0, after the signature and the length of the block.
-    renumbered[12..16].copy_from_slice(&1_u32.to_be_bytes());
+    let block_number = BINARY_SIGNATURE.len() + BLOCK_HEADER_LENGTH;
+    let renumber = 1_u32.to_be_bytes();
+    renumbered[block_number..block_number + renumber.len()].copy_from_slice(&renumber);
     let deep_value = directory_item(
         &[
             &b"\x18\x1f"[..],
@@ -781,58 +750,58 @@ fn binary_malformed() {
         ]
         .concat(),
     );
-    let rows: Vec<(&str, Vec<u8>, bool)> = vec![
+    let rows: Vec<(&str, Vec<u8>, Ncdu)> = vec![
         (
             "an export of one file",
             binary_file(&[&file_then_root], 7),
-            true,
+            Ncdu::Same,
         ),
-        ("the signature only", signature.to_vec(), true),
-        ("15 bytes", [signature, &[0; 7]].concat(), true),
+        ("the signature only", signature.to_vec(), Ncdu::Same),
+        ("15 bytes", [signature, &[0; 7]].concat(), Ncdu::Same),
         (
             "an index header of a data block",
             [signature, &[0, 0, 0, 0x10], &[0; 8], &[0, 0, 0, 0x10]].concat(),
-            true,
+            Ncdu::Same,
         ),
         (
             "an index length that is not a multiple of 8",
             [signature, &[0; 8], b"\x10\0\0\x11"].concat(),
-            true,
+            Ncdu::Same,
         ),
         (
             "an index length below 8",
             [signature, &[0; 8], b"\x10\0\0\0"].concat(),
-            true,
+            Ncdu::Same,
         ),
         (
             "an index longer than the file",
             [signature, &[0; 8], b"\x10\0\x01\0"].concat(),
-            true,
+            Ncdu::Same,
         ),
         (
             "an index that starts before the file",
             [signature, &[0; 5], b"\x10\0\0\x18"].concat(),
-            true,
+            Ncdu::Same,
         ),
         (
             "an index without a root reference",
             [signature, &[0; 8], b"\x10\0\0\x08"].concat(),
-            false,
+            Ncdu::Crashes,
         ),
         (
             "an index without data blocks",
             [signature, &index_block(&[0; 8])].concat(),
-            true,
+            Ncdu::Same,
         ),
         (
             "a root past the index",
             binary_file(&[FILE], block_start(5)),
-            true,
+            Ncdu::Same,
         ),
         (
             "a reference of 57 bits",
             binary_file(&[FILE], 1 << 56),
-            true,
+            Ncdu::Same,
         ),
         (
             "a block of 12 bytes",
@@ -841,7 +810,7 @@ fn binary_malformed() {
                 &index_block(&[0, 0, 0, 0, 0x08, 0, 0, 12, 0, 0, 0, 0, 0, 0, 0, 0]),
             ]
             .concat(),
-            true,
+            Ncdu::Same,
         ),
         (
             "a block past the end of the file",
@@ -850,12 +819,12 @@ fn binary_malformed() {
                 &index_block(&[0, 0, 0, 0, 0x08, 0, 0, 100, 0, 0, 0, 0, 0, 0, 0, 0]),
             ]
             .concat(),
-            true,
+            Ncdu::Same,
         ),
         (
             "a block that is not a zstd frame",
             binary_frames(&[b"not zstd"], 0),
-            true,
+            Ncdu::Same,
         ),
         (
             "a zstd frame without its size",
@@ -863,7 +832,7 @@ fn binary_malformed() {
                 &[&zstd::encode_all(file_then_root.as_slice(), 3).expect("block is compressed")],
                 7,
             ),
-            true,
+            Ncdu::Same,
         ),
         (
             "an empty zstd frame",
@@ -871,97 +840,97 @@ fn binary_malformed() {
                 &[&zstd::bulk::compress(b"", 3).expect("block is compressed")],
                 0,
             ),
-            true,
+            Ncdu::Same,
         ),
         (
             "a truncated zstd frame",
             binary_frames(&[&frame[..frame.len() - 1]], 0),
-            true,
+            Ncdu::Same,
         ),
         (
             "a block whose header holds another number",
             renumbered,
-            false,
+            Ncdu::ReadsOtherwise,
         ),
         (
             "an item past the end of its block",
             binary_file(&[FILE], 7),
-            true,
+            Ncdu::Same,
         ),
         (
             "an item that is not a map",
             binary_file(&[b"\x80"], 0),
-            true,
+            Ncdu::Same,
         ),
         (
             "an item without a type",
             binary_file(&[&item(b"\x01\x41r")], 0),
-            true,
+            Ncdu::Same,
         ),
         (
             "an item without a name",
             binary_file(&[&item(b"\x00\x00")], 0),
-            true,
+            Ncdu::Same,
         ),
         (
             "an empty name",
             binary_file(&[&item(b"\x00\x00\x01\x40")], 0),
-            true,
+            Ncdu::Same,
         ),
         (
             "a name of indefinite length",
             binary_file(&[&item(b"\x00\x00\x01\x5f\x41r\xff")], 0),
-            true,
+            Ncdu::Same,
         ),
         (
             "a root that is not a directory",
             binary_file(&[FILE], 0),
-            true,
+            Ncdu::Same,
         ),
         (
             "an item without its end",
             binary_file(&[b"\xbf\x00\x00\x01\x41r"], 0),
-            true,
+            Ncdu::Same,
         ),
         (
             "a reserved additional information",
             binary_file(&[&directory_item(b"\x1c")], 0),
-            true,
+            Ncdu::Same,
         ),
         (
             "a tag of indefinite length",
             binary_file(&[&directory_item(b"\x18\x1f\xdf")], 0),
-            true,
+            Ncdu::Same,
         ),
         (
             "a type out of range",
             binary_file(&[&item(b"\x00\x1a\x80\0\0\0\x01\x41r")], 0),
-            true,
+            Ncdu::Same,
         ),
         (
             "a negative size",
             binary_file(&[&directory_item(b"\x03\x20")], 0),
-            true,
+            Ncdu::Same,
         ),
         (
             "a link count of 32 bits",
             binary_file(&[&directory_item(b"\x0e\x1a\x80\0\0\0")], 0),
-            true,
+            Ncdu::Same,
         ),
         (
             "a negative reference before its block",
             binary_file(&[&directory_item(b"\x0c\x20")], 0),
-            true,
+            Ncdu::Same,
         ),
         (
             "a reference that is a string",
             binary_file(&[&directory_item(b"\x0c\x40")], 0),
-            true,
+            Ncdu::Same,
         ),
         (
             "a reference past the index",
             binary_file(&[&directory_item(&reference(0x0c, 2))], 0),
-            true,
+            Ncdu::Same,
         ),
         (
             "an entry that refers to itself",
@@ -972,12 +941,12 @@ fn binary_malformed() {
                 ],
                 block_start(1),
             ),
-            false,
+            Ncdu::Loops,
         ),
         (
             "a directory that contains itself",
             binary_file(&[&directory_item(&reference(0x0c, 0))], 0),
-            false,
+            Ncdu::Crashes,
         ),
         (
             "two directories that share an entry",
@@ -990,34 +959,38 @@ fn binary_malformed() {
                 ],
                 block_start(3),
             ),
-            false,
+            Ncdu::ReadsOtherwise,
         ),
         (
             "directories nested a million deep",
             binary_file(&[&deep_directories], deep_root),
-            false,
+            Ncdu::Crashes,
         ),
         (
             "a value nested a million deep",
             binary_file(&[&deep_value], 0),
-            false,
+            Ncdu::Crashes,
         ),
     ];
     let mut rendered = String::new();
-    for (index, (description, contents, compare)) in rows.iter().enumerate() {
+    for (index, (description, contents, ncdu_outcome)) in rows.iter().enumerate() {
         let name = format!("{index}.ncdu");
         fs::write(root.join(&name), contents).expect("export is written");
         let arguments = ["-f", name.as_str(), "-o-"];
+        let unlike_ncdu = match ncdu_outcome {
+            Ncdu::Same => "",
+            Ncdu::Crashes | Ncdu::Loops | Ncdu::ReadsOtherwise => " (unlike ncdu)",
+        };
         #[cfg(feature = "test-ncdu")]
-        if *compare {
-            assert_ncdu(root, &arguments);
+        match ncdu_outcome {
+            Ncdu::Same => assert_ncdu(root, &arguments),
+            Ncdu::Crashes | Ncdu::Loops | Ncdu::ReadsOtherwise => {}
         }
         let output = duit(root, &arguments);
         let stderr = text(&output.stderr);
         let _ = writeln!(
             rendered,
-            "{description}{}\n  {}: {}",
-            if *compare { "" } else { " (unlike ncdu)" },
+            "{description}{unlike_ncdu}\n  {}: {}",
             output.status.code().unwrap_or(-1),
             stderr.trim_start_matches("^[[J").trim_end()
         );
@@ -1106,9 +1079,6 @@ fn binary_malformed() {
     ");
 }
 
-/// Each entry has the device of its directory unless it has its own. ncdu gives an entry the
-/// device of the item that it read last, which can be in the subdirectory before it: it reads
-/// `"dev":9` for the directory `a` here.
 #[test]
 fn binary_devices() {
     let directory = fixture();

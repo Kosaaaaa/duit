@@ -42,6 +42,16 @@ jobs:
         run: rustup component add rustfmt
       - run: cargo fmt --all --check
       - run: npx prettier@3.9.0 --check .
+      - name: "Check that every prettier pin names the same version"
+        run: |
+          for file in Makefile prek.toml .github/workflows/ci.yml; do
+            grep -q 'prettier@[0-9]' "$file" || { echo "::error file=$file::no prettier pin"; exit 1; }
+          done
+          versions="$(grep -ho 'prettier@[0-9][0-9.]*' Makefile prek.toml .github/workflows/ci.yml | sort -u)"
+          if [ "$(echo "$versions" | wc -l)" -ne 1 ]; then
+            echo "::error::the prettier pins differ: $versions"
+            exit 1
+          fi
 
   clippy:
     name: "check | clippy"
@@ -197,8 +207,6 @@ jobs:
           RUST_BACKTRACE: 1
         run: cargo nextest run --workspace --locked --profile ci --cargo-profile fast-build
 
-  # The ruleset on `master` requires only this job, so a new job is enforced once it is listed in
-  # `needs`. A skipped or cancelled job fails it, same as a failed one.
   required-checks-passed:
     name: "all required jobs passed"
     if: ${{ always() }}

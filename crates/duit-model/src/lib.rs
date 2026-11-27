@@ -1,8 +1,8 @@
-//! Entry types, the `Sink` trait, and the in-memory tree.
-
 pub use mem_sink::{MemoryDirectory, MemorySink};
 pub use mem_src::replay;
-pub use progress::{DirectoryPath, Producer, Progress, ProgressSink, ThreadDirectories};
+pub use progress::{
+    DirectoryPath, Producer, Progress, ProgressSink, ThreadDirectories, is_event_count,
+};
 pub use sink::Sink;
 pub use stat::{EntryType, Extended, Special, Stat};
 pub use tree::{

@@ -1,18 +1,11 @@
 [bans]
 wildcards = "deny"
-
-# NOTE: Rust as a whole simply has too many split resolutions
-# for us to enforce a single version per crate. Maybe
-# in the distant future.
 multiple-versions = "allow"
 
 [bans.build]
-# Every dependency that runs a build script must be listed here. Review the script
-# before adding a crate, and remove the entry when the crate leaves both lockfiles.
 allow-build-scripts = [
   "getrandom",
   "libc",
-  # Compiles the bundled libFuzzer, for the targets in `fuzz/`, which have a lockfile of their own.
   "libfuzzer-sys",
   "parking_lot_core",
   "proc-macro2",
@@ -49,7 +42,4 @@ allow = [
   "Unicode-3.0",
   "Zlib",
 ]
-exceptions = [
-  # libFuzzer, which the targets in `fuzz/` link, is under the LLVM license.
-  { crate = "libfuzzer-sys", allow = ["NCSA"] },
-]
+exceptions = [{ crate = "libfuzzer-sys", allow = ["NCSA"] }]

@@ -1,11 +1,6 @@
-//! Exclude patterns, as given with `--exclude` and `-X`.
-//!
-//! A pattern is split on `/` into components, and each component is matched against one name.
-//! A pattern that starts with `/` is anchored at the filesystem root, and any other pattern is
-//! matched at every level of the tree. A trailing `/` restricts a pattern to directories.
-
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
+use std::num::NonZeroU8;
 
 /// Whether an entry is excluded. The variants are ordered by strength, so that the strongest of
 /// several matches wins.
@@ -17,32 +12,32 @@ pub enum Excluded {
     Always,
 }
 
-/// One component of a pattern.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Component {
-    /// A component without `[`, `*`, `?`, or `\`, which is compared byte by byte.
     Literal(Box<[u8]>),
-    /// A component that is matched with `fnmatch`, which reads it up to the first NUL byte.
     Wildcard(CString),
 }
 
 struct Node {
     component: Component,
-    /// Whether the component was followed by a `/`.
     is_directory: bool,
-    /// The next component, matched against the entries of a matching directory.
     sub: Option<usize>,
 }
 
-/// The patterns that apply to the entries of one directory, as indices into
-/// [`ExcludePatterns::nodes`].
+impl Node {
+    fn excluded(&self) -> Excluded {
+        if self.is_directory {
+            Excluded::IfDirectory
+        } else {
+            Excluded::Always
+        }
+    }
+}
+
 #[derive(Default)]
 struct Level {
-    /// Final components by their bytes, with whether they match directories only. A literal that
-    /// is given both with and without a trailing `/` matches any entry.
-    final_literals: HashMap<Box<[u8]>, bool>,
+    final_literals: HashMap<Box<[u8]>, Excluded>,
     final_wildcards: Vec<usize>,
-    /// Components that are followed by more, by their bytes, with their next components.
     inner_literals: HashMap<Box<[u8]>, Vec<usize>>,
     inner_wildcards: Vec<usize>,
 }
@@ -52,8 +47,11 @@ impl Level {
         let node = &nodes[index];
         match (&node.component, node.sub) {
             (Component::Literal(bytes), None) => {
-                let is_directory = self.final_literals.entry(bytes.clone()).or_insert(true);
-                *is_directory &= node.is_directory;
+                let excluded = self
+                    .final_literals
+                    .entry(bytes.clone())
+                    .or_insert(Excluded::IfDirectory);
+                *excluded = (*excluded).max(node.excluded());
             }
             (Component::Literal(bytes), Some(sub)) => {
                 self.inner_literals
@@ -67,28 +65,23 @@ impl Level {
     }
 
     fn matches(&self, nodes: &[Node], name: &CStr) -> Excluded {
-        let mut excluded = match self.final_literals.get(name.to_bytes()) {
-            Some(true) => Excluded::IfDirectory,
-            Some(false) => Excluded::Always,
-            None => Excluded::No,
-        };
+        let mut excluded = self
+            .final_literals
+            .get(name.to_bytes())
+            .copied()
+            .unwrap_or(Excluded::No);
         for &index in &self.final_wildcards {
             if excluded == Excluded::Always {
                 break;
             }
             let node = &nodes[index];
             if wildcard_matches(&node.component, name) {
-                excluded = excluded.max(if node.is_directory {
-                    Excluded::IfDirectory
-                } else {
-                    Excluded::Always
-                });
+                excluded = excluded.max(node.excluded());
             }
         }
         excluded
     }
 
-    /// Add the next components of the patterns that match the directory `name` to `child`.
     fn enter(&self, nodes: &[Node], name: &CStr, child: &mut Self) {
         if let Some(subs) = self.inner_literals.get(name.to_bytes()) {
             for &sub in subs {
@@ -124,14 +117,10 @@ fn fnmatch(pattern: &CStr, name: &CStr) -> bool {
     unsafe { libc::fnmatch(pattern.as_ptr(), name.as_ptr(), 0) == 0 }
 }
 
-/// All exclude patterns of a scan.
 #[derive(Default)]
 pub struct ExcludePatterns {
-    /// The components of all patterns. A pattern is a chain of nodes linked by [`Node::sub`].
     nodes: Vec<Node>,
-    /// Patterns that start with `/`, which apply from the filesystem root.
     anchored: Level,
-    /// Patterns that apply at every level.
     unanchored: Level,
 }
 
@@ -149,7 +138,6 @@ impl ExcludePatterns {
         }
     }
 
-    /// Add the components of `pattern` as a chain of nodes and return the index of the first.
     fn parse(&mut self, pattern: &[u8]) -> usize {
         let first = self.nodes.len();
         let mut rest = trim_start_slashes(pattern);
@@ -177,15 +165,14 @@ impl ExcludePatterns {
     pub fn for_path(&self, path: &CStr) -> DirectoryPatterns<'_> {
         let mut patterns = DirectoryPatterns {
             exclude: self,
-            level: None,
+            anchored: Anchored::Root,
         };
         let path = trim_end_slashes(trim_start_slashes(path.to_bytes()));
         if path.is_empty() {
             return patterns;
         }
         for component in path.split(|&byte| byte == b'/') {
-            // A slice of a `CStr` holds no NUL byte.
-            patterns = patterns.enter(&CString::new(component).unwrap_or_default());
+            patterns = patterns.enter(&until_nul(component));
         }
         patterns
     }
@@ -196,15 +183,15 @@ fn parse_component(component: &[u8]) -> Component {
         .iter()
         .any(|byte| matches!(byte, b'[' | b'*' | b'?' | b'\\'))
     {
-        let until_nul = component
-            .split(|&byte| byte == 0)
-            .next()
-            .unwrap_or_default();
-        // The slice up to the first NUL byte holds no NUL byte.
-        Component::Wildcard(CString::new(until_nul).unwrap_or_default())
+        Component::Wildcard(until_nul(component))
     } else {
         Component::Literal(component.into())
     }
+}
+
+fn until_nul(bytes: &[u8]) -> CString {
+    let bytes: Vec<NonZeroU8> = bytes.iter().copied().map_while(NonZeroU8::new).collect();
+    CString::from(bytes)
 }
 
 fn trim_start_slashes(bytes: &[u8]) -> &[u8] {
@@ -223,20 +210,24 @@ fn trim_end_slashes(bytes: &[u8]) -> &[u8] {
     &bytes[..end]
 }
 
-/// The exclude patterns for the entries of one directory.
+enum Anchored {
+    Root,
+    Entered(Level),
+}
+
 pub struct DirectoryPatterns<'a> {
     exclude: &'a ExcludePatterns,
-    /// The patterns of this directory, or `None` for the filesystem root, whose patterns are
-    /// [`ExcludePatterns::anchored`].
-    level: Option<Level>,
+    anchored: Anchored,
 }
 
 impl DirectoryPatterns<'_> {
     fn level(&self) -> &Level {
-        self.level.as_ref().unwrap_or(&self.exclude.anchored)
+        match &self.anchored {
+            Anchored::Root => &self.exclude.anchored,
+            Anchored::Entered(level) => level,
+        }
     }
 
-    /// Whether the entry `name` in this directory is excluded.
     pub fn matches(&self, name: &CStr) -> Excluded {
         let nodes = &self.exclude.nodes;
         let excluded = self.level().matches(nodes, name);
@@ -246,7 +237,6 @@ impl DirectoryPatterns<'_> {
         excluded.max(self.exclude.unanchored.matches(nodes, name))
     }
 
-    /// The patterns for the entries of the subdirectory `name`.
     #[must_use]
     pub fn enter(&self, name: &CStr) -> Self {
         let nodes = &self.exclude.nodes;
@@ -255,7 +245,7 @@ impl DirectoryPatterns<'_> {
         self.exclude.unanchored.enter(nodes, name, &mut child);
         Self {
             exclude: self.exclude,
-            level: Some(child),
+            anchored: Anchored::Entered(child),
         }
     }
 }
@@ -266,7 +256,6 @@ mod tests {
 
     use super::{Component, ExcludePatterns};
 
-    /// The components of `pattern`, each with whether it matches directories only.
     fn parse(pattern: &[u8]) -> Vec<(Component, bool)> {
         let mut exclude = ExcludePatterns::default();
         let mut next = Some(exclude.parse(pattern));
@@ -287,7 +276,6 @@ mod tests {
         Component::Wildcard(CString::new(component).unwrap_or_default())
     }
 
-    /// Port of the upstream test "parse".
     #[test]
     fn parse_components() {
         assert_eq!(parse(b""), [(literal(""), false)]);

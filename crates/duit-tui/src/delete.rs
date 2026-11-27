@@ -1,7 +1,5 @@
-//! The deletion of `delete.zig`: the confirmation, the deletion of an entry and of everything below
-//! it from the filesystem and from the tree, and the windows that it shows while it runs.
-
-use std::ffi::{CStr, OsStr};
+use std::ffi::{CStr, CString, OsStr};
+use std::num::NonZeroU8;
 use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::process::Command;
@@ -18,46 +16,42 @@ use crate::browser::{Action, BrowserOptions};
 use crate::terminal::Key;
 use crate::ui::{ColorScheme, Style, Window, shorten, to_utf8};
 
-/// The window of a deletion, `state` in `delete.zig`, or none when no deletion runs, which is
-/// `main.state` in `main.zig`.
+const DELETE_PATH_VARIABLE: &str = "NCDU_DELETE_PATH";
+
+fn until_nul(bytes: &[u8]) -> CString {
+    let bytes: Vec<NonZeroU8> = bytes.iter().copied().map_while(NonZeroU8::new).collect();
+    CString::from(bytes)
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum State {
-    /// No deletion runs, or it was aborted.
     #[default]
     Closed,
     Confirm,
-    /// The deletion deletes, and shows its progress.
     Busy,
     Error,
 }
 
-/// A button of the confirmation, `confirm` in `delete.zig`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum Confirm {
     Yes,
     #[default]
     No,
-    /// "don't ask me again".
     Ignore,
 }
 
-/// A button of the error window, `error_option` in `delete.zig`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum ErrorOption {
     #[default]
     Abort,
     Ignore,
-    /// "ignore all".
     All,
 }
 
-/// What became of an entry that the deletion went through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Outcome {
     Deleted,
-    /// The entry is still on the filesystem and in the tree.
     Kept,
-    /// The deletion was aborted before the entry was deleted.
     Aborted,
 }
 
@@ -66,23 +60,16 @@ enum Outcome {
 #[derive(Debug, Default)]
 pub struct Deletion {
     state: State,
-    /// The directory and the entry that the windows name, `parent` and `entry` in `delete.zig`:
-    /// the entry to delete, and while it is deleted, the entry that the deletion goes through.
     parent: Option<DirectoryId>,
     entry: Option<EntryId>,
-    /// The entry to put the cursor on once the entry is deleted, `next_sel` in `delete.zig`.
     next: Option<EntryId>,
     confirm: Confirm,
     error_option: ErrorOption,
-    /// "ignore all" was selected, `ignore_delete_errors` in `main.zig`.
     ignore_errors: bool,
-    /// The description of the error that the error window shows.
     error: &'static str,
 }
 
 impl Deletion {
-    /// Start to delete `entry` of `parent`, with `next` to select once it is deleted, `setup` in
-    /// `delete.zig`. With `confirm`, the confirmation opens first.
     pub(crate) fn setup(
         &mut self,
         parent: DirectoryId,
@@ -111,8 +98,6 @@ impl Deletion {
         self.state = State::Closed;
     }
 
-    /// Handle `key` in the confirmation, `keyInput` in `delete.zig`. "don't ask me again" turns
-    /// `confirm_delete` off. Returns [`Action::Delete`] once the deletion is confirmed.
     pub(crate) fn confirm_key_input(&mut self, key: Key, confirm_delete: &mut bool) -> Action {
         match key {
             Key::Char('h') | Key::Left => {
@@ -196,11 +181,6 @@ impl Deletion {
         }
     }
 
-    /// Delete the entry once the deletion is confirmed, `delete` in `delete.zig`, from the
-    /// filesystem and from `tree`, and return the entry to put the cursor on: the entry when it is
-    /// still in the tree, and else the entry after it, or the one before it when it was the last,
-    /// or none. `events` gets the deletion before each entry, and with `true` whenever it waits for
-    /// a key, to draw it and give it keys, as `handleEvent` in `main.zig`.
     pub(crate) fn run(
         &mut self,
         tree: &mut Tree,
@@ -230,15 +210,6 @@ impl Deletion {
         }
     }
 
-    /// Run `delete_command` on the entry once the deletion is confirmed instead of deleting it,
-    /// `delete` and `deleteCmd` in `delete.zig`, and update `tree` with what the command left at
-    /// the path of the entry. `run` runs the command, and returns the [`Stat`] of the path
-    /// afterwards, or `None` when it cannot be read. With `extended`, a new entry keeps its
-    /// extended information, as with `-e`.
-    ///
-    /// Returns the entry to put the cursor on, as [`Deletion::run`] does, and the directory at the
-    /// path, which `main.zig` scans again next. Fails, as ncdu does, when a new directory is on a
-    /// device that the tree cannot number.
     pub(crate) fn run_command(
         &mut self,
         tree: &mut Tree,
@@ -255,20 +226,17 @@ impl Deletion {
             return Ok((Some(entry), None));
         }
         let previous = tree.entries(parent).take_while(|&id| id != entry).last();
-        let mut path = entry_path(tree, parent, entry);
-        path.push(0);
-        // A name with a NUL byte, which only an import has, ends the path there, as for ncdu.
-        let path = CStr::from_bytes_until_nul(&path).unwrap_or_default();
-        // The path goes through the environment, so that the shell needs no quoting of it.
+        let path = until_nul(&entry_path(tree, parent, entry));
         let mut script = delete_command.to_vec();
-        script.extend_from_slice(b" \"$NCDU_DELETE_PATH\"");
+        script.extend_from_slice(b" \"$");
+        script.extend_from_slice(DELETE_PATH_VARIABLE.as_bytes());
+        script.push(b'"');
         let mut command = Command::new("/bin/sh");
         command
             .arg("-c")
             .arg(OsStr::from_bytes(&script))
-            .env("NCDU_DELETE_PATH", OsStr::from_bytes(path.to_bytes()));
-        // Nothing at the path, or a path that cannot be read, counts as deleted.
-        let Some(stat) = run(&mut command, path) else {
+            .env(DELETE_PATH_VARIABLE, OsStr::from_bytes(path.to_bytes()));
+        let Some(stat) = run(&mut command, &path) else {
             tree.remove(parent, previous, entry);
             tree.add_all_stats(&mut |_, _| {});
             return Ok((self.next, None));
@@ -304,8 +272,6 @@ impl Deletion {
         Ok((Some(entry), directory))
     }
 
-    /// Draw the confirmation over the screen in `buffer`, `drawConfirm` in `delete.zig`. With
-    /// `delete_command`, it asks to run the command on the entry.
     pub(crate) fn draw_confirm(
         &self,
         buffer: &mut Buffer,
@@ -373,7 +339,6 @@ impl Deletion {
     pub fn draw(&self, frame: &mut Frame<'_>, tree: &Tree, options: &BrowserOptions) {
         let buffer = frame.buffer_mut();
         let scheme = options.color;
-        // ncurses erases the screen to the background of the `default` style before each frame.
         buffer.set_style(buffer.area, scheme.style(Style::Default));
         let (Some(parent), Some(entry)) = (self.parent, self.entry) else {
             return;
@@ -384,7 +349,6 @@ impl Deletion {
         path.extend_from_slice(tree.name(entry));
         let path = to_utf8(&path);
         match self.state {
-            // The browser draws the confirmation over the listing.
             State::Closed | State::Confirm => {}
             State::Busy => {
                 let window = Window::new(buffer, scheme, 6, 60, "Deleting...");
@@ -415,7 +379,6 @@ impl Deletion {
     }
 }
 
-/// The path of `entry` of `parent`, from the root, as `delete` in `delete.zig` builds it.
 fn entry_path(tree: &Tree, parent: DirectoryId, entry: EntryId) -> Vec<u8> {
     let mut path = Vec::new();
     tree.format_path(parent, true, &mut path);
@@ -426,7 +389,6 @@ fn entry_path(tree: &Tree, parent: DirectoryId, entry: EntryId) -> Vec<u8> {
     path
 }
 
-/// A deletion that runs, with the tree that it deletes from and the events of the main loop.
 struct Run<'a> {
     deletion: &'a mut Deletion,
     tree: &'a mut Tree,
@@ -434,13 +396,10 @@ struct Run<'a> {
 }
 
 impl Run<'_> {
-    /// Give the deletion to the main loop, `handleEvent` in `main.zig`.
     fn handle_event(&mut self, block: bool) {
         (self.events)(self.deletion, self.tree, block);
     }
 
-    /// Delete `id`, the entry at `path` from `directory`, and everything below it, and take it out
-    /// of `parent`, where it follows `previous`, `deleteItem` in `delete.zig`.
     fn delete_item(
         &mut self,
         directory: BorrowedFd<'_>,
@@ -467,9 +426,6 @@ impl Run<'_> {
         Outcome::Deleted
     }
 
-    /// Delete the entries of the directory `data` at `path` from `directory`, then the directory
-    /// itself. Returns the outcome unless the directory was deleted. The windows name the
-    /// directory as the parent of the entries, also when the directory itself fails, as in ncdu.
     fn delete_directory(
         &mut self,
         directory: BorrowedFd<'_>,
@@ -493,14 +449,11 @@ impl Run<'_> {
         drop(entries);
         match unlinkat(directory, path, AtFlags::REMOVEDIR) {
             Ok(()) => None,
-            // An entry that was kept already had its error.
             Err(Errno::NOTEMPTY | Errno::EXIST) if kept.is_some() => Some(Outcome::Kept),
             Err(error) => Some(self.error(unlink_error(error))),
         }
     }
 
-    /// Show `error` in the error window until a button closes it, `err` in `delete.zig`, unless
-    /// "ignore all" was selected before.
     fn error(&mut self, error: &'static str) -> Outcome {
         if self.deletion.ignore_errors {
             return Outcome::Kept;
@@ -524,8 +477,6 @@ const PATH: OFlags = OFlags::PATH;
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 const PATH: OFlags = OFlags::empty();
 
-/// The flags that open a directory to delete its entries, as Zig's `Dir.openDir` does with
-/// `no_follow` and without `iterate`.
 fn open_flags() -> OFlags {
     OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC | PATH
 }

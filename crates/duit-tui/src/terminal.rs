@@ -1,6 +1,3 @@
-//! The terminal that `ui.zig` sets up with ncurses, over crossterm: `init`, `deinit`, `getch`,
-//! and `runCmd`.
-
 use std::env;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufWriter, Write};
@@ -46,7 +43,6 @@ pub enum Input {
 /// A key press, as the browser reads it from ncurses `getch`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
-    /// A character key.
     Char(char),
     /// The Enter key, which ncurses reports as `\n`.
     Enter,
@@ -64,13 +60,13 @@ pub enum Key {
     Other,
 }
 
-/// The terminal while the full-screen interface owns it.
+/// The escape sequence that clears from the cursor to the end of the screen, which `clearScr` in
+/// `ui.zig` writes to stderr to clear a line that the progress of `-1` left behind.
+pub const CLEAR_TO_END: &[u8] = b"\x1b[J";
+
 pub struct Ui {
     terminal: Terminal<CrosstermBackend<BufWriter<File>>>,
-    /// The input after an ESC that crossterm read together with it, which [`Ui::getch`] returns
-    /// next.
     pending: Option<Input>,
-    /// The terminal that `terminal` draws on, to take over again after [`Ui::run_command`].
     output: File,
 }
 
@@ -122,7 +118,6 @@ impl Ui {
         restore(self.terminal.backend_mut());
         let level = env::var_os("NCDU_LEVEL").unwrap_or_default();
         command.env("NCDU_LEVEL", next_level(level.as_bytes()));
-        // ncdu prints with `std.debug.print`, which ignores errors.
         let message = match command.status() {
             Ok(status) => exit_message(status, report_error),
             Err(error) => Some(format!(
@@ -134,9 +129,7 @@ impl Ui {
             let _ = io::stderr().write_all(message.as_bytes());
             let _ = io::stdin().lock().read_until(b'\n', &mut Vec::new());
         }
-        // The clear that `init` writes before it takes over the terminal, for a line that `-1`
-        // leaves behind.
-        let _ = io::stderr().write_all(b"\x1b[J");
+        let _ = io::stderr().write_all(CLEAR_TO_END);
         // A new `Terminal` draws the whole screen, which the alternate screen lost.
         self.terminal = enter(&self.output)?;
         Ok(())
@@ -144,7 +137,6 @@ impl Ui {
 
     /// Draw a frame with `draw`, after a resize at the new size.
     pub fn draw(&mut self, draw: impl FnOnce(&mut Frame<'_>)) {
-        // ncdu ignores the errors of ncurses' `refresh`.
         let _ = self.terminal.draw(draw);
     }
 
@@ -182,11 +174,6 @@ impl Ui {
                     })?;
                     Some(Input::Resize)
                 }
-                // crossterm reads an ESC and the key after it in the same read as that key with
-                // ALT, and ncurses as two keys.
-                // shortcut: also splits a key whose ALT comes from a CSI modifier, such as
-                // `\x1b[1;3A`, which ncurses reads as one key; tell them apart by `KeyCode` if
-                // such a key ever needs a binding.
                 Event::Key(event)
                     if event.kind != KeyEventKind::Release
                         && event.modifiers.contains(KeyModifiers::ALT) =>
@@ -212,11 +199,6 @@ impl Ui {
         restore(self.terminal.backend_mut());
     }
 
-    /// Give the terminal back, send `signal` to the process group of duit, and take the terminal
-    /// over again if duit continues, as after a suspend.
-    ///
-    /// The group gets the signal as from the terminal, so that a suspend also stops the other
-    /// processes of the job, such as the producer of `-f-`.
     fn signal_process_group(&mut self, signal: Signal) -> io::Result<()> {
         restore(self.terminal.backend_mut());
         // `kill(0, signal)` fails only for a signal that is not valid or a group that it may not
@@ -230,18 +212,14 @@ impl Ui {
     /// Give the terminal back and exit with status 1, as on Ctrl-C.
     pub fn interrupt(&mut self) -> ! {
         restore(self.terminal.backend_mut());
-        // The SIGINT handler of ncurses restores the terminal and exits at once.
         process::exit(1)
     }
 }
 
-/// Enter raw mode and the alternate screen on `output`, and return the terminal that draws there.
 fn enter(output: &File) -> Result<Terminal<CrosstermBackend<BufWriter<File>>>, InitError> {
     let output = output.try_clone().map_err(InitError::Terminal)?;
     enable_raw_mode().map_err(InitError::Terminal)?;
     let mut output = BufWriter::new(output);
-    // The alternate screen starts empty. `Terminal::clear` is not used, because it asks the
-    // terminal for the cursor position and waits for the answer.
     execute!(output, EnterAlternateScreen)
         .and_then(|()| Terminal::new(CrosstermBackend::new(output)))
         .map_err(|error| {
@@ -250,9 +228,6 @@ fn enter(output: &File) -> Result<Terminal<CrosstermBackend<BufWriter<File>>>, I
         })
 }
 
-/// The `NCDU_LEVEL` of a command that ncdu runs, from its own `level`: one higher, and 1 when it
-/// is empty. Only the first character counts, so the level stops at 9, and anything that does
-/// not start with a digit gives 1.
 fn next_level(level: &[u8]) -> String {
     match level.first() {
         Some(&digit @ b'0'..=b'8') => char::from(digit + 1).to_string(),
@@ -261,8 +236,6 @@ fn next_level(level: &[u8]) -> String {
     }
 }
 
-/// The message for a command that exited with `status`, if it needs one: a command that a signal
-/// ended, and with `report_error`, one that exited with a status other than 0.
 fn exit_message(status: ExitStatus, report_error: bool) -> Option<String> {
     let (kind, value) = match (status.code(), status.signal()) {
         (Some(0), _) => return None,
@@ -302,13 +275,11 @@ fn spawn_error(error: &io::Error) -> &'static str {
     }
 }
 
-/// Leave the alternate screen, show the cursor, and leave raw mode, ignoring errors.
 fn restore(mut output: impl Write) {
     let _ = execute!(output, LeaveAlternateScreen, Show);
     let _ = disable_raw_mode();
 }
 
-/// The input of a key event, as ncurses reads the bytes that the terminal sends for it.
 fn input_of(event: KeyEvent) -> Option<Input> {
     if event.kind == KeyEventKind::Release {
         return None;
@@ -319,9 +290,7 @@ fn input_of(event: KeyEvent) -> Option<Input> {
         // ncurses reads ^H as `KEY_BACKSPACE` under `TERM=xterm`, whose terminfo entry gives it
         // as the backspace key.
         KeyCode::Char('h') if control => Key::Backspace,
-        // ^J is `\n`, which ncdu reads as Enter.
         KeyCode::Char('j') if control => Key::Enter,
-        // ^@ is NUL, which ncdu reads as no key.
         KeyCode::Char(' ') if control => return None,
         KeyCode::Null => return None,
         KeyCode::Char(_) if control => Key::Other,
@@ -362,8 +331,6 @@ mod tests {
 
     use super::{exit_message, next_level};
 
-    /// `NCDU_LEVEL` counts from the first character only, up to 9, for the levels that the `shell`
-    /// integration test does not set. Upstream has no test for `runCmd`.
     #[test]
     fn next_levels() {
         assert_eq!(next_level(b"0"), "1");
@@ -372,9 +339,6 @@ mod tests {
         assert_eq!(next_level(b"\xff"), "1");
     }
 
-    /// A command that a signal ended is always reported, and one that exited with a status other
-    /// than 0 only with `report_error`, as `--delete-command` runs it, for the statuses that the
-    /// `shell`, `shell_errors`, and `delete_command` integration tests do not reach.
     #[test]
     fn exit_messages() {
         let exited = |code| ExitStatus::from_raw(code << 8);

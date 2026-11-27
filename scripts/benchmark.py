@@ -11,6 +11,8 @@ library, `hyperfine`, ncdu 2.9.2, and `/usr/bin/time`.
 """
 
 import argparse
+import hashlib
+import inspect
 import json
 import os
 import platform
@@ -29,8 +31,6 @@ TREE = WORK / "tree.noindex"
 STAMP = WORK / "tree.stamp"
 DUIT = ROOT / "target" / "release" / "duit"
 
-# Bump this when `generate` changes, so that an existing tree is generated again.
-TREE_VERSION = "1"
 WIDE_FILES = 100_000
 FANOUT = 10
 NESTED_LEVELS = 3
@@ -38,12 +38,14 @@ LEAF_FILES = 880
 LONG_NAMES = 10_000
 DEEP_LEVELS = 64
 DEEP_FILES = 10
+NON_EMPTY_FILE_PERIOD = 16
+SHORTEST_LONG_NAME = 100
+LONGEST_NAME = 255
 
 
 def create_file(directory_fd, name, index):
-    """Create a file, with a few bytes in one of 16 files, so that most files take no block."""
     fd = os.open(name, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o644, dir_fd=directory_fd)
-    if index % 16 == 0:
+    if index % NON_EMPTY_FILE_PERIOD == 0:
         os.write(fd, b"x" * (index % 1000 + 1))
     os.close(fd)
 
@@ -54,11 +56,6 @@ def make_directory(parent_fd, name):
 
 
 def generate_nested(parent_fd, level, counter):
-    """A directory tree with `FANOUT` children per level and `LEAF_FILES` files in each leaf.
-
-    Every tenth file is a hard link to the file before it, and every leaf links its first file to
-    the first file of the previous leaf, so that links cross directories.
-    """
     for child in range(FANOUT):
         fd = make_directory(parent_fd, f"directory-{child}")
         if level + 1 < NESTED_LEVELS:
@@ -79,33 +76,29 @@ def generate_nested(parent_fd, level, counter):
 
 
 def generate():
-    """Generate the tree in `TREE`. The names, the sizes, and the links depend on nothing else."""
     if TREE.exists():
         shutil.rmtree(TREE)
     TREE.mkdir(parents=True)
     root_fd = os.open(TREE, os.O_RDONLY | os.O_DIRECTORY)
 
-    # Many siblings in one directory.
     fd = make_directory(root_fd, "wide")
     for index in range(WIDE_FILES):
         create_file(fd, f"file-{index:06d}", index)
     os.close(fd)
 
-    # A balanced tree with hard links.
     fd = make_directory(root_fd, "nested")
     counter = [0, None]
     generate_nested(fd, 0, counter)
     os.close(counter[1])
     os.close(fd)
 
-    # Names from 100 to 255 bytes, the limit of most filesystems.
     fd = make_directory(root_fd, "long")
     for index in range(LONG_NAMES):
         prefix = f"{index:05d}-"
-        create_file(fd, prefix + "n" * (100 + index % 156 - len(prefix)), index)
+        length = SHORTEST_LONG_NAME + index % (LONGEST_NAME - SHORTEST_LONG_NAME + 1)
+        create_file(fd, prefix + "n" * (length - len(prefix)), index)
     os.close(fd)
 
-    # A chain of nested directories.
     fd = make_directory(root_fd, "deep")
     for level in range(DEEP_LEVELS):
         for index in range(DEEP_FILES):
@@ -118,9 +111,14 @@ def generate():
 
 
 def stamp():
+    generator = "".join(
+        inspect.getsource(function)
+        for function in (create_file, make_directory, generate_nested, generate)
+    )
     return json.dumps(
-        [TREE_VERSION, WIDE_FILES, FANOUT, NESTED_LEVELS, LEAF_FILES, LONG_NAMES, DEEP_LEVELS,
-         DEEP_FILES]
+        [hashlib.sha256(generator.encode()).hexdigest(), WIDE_FILES, FANOUT, NESTED_LEVELS,
+         LEAF_FILES, LONG_NAMES, DEEP_LEVELS, DEEP_FILES, NON_EMPTY_FILE_PERIOD,
+         SHORTEST_LONG_NAME, LONGEST_NAME]
     )
 
 
@@ -130,7 +128,6 @@ def run(command, **kwargs):
 
 
 def peak_memory(command, runs):
-    """The median of the peak resident set size over `runs` runs, in bytes."""
     if sys.platform == "darwin":
         time_command, pattern, unit = ["-l"], r"(\d+)\s+maximum resident set size", 1
     else:
@@ -152,7 +149,6 @@ def peak_memory(command, runs):
 
 
 def export_entries(path):
-    """The entries of a JSON export, without the metadata block that holds the timestamp."""
     with open(path) as file:
         return json.load(file)[3:]
 
@@ -176,7 +172,6 @@ def cases(threads, real_tree):
 
 
 def count_entries(item):
-    """The number of entries in an item of a JSON export: a directory is a list, a file a dict."""
     if isinstance(item, list):
         return 1 + sum(count_entries(child) for child in item[1:])
     return 1
@@ -225,8 +220,6 @@ def main():
     programs = {"ncdu": [arguments.ncdu], "duit": [str(DUIT)]}
     common = ["--ignore-config", "-0"]
 
-    # The exports to import come from ncdu, the reference. A single-threaded scan writes the
-    # entries in the order of `readdir`, so both programs must write the same entries.
     run([arguments.ncdu, *common, "-o", WORK / "tree.json", TREE])
     run([arguments.ncdu, *common, "-O", WORK / "tree.ncdu", TREE])
     run([DUIT, *common, "-o", WORK / "duit.json", TREE])
@@ -243,7 +236,6 @@ def main():
         for program, binary in programs.items():
             command += ["-n", program, shlex.join([*binary, *common, *flags])]
         run(command)
-        # hyperfine 2 moves the name to `name` and the statistics to `summary`.
         times = {
             result.get("name", result["command"]): result.get("summary", {}).get(
                 "time_wall_clock", result

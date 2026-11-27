@@ -18,9 +18,9 @@ use duit_model::{
 };
 use duit_scan::{ExcludePatterns, ScanOptions, scan};
 use insta::assert_snapshot;
+use rustix::process::geteuid;
 use tempfile::TempDir;
 
-/// A directory as the [`Recorder`] receives it.
 #[derive(Default)]
 struct Node {
     label: String,
@@ -119,8 +119,6 @@ impl Sink for Recorder {
 struct Fixture {
     _directory: TempDir,
     root: PathBuf,
-    /// Directories whose permissions are restored on drop, so that the [`TempDir`] can be
-    /// removed.
     restricted: Vec<PathBuf>,
 }
 
@@ -172,8 +170,8 @@ impl Fixture {
             .expect("permissions are set");
     }
 
-    /// Set the permissions of the directory `path` until the fixture is dropped.
     fn restrict(&mut self, path: &str, mode: u32) {
+        assert_not_root();
         self.chmod(path, mode);
         self.restricted.push(self.path(path));
     }
@@ -181,6 +179,13 @@ impl Fixture {
     fn c_path(&self) -> CString {
         CString::new(self.root.as_os_str().as_bytes()).expect("path has no NUL byte")
     }
+}
+
+fn assert_not_root() {
+    assert!(
+        !geteuid().is_root(),
+        "restricted permissions do not apply to root, run this test as another user"
+    );
 }
 
 fn record(fixture: &Fixture, options: ScanOptions, patterns: &[&[u8]]) -> Recorder {
@@ -352,8 +357,6 @@ fn exclude_caches() {
     ");
 }
 
-/// A pattern that matches any entry applies before `stat`, and a pattern for directories only
-/// after it. Assumes that the tests do not run as root, which ignores permissions.
 #[test]
 fn permission_denied() {
     let mut fixture = Fixture::new();
@@ -374,7 +377,6 @@ fn permission_denied() {
     ");
 }
 
-/// The root is checked before the sink sees anything.
 #[test]
 fn root_errors() {
     let fixture = Fixture::new();
@@ -424,8 +426,6 @@ fn extended() {
     );
 }
 
-/// Assert that `scan` into a [`JsonExport`] writes the same items as `ncdu -o-` on `fixture`.
-/// The first line holds the metadata block, which differs between the two programs.
 #[cfg(feature = "test-ncdu")]
 fn assert_ncdu(fixture: &Fixture, flags: &[&str], options: ScanOptions, patterns: &[&[u8]]) {
     let result = Command::new("ncdu")
@@ -449,19 +449,17 @@ fn assert_ncdu(fixture: &Fixture, flags: &[&str], options: ScanOptions, patterns
     scan(&mut export, &fixture.c_path(), options, &exclude).expect("scan succeeds");
     let output = export.finish().expect("export is flushed");
 
-    let items = |export: &[u8]| -> Vec<u8> {
+    let without_metadata = |export: &[u8]| -> Vec<u8> {
         let start = export.iter().position(|&byte| byte == b'\n').unwrap_or(0);
         export[start..].to_vec()
     };
     assert_eq!(
-        String::from_utf8_lossy(&items(&result.stdout)),
-        String::from_utf8_lossy(&items(&output)),
+        String::from_utf8_lossy(&without_metadata(&result.stdout)),
+        String::from_utf8_lossy(&without_metadata(&output)),
     );
-    assert_eq!(items(&result.stdout), items(&output));
+    assert_eq!(without_metadata(&result.stdout), without_metadata(&output));
 }
 
-/// Both programs scan the same tree, so that inodes and the order of `readdir` are equal.
-/// Assumes that the tests do not run as root, which ignores permissions.
 #[cfg(feature = "test-ncdu")]
 #[test]
 fn ncdu() {
@@ -529,7 +527,6 @@ fn ncdu() {
     );
 }
 
-/// The tree of a scan of `fixture` into memory with `options`.
 fn scan_tree(fixture: &Fixture, options: ScanOptions) -> Tree {
     let mut memory = MemorySink::new(false);
     scan(
@@ -542,8 +539,6 @@ fn scan_tree(fixture: &Fixture, options: ScanOptions) -> Tree {
     memory.finish(&mut |_, _| {})
 }
 
-/// Scan the directory at `path`, by names from the root, of `tree` again into it with `options`,
-/// as a refresh does.
 fn refresh_tree(tree: Tree, path: &[&[u8]], options: ScanOptions) -> Tree {
     let mut directory = tree.root().expect("tree has a root");
     for name in path {
@@ -573,8 +568,6 @@ fn refresh_tree(tree: Tree, path: &[&[u8]], options: ScanOptions) -> Tree {
     memory.finish(&mut |_, _| {})
 }
 
-/// Every entry of `tree` below the root by path, sorted, with its kind, its sizes, and the
-/// totals of a directory or the link count of a hard link.
 fn summary(tree: &Tree) -> Vec<String> {
     fn walk(tree: &Tree, directory: DirectoryId, path: &str, lines: &mut Vec<String>) {
         let data = tree.directory(directory);
@@ -615,9 +608,6 @@ fn summary(tree: &Tree) -> Vec<String> {
     lines
 }
 
-/// A refresh of `top/sub` after a file was added, one removed, one grown, one replaced by a
-/// directory, and the entries of a subdirectory changed, gives the totals of a new scan, in the
-/// directories above it too, with one thread and with several.
 #[test]
 fn refresh() {
     let fixture = Fixture::new();
@@ -652,8 +642,6 @@ fn refresh() {
     }
 }
 
-/// A refresh of a directory with hard links, to each other and to a file outside of it, gives
-/// the link counts and shared sizes of a new scan, with one thread and with several.
 #[test]
 fn refresh_hard_links() {
     let fixture = Fixture::new();
@@ -679,14 +667,6 @@ fn refresh_hard_links() {
     }
 }
 
-/// A scan with several threads gives the tree of a scan with one, with the totals of every
-/// directory and the sizes of the hard links. The root has more directories than the threads read
-/// at once, a hard link between two of them, a directory that cannot be read, and a directory
-/// with more entries than a thread sends at once, whose subdirectories can be finished before the
-/// rest of its entries arrive. With
-/// `--exclude-caches`, a directory is opened to check it before its parent is reported, and
-/// without, once a thread takes it. Assumes that the tests do not run as root, which ignores
-/// permissions.
 #[test]
 fn threads() {
     let mut fixture = Fixture::new();
@@ -718,11 +698,6 @@ fn threads() {
     }
 }
 
-/// With several threads, the progress shows the directory that each thread reads, from when it
-/// takes the directory until the calling thread takes its entries, as `setDir` in `sink.zig` sets
-/// `current_dir` of each thread, and none for a thread that waits. No thread reads before the
-/// root is created. Once the root is reported, the calling thread waits in the progress, so that
-/// the directories that were read fill the channel and each thread waits to send one more.
 #[test]
 fn thread_directories() {
     let fixture = Fixture::new();

@@ -12,23 +12,18 @@ use tempfile::TempDir;
 use crate::render_as_duit;
 use crate::{redact, render, text, with_config};
 
-/// The environment of most cases: the user config file is `xdg/<program>/config`. The path is
-/// relative to the directory of the run, so that messages name the same path for every run.
 const XDG: &[(&str, &str)] = &[("HOME", "home"), ("XDG_CONFIG_HOME", "xdg")];
 
 fn duit_program() -> &'static OsStr {
     OsStr::new(env!("CARGO_BIN_EXE_duit"))
 }
 
-/// Write `contents` to `path` in `directory`, and create the directories on the way.
 fn write(directory: &Path, path: &str, contents: &[u8]) {
     let path = directory.join(path);
     fs::create_dir_all(path.parent().expect("path has a parent")).expect("directory is created");
     fs::write(path, contents).expect("file is written");
 }
 
-/// Run duit with `environment` and `arguments` in `directory`, and render the run under its
-/// command line.
 fn run(directory: &Path, environment: &[(&str, &str)], arguments: &[&str]) -> String {
     let command: Vec<String> = environment
         .iter()
@@ -44,8 +39,6 @@ fn run(directory: &Path, environment: &[(&str, &str)], arguments: &[&str]) -> St
     )
 }
 
-/// Like [`run`], and assert that ncdu exits like duit and writes the same output. The config files
-/// must have ncdu's names, which duit reads when its own files do not exist.
 fn compare(directory: &Path, environment: &[(&str, &str)], arguments: &[&str]) -> String {
     #[cfg(feature = "test-ncdu")]
     assert_eq!(
@@ -66,8 +59,6 @@ fn compare(directory: &Path, environment: &[(&str, &str)], arguments: &[&str]) -
     run(directory, environment, arguments)
 }
 
-/// Write `config` to `xdg/ncdu/config` in `directory`, then [`compare`] a run with `environment`
-/// and `arguments`, and render it under the contents of the file, which must end with a newline.
 fn compare_config(
     directory: &Path,
     config: &str,
@@ -75,7 +66,6 @@ fn compare_config(
     arguments: &[&str],
 ) -> String {
     write(directory, "xdg/ncdu/config", config.as_bytes());
-    // Show the file as `cat -A` does, so that whitespace is visible.
     let mut lines = String::new();
     for line in text(config.as_bytes()).replace('\t', "^I").lines() {
         let _ = writeln!(lines, "{line}$");
@@ -86,8 +76,6 @@ fn compare_config(
     )
 }
 
-/// The lines of a config file. Each case runs with an unknown option on the command line, which
-/// ends the run after the config files are read without an error.
 #[test]
 fn lines() {
     let directory = TempDir::new().expect("temporary directory is created");
@@ -263,8 +251,6 @@ fn lines() {
     "#);
 }
 
-/// The user config file that `HOME` and `XDG_CONFIG_HOME` select. An empty variable counts as set
-/// and makes a relative path.
 #[test]
 fn environment() {
     let directory = TempDir::new().expect("temporary directory is created");
@@ -330,8 +316,6 @@ fn environment() {
     "#);
 }
 
-/// duit reads its own config files, and ncdu's files only if neither of its own exists. An empty
-/// file exists. A path through a regular file does not.
 #[test]
 fn duit_files() {
     let directory = TempDir::new().expect("temporary directory is created");
@@ -439,8 +423,6 @@ fn file_errors() {
     "#);
 }
 
-/// `--ignore-config` anywhere on the command line skips the config files, also as a value or after
-/// `--`. ncdu looks for it before it parses the command line.
 #[test]
 fn ignore_config() {
     let directory = TempDir::new().expect("temporary directory is created");
@@ -507,8 +489,6 @@ fn ignore_config() {
     "#);
 }
 
-/// A leading `~` in the value of `-X` and `--exclude` in a config file is the home directory of the
-/// user, from `HOME`, or of the named user. The command line is not expanded.
 #[test]
 fn home() {
     let directory = TempDir::new().expect("temporary directory is created");
@@ -615,8 +595,6 @@ fn home() {
     "#);
 }
 
-/// Without `HOME`, `~` is the home directory of the current user in the password database, as
-/// `~name` is for the user `name`.
 #[test]
 fn home_of_user() {
     let directory = TempDir::new().expect("temporary directory is created");
@@ -635,8 +613,6 @@ fn home_of_user() {
     assert_ne!(current, run(XDG, "~/missing"));
 }
 
-/// The values of `--exclude` in a config file are expanded, and an error in a line that starts with
-/// `@` skips the rest of the line.
 #[test]
 fn exclude() {
     let directory = TempDir::new().expect("temporary directory is created");

@@ -1,8 +1,4 @@
-//! Helpers that ncdu keeps in `ui.zig`: printable file names, shortening to a column width,
-//! human-readable sizes, numbers, modes and timestamps, and drawing text on the screen.
-
 use std::borrow::Cow;
-use std::fmt::Write;
 use std::iter;
 use std::mem::MaybeUninit;
 
@@ -13,46 +9,47 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::util::fmt5dec;
 
-/// Whether `byte` is a control character that [`to_utf8`] escapes.
 fn is_bad_char(byte: u8) -> bool {
     matches!(byte, 0..=0x1F | 0x7F)
 }
 
-/// Convert `input` to valid, mostly printable UTF-8. Control characters and bytes that are not
-/// valid UTF-8 become `\x##`. Non-printable Unicode characters are not escaped.
 pub(crate) fn to_utf8(input: &[u8]) -> Cow<'_, str> {
     if !input.iter().copied().any(is_bad_char)
         && let Ok(valid) = str::from_utf8(input)
     {
         return Cow::Borrowed(valid);
     }
-    // Writing to a `String` cannot fail.
     let mut output = String::with_capacity(input.len());
     for chunk in input.utf8_chunks() {
         for character in chunk.valid().chars() {
             if let Ok(byte) = u8::try_from(character)
                 && is_bad_char(byte)
             {
-                let _ = write!(output, "\\x{byte:02X}");
+                push_hex_escape(&mut output, byte);
             } else {
                 output.push(character);
             }
         }
-        for byte in chunk.invalid() {
-            let _ = write!(output, "\\x{byte:02X}");
+        for &byte in chunk.invalid() {
+            push_hex_escape(&mut output, byte);
         }
     }
     Cow::Owned(output)
 }
 
-/// The terminal width of `character`, as ncurses counts it with `wcwidth()`. Control characters
-/// count as zero.
+fn push_hex_escape(output: &mut String, byte: u8) {
+    const HEX_DIGITS: [char; 16] = [
+        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F',
+    ];
+    output.push_str("\\x");
+    output.push(HEX_DIGITS[usize::from(byte >> 4)]);
+    output.push(HEX_DIGITS[usize::from(byte & 0xf)]);
+}
+
 fn char_width(character: char) -> usize {
     character.width().unwrap_or(0)
 }
 
-/// Shorten `input` to fit in `max_width` columns. A string that is too long keeps a prefix and a
-/// suffix with `...` in between.
 pub(crate) fn shorten(input: &str, max_width: usize) -> Cow<'_, str> {
     if max_width < 4 {
         return Cow::Borrowed("...");
@@ -91,50 +88,59 @@ pub(crate) fn shorten(input: &str, max_width: usize) -> Cow<'_, str> {
     Cow::Owned(output)
 }
 
-/// A size in a human-readable form: a [`fmt5dec`] number and a unit. The two take 8 columns
-/// together with SI units, or 9 with binary units.
+const KB: u64 = 1000;
+const MB: u64 = 1000 * KB;
+const GB: u64 = 1000 * MB;
+const TB: u64 = 1000 * GB;
+const PB: u64 = 1000 * TB;
+
+const KIB: u64 = 1 << 10;
+const MIB: u64 = 1 << 20;
+const GIB: u64 = 1 << 30;
+const TIB: u64 = 1 << 40;
+const PIB: u64 = 1 << 50;
+
+const fn next_unit_threshold(unit: u64) -> u64 {
+    1000 * unit - unit / 20
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FmtSize {
-    /// The number, as `###.#`.
     pub number: String,
-    /// The unit with its leading spaces, as `" XB"` or `" XiB"`.
     pub unit: &'static str,
 }
 
 impl FmtSize {
-    /// Format `value` bytes, in powers of 1000 if `si` is set and powers of 1024 otherwise.
     pub(crate) fn new(value: u64, si: bool) -> Self {
         let (unit, multiplier, divisor) = if si {
             if value < 1000 {
                 ("  B", 10, 1)
-            } else if value < 999_950 {
+            } else if value < next_unit_threshold(KB) {
                 (" kB", 1, 100)
-            } else if value < 999_950_000 {
+            } else if value < next_unit_threshold(MB) {
                 (" MB", 1, 100_000)
-            } else if value < 999_950_000_000 {
+            } else if value < next_unit_threshold(GB) {
                 (" GB", 1, 100_000_000)
-            } else if value < 999_950_000_000_000 {
+            } else if value < next_unit_threshold(TB) {
                 (" TB", 1, 100_000_000_000)
-            } else if value < 999_950_000_000_000_000 {
+            } else if value < next_unit_threshold(PB) {
                 (" PB", 1, 100_000_000_000_000)
             } else {
                 (" EB", 1, 100_000_000_000_000_000)
             }
         } else {
-            // Each cutoff is the smallest size that is at least 999.95 of the unit, which would
-            // round to 1000.0.
             if value < 1000 {
                 ("   B", 10, 1)
-            } else if value < 1_023_949 {
-                (" KiB", 10, 1 << 10)
-            } else if value < 1_048_523_572 {
-                (" MiB", 10, 1 << 20)
-            } else if value < 1_073_688_136_909 {
-                (" GiB", 10, 1 << 30)
-            } else if value < 1_099_456_652_194_612 {
-                (" TiB", 10, 1 << 40)
-            } else if value < 1_125_843_611_847_281_869 {
-                (" PiB", 10, 1 << 50)
+            } else if value < next_unit_threshold(KIB) {
+                (" KiB", 10, KIB)
+            } else if value < next_unit_threshold(MIB) {
+                (" MiB", 10, MIB)
+            } else if value < next_unit_threshold(GIB) {
+                (" GiB", 10, GIB)
+            } else if value < next_unit_threshold(TIB) {
+                (" TiB", 10, TIB)
+            } else if value < next_unit_threshold(PIB) {
+                (" PiB", 10, PIB)
             } else {
                 (" EiB", 1, (1 << 60) / 10)
             }
@@ -146,7 +152,6 @@ impl FmtSize {
     }
 }
 
-/// The color scheme, `--color`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorScheme {
     Off,
@@ -154,15 +159,12 @@ pub enum ColorScheme {
     DarkBackground,
 }
 
-/// The styles that ncdu draws with, `Style` in `ui.zig`. Each [`ColorScheme`] gives them their
-/// colors and attributes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Style {
     Default,
     Bold,
     BoldHd,
     BoxTitle,
-    /// The header and the footer.
     Hd,
     Sel,
     Num,
@@ -192,7 +194,6 @@ const fn attr(fg: Color, bg: Color, modifier: Modifier) -> StyleAttr {
         .add_modifier(modifier)
 }
 
-/// A [`Style`] in each [`ColorScheme`], `StyleDef` in `ui.zig`.
 struct StyleDef {
     off: StyleAttr,
     dark: StyleAttr,
@@ -200,7 +201,6 @@ struct StyleDef {
 }
 
 impl Style {
-    /// The definition of the style in each color scheme, the `styles` table of `ui.zig`.
     const fn definition(self) -> StyleDef {
         const NONE: Modifier = Modifier::empty();
         const BOLD: Modifier = Modifier::BOLD;
@@ -297,7 +297,6 @@ impl Style {
 }
 
 impl ColorScheme {
-    /// The colors and attributes of `style` in this scheme, `style` in `ui.zig`.
     pub(crate) const fn style(self, style: Style) -> StyleAttr {
         let definition = style.definition();
         match self {
@@ -308,20 +307,14 @@ impl ColorScheme {
     }
 }
 
-/// The background that a [`Style`] is drawn on, `Bg` in `ui.zig`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Bg {
     Default,
-    /// The header and the footer.
     Hd,
-    /// The cursor row.
     Sel,
 }
 
 impl Bg {
-    /// The style that draws the foreground of `style` on this background. ncdu combines the header
-    /// and the cursor row only with the foregrounds that have a style on them, and other pairs keep
-    /// the style as it is.
     pub(crate) const fn fg(self, style: Style) -> Style {
         match (self, style) {
             (Self::Hd, Style::Default) => Style::Hd,
@@ -369,8 +362,6 @@ impl Bg {
     }
 }
 
-/// Draw `text` at column `x` of row `y` in `style`, cut off at the right edge, and return the
-/// column after it. Rows outside of `buffer` are skipped.
 pub(crate) fn draw_text(buffer: &mut Buffer, x: u16, y: u16, text: &str, style: StyleAttr) -> u16 {
     if y >= buffer.area.bottom() {
         return x;
@@ -378,7 +369,6 @@ pub(crate) fn draw_text(buffer: &mut Buffer, x: u16, y: u16, text: &str, style: 
     buffer.set_stringn(x, y, text, usize::MAX, style).0
 }
 
-/// Draw `length` copies of `character` from column `x` of row `y`, as ncurses `hline()`.
 pub(crate) fn draw_line(
     buffer: &mut Buffer,
     x: u16,
@@ -391,7 +381,6 @@ pub(crate) fn draw_line(
     draw_text(buffer, x, y, &line, style);
 }
 
-/// A box with a border and a title in the center of the screen, `ui.Box` in `ui.zig`.
 pub(crate) struct Window {
     x: u16,
     y: u16,
@@ -399,8 +388,6 @@ pub(crate) struct Window {
 }
 
 impl Window {
-    /// Draw a box of `width` by `height` in the center of `buffer`, with `title` in its top border.
-    /// A box smaller than 6 by 3 has no border, and its content is drawn over the screen.
     pub(crate) fn new(
         buffer: &mut Buffer,
         scheme: ColorScheme,
@@ -436,8 +423,6 @@ impl Window {
         window
     }
 
-    /// Draw `text` at `column` of `row` inside the box in `style`, and return the column of the box
-    /// after it.
     pub(crate) fn text(
         &self,
         buffer: &mut Buffer,
@@ -451,8 +436,6 @@ impl Window {
         draw_text(buffer, x, y, text, self.scheme.style(style)).saturating_sub(self.x)
     }
 
-    /// Draw `value` bytes as a human-readable size at `column` of `row`, as [`draw_size`] does, and
-    /// return the column of the box after it.
     pub(crate) fn size(
         &self,
         buffer: &mut Buffer,
@@ -465,8 +448,6 @@ impl Window {
         draw_size(buffer, x, y, value, si, self.scheme, Bg::Default).saturating_sub(self.x)
     }
 
-    /// Draw `value` in full at `column` of `row` in [`Style::Num`], with `separator` between groups
-    /// of three digits, and return the column of the box after it, as `addnum` in `ui.zig`.
     pub(crate) fn number(
         &self,
         buffer: &mut Buffer,
@@ -480,8 +461,6 @@ impl Window {
         draw_text(buffer, x, y, &number, self.scheme.style(Style::Num)).saturating_sub(self.x)
     }
 
-    /// Draw the tab `label` at `column` of the top border, after the `key` that selects it, on the
-    /// background of the header when it is `selected`, `Box.tab` in `ui.zig`.
     pub(crate) fn tab(
         &self,
         buffer: &mut Buffer,
@@ -496,8 +475,6 @@ impl Window {
     }
 }
 
-/// Draw `value` bytes as a human-readable size on `bg`, the number in [`Style::Num`] and the unit
-/// in [`Style::Default`], and return the column after it, `addsize` in `ui.zig`.
 pub(crate) fn draw_size(
     buffer: &mut Buffer,
     x: u16,
@@ -512,7 +489,6 @@ pub(crate) fn draw_size(
     draw_text(buffer, x, y, size.unit, scheme.style(bg.fg(Style::Default)))
 }
 
-/// Format `value` in full, with `separator` between groups of three digits.
 pub(crate) fn format_number(value: u64, separator: &str) -> String {
     let digits = value.to_string();
     let mut output = String::with_capacity(digits.len() * (1 + separator.len()));
@@ -567,10 +543,8 @@ pub(crate) fn format_mode(mode: u16) -> String {
 /// `2024-01-01 12:00:00 +0100`. Returns `None` for a time that the C library cannot convert.
 #[expect(unsafe_code, reason = "localtime_r and strftime are foreign functions")]
 pub(crate) fn format_timestamp(timestamp: u64) -> Option<String> {
-    // ncdu clamps the timestamp to the range of `time_t`.
     let time = libc::time_t::try_from(timestamp).unwrap_or(libc::time_t::MAX);
     let mut local = MaybeUninit::<libc::tm>::uninit();
-    // `localtime_r` reads the time zone from `TZ` on its first call, as `localtime` in ncdu.
     // SAFETY: `localtime_r` reads `time` and writes to `local`, which is valid for writes. It
     // returns null when it fails, and has filled `local` otherwise.
     let local = unsafe {
@@ -595,14 +569,16 @@ pub(crate) fn format_timestamp(timestamp: u64) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FmtSize, format_mode, format_number, shorten, to_utf8};
+    use super::{
+        FmtSize, GB, GIB, KB, KIB, MB, MIB, PB, PIB, TB, TIB, format_mode, format_number,
+        next_unit_threshold, shorten, to_utf8,
+    };
 
     #[track_caller]
     fn shorten_test(input: &str, max_width: usize, output: &str) {
         assert_eq!(shorten(input, max_width), output);
     }
 
-    /// Port of the upstream test "shorten".
     #[test]
     fn shorten_strings() {
         shorten_test("abcde", 3, "...");
@@ -617,13 +593,11 @@ mod tests {
         shorten_test("ＡaＢＣＤＥＦＧＨ", 8, "Ａ...Ｈ");
         shorten_test("ＡＢＣＤＥＦＧaＨ", 8, "Ａ...aＨ");
         shorten_test("ＡＢＣＤＥＦＧＨ", 15, "ＡＢＣ...ＦＧＨ");
-        // Variation selectors: the U+FE0E of the last dropped heart stays after the '...'.
         shorten_test(
             "\u{2764}\u{fe0e}a\u{2764}\u{fe0e}a\u{2764}\u{fe0e}a",
             5,
             "\u{2764}\u{fe0e}...\u{fe0e}a",
         );
-        // Combining marks: the marks of the last dropped character stay after the '...'.
         shorten_test(
             "a\u{328}\u{301}a\u{328}\u{301}a\u{328}\u{301}a\u{328}\u{301}a\u{328}\u{301}a\u{328}\u{301}",
             5,
@@ -631,8 +605,6 @@ mod tests {
         );
     }
 
-    /// Control characters and invalid UTF-8, including an encoded surrogate, are escaped byte by
-    /// byte. Upstream has no test for `toUtf8`.
     #[test]
     fn to_utf8_escapes() {
         assert_eq!(to_utf8(b"plain \xc4\x85"), "plain \u{105}");
@@ -647,7 +619,30 @@ mod tests {
         assert_eq!(format!("{}{}", size.number, size.unit), expected);
     }
 
-    /// Port of the upstream test "fmtsize".
+    #[test]
+    fn next_unit_thresholds() {
+        assert_eq!(
+            [KB, MB, GB, TB, PB].map(next_unit_threshold),
+            [
+                999_950,
+                999_950_000,
+                999_950_000_000,
+                999_950_000_000_000,
+                999_950_000_000_000_000
+            ]
+        );
+        assert_eq!(
+            [KIB, MIB, GIB, TIB, PIB].map(next_unit_threshold),
+            [
+                1_023_949,
+                1_048_523_572,
+                1_073_688_136_909,
+                1_099_456_652_194_612,
+                1_125_843_611_847_281_869
+            ]
+        );
+    }
+
     #[test]
     fn fmt_size() {
         fmt_size_test(0, true, "  0.0  B");
@@ -685,7 +680,6 @@ mod tests {
         fmt_size_test(u64::MAX, false, " 16.0 EiB");
     }
 
-    /// Upstream has no test for `addnum`.
     #[test]
     fn format_numbers() {
         assert_eq!(format_number(0, ","), "0");
@@ -696,8 +690,6 @@ mod tests {
         assert_eq!(format_number(u64::MAX, ","), "18,446,744,073,709,551,615");
     }
 
-    /// The set-user-ID, set-group-ID, and sticky bits replace the execute bits, and the sticky bit
-    /// is `T` on anything but a directory. Upstream has no test for `addmode`.
     #[test]
     fn format_modes() {
         assert_eq!(format_mode(0o100_644), "-rw-r--r--");

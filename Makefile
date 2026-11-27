@@ -1,20 +1,12 @@
-# Shortcuts for the commands in CONTRIBUTING.md. CI in `.github/workflows/ci.yml` stays the gate.
-# Run `make` or `make help` to list the targets.
-
 .DEFAULT_GOAL := help
 .PHONY: help build run test test-one test-ncdu snapshots fmt fmt-check clippy typos shear deny \
 	man check bench tools hooks doc clean
 
-# Arguments for `make run`, e.g. `make run ARGS="-o- ."`.
 ARGS ?=
-# Test name filter for `make test-one`, e.g. `make test-one T=exclude`.
 T ?=
 
-# Keep the prettier version in sync with the fmt job in CI and the prettier hook in `prek.toml`.
 prettier := npx prettier@3.9.0
 
-# Tool versions come from CI, where Renovate keeps them up to date. A key that is missing or that
-# matches more than once stops make instead of passing a bad version to `cargo install`.
 ci_version = $(call ci_version_once,$(1),$(shell sed -n 's/^  $(1): \([0-9][0-9A-Za-z.+-]*\)$$/\1/p' .github/workflows/ci.yml))
 ci_version_once = $(if $(filter 1,$(words $(2))),$(2),$(error $(1) not found exactly once in .github/workflows/ci.yml))
 
@@ -47,7 +39,6 @@ fmt: ## Format Rust, TOML, Markdown, YAML, and JSON files
 
 fmt-check: ## Check formatting (fixes TOML, Markdown, YAML, and JSON files in place)
 	cargo fmt --all --check
-	@# Fix the files, then fail so the change gets noticed.
 	taplo fmt --check || { taplo fmt && false; }
 	$(prettier) --check . || { $(prettier) --write . && false; }
 

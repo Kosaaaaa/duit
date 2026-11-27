@@ -1,6 +1,3 @@
-//! The file browser of `browser.zig`: the sorted listing of the open directory, the screen that
-//! shows it, and the keys that move through it.
-
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ffi::CStr;
@@ -9,7 +6,9 @@ use std::iter;
 use std::process::Command;
 
 use duit_format::{BinaryImportError, BinaryReader, ListedDirectory, Listing};
-use duit_model::{DirectoryId, Entry, EntryId, EntryKind, LinkId, Special, Stat, Tree, TreeError};
+use duit_model::{
+    DirectoryId, Entry, EntryId, EntryKind, LinkId, Special, Stat, Tree, TreeError, is_event_count,
+};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::style::Style as StyleAttr;
@@ -22,7 +21,6 @@ use crate::ui::{
 };
 use crate::util::{fmt5dec, strnatcmp};
 
-/// The style of the bars in the graph column, `--graph-style`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphStyle {
     Hash,
@@ -30,7 +28,6 @@ pub enum GraphStyle {
     EighthBlock,
 }
 
-/// The column that the browser sorts by, `--sort`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortColumn {
     Name,
@@ -46,7 +43,6 @@ pub enum SortOrder {
     Descending,
 }
 
-/// What the shared column of a directory shows, `--shared-column`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SharedColumn {
     Off,
@@ -91,7 +87,6 @@ pub struct BrowserOptions {
     pub confirm_delete: bool,
     /// The command that deletes instead of duit, `--delete-command`, or nothing.
     pub delete_command: Vec<u8>,
-    /// The color scheme, `--color`.
     pub color: ColorScheme,
 }
 
@@ -128,7 +123,6 @@ impl Default for BrowserOptions {
 /// What the main loop does after a key, the `state` in `main.zig` that the browser sets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    /// Keep browsing.
     Browse,
     Quit,
     /// Run a shell in the open directory, [`Browser::path`].
@@ -140,19 +134,14 @@ pub enum Action {
     Refresh,
 }
 
-/// The window over the listing that takes the keys, `state` in `browser.zig`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     Main,
-    /// The confirmation of `--confirm-quit`.
     Quit,
-    /// The help window, which shows [`Help`].
     Help,
-    /// The info window, which shows [`Info`].
     Info,
 }
 
-/// A tab of the help window.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum HelpTab {
     #[default]
@@ -161,15 +150,12 @@ enum HelpTab {
     About,
 }
 
-/// The help window, `help` in `browser.zig`. It opens again on the tab it was closed on.
 #[derive(Debug, Default)]
 struct Help {
     tab: HelpTab,
-    /// The index of the first key on the keys tab.
     offset: usize,
 }
 
-/// A tab of the info window. Only a hard link has the links tab.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum Tab {
     #[default]
@@ -177,86 +163,48 @@ enum Tab {
     Links,
 }
 
-/// The info window, `info` in `browser.zig`. It stays as it is when a key of the listing closes the
-/// window, so opening it again on the same entry keeps the cursor of the links tab.
 #[derive(Debug, Default)]
 struct Info {
     tab: Tab,
-    /// The entry that the window was opened on, or `None` once a key of the window closed it.
     entry: Option<EntryId>,
-    /// The links to the inode of the entry, sorted by path, once the links tab was opened.
     links: Option<Vec<LinkId>>,
-    /// The index in `links` of the first row on the screen, and of the row under the cursor.
     links_top: usize,
     links_index: usize,
 }
 
-/// Where the user left a directory, `View` in `browser.zig`.
 #[derive(Debug, Clone, Default)]
 struct View {
-    /// The index of the first row on the screen.
     top: usize,
-    /// The name of the entry under the cursor, or `None` for the row of the parent directory and
-    /// for an empty listing.
     cursor: Option<Vec<u8>>,
 }
 
-/// Where the browser reads its directories from, `main.config.binreader` in `browser.zig`.
 enum Source {
-    /// The tree in memory of a scan or a JSON import, with the directories that were opened to
-    /// reach the open one, from the root, with the open one last, `dir_parents` in `browser.zig`.
-    /// Going to the parent directory goes back to the one before the last. Enter in the links tab
-    /// of the info window opens another directory without changing them or the path, as ncdu
-    /// does, and the listing then has no row of the parent directory when the directory that was
-    /// open was the root.
     Memory(Vec<DirectoryId>),
-    /// A binary export, whose directories are read when they are opened, each into a tree of
-    /// its own that replaces the one before.
     File {
         reader: BinaryReader<File>,
-        /// The references of the directories that were opened to reach the open one, from the
-        /// root, with the open one last.
         parents: Vec<u64>,
-        /// The subdirectories of the open directory, `dir_refs` in `browser.zig`.
         directories: Vec<ListedDirectory>,
     },
 }
 
-/// The open directory of the browser, with its entries in the order they are listed.
 pub struct Browser {
     directory: DirectoryId,
-    /// The path of the directory: the names from the root down, joined with `/`. Going to the
-    /// parent directory cuts its last component, as ncdu does, so it is kept rather than computed
-    /// from the tree.
     path: Vec<u8>,
-    /// The shown entries, sorted. `None` is the row of the parent directory, which is first when
-    /// the directory is not the root.
     items: Vec<Option<EntryId>>,
-    /// The index in `items` of the row under the cursor.
     cursor: usize,
-    /// The index in `items` of the first row on the screen.
     top: usize,
-    /// The largest disk usage in 512-byte blocks and apparent size of the entries, hidden ones
-    /// included, and at least 1. The graph scales to them.
     max_blocks: u64,
     max_size: u64,
-    /// Whether a shown directory has a shared size, which adds the shared column.
     has_shared: bool,
-    /// The view of each directory that was open, by path, `opened_dir_views` in `browser.zig`.
-    /// Directories with the same path share a view.
     views: HashMap<Vec<u8>, View>,
     source: Source,
     state: State,
     info: Info,
     help: Help,
-    /// The lines of the message window, which the next key closes.
     message: Option<&'static [&'static str]>,
-    /// The deletion, whose confirmation takes the keys while it is open.
     deletion: Deletion,
 }
 
-/// Whether ncdu shows `kind` as a directory, with a `/` in front of the name: a directory, also
-/// when it is on another filesystem or a pseudo filesystem.
 fn is_directory(kind: EntryKind) -> bool {
     match kind {
         EntryKind::Directory(_)
@@ -268,7 +216,6 @@ fn is_directory(kind: EntryKind) -> bool {
     }
 }
 
-/// The directory data of `entry`, if it is a directory that was read.
 fn directory_of(entry: &Entry) -> Option<DirectoryId> {
     match entry.kind {
         EntryKind::Directory(directory) => Some(directory),
@@ -279,8 +226,6 @@ fn directory_of(entry: &Entry) -> Option<DirectoryId> {
     }
 }
 
-/// Whether `--hide-hidden` hides the entry `name` of `kind`: an excluded entry, or a name that
-/// starts with `.` or ends with `~`.
 fn is_hidden(kind: EntryKind, name: &[u8]) -> bool {
     let excluded = match kind {
         EntryKind::Special(
@@ -295,12 +240,10 @@ fn is_hidden(kind: EntryKind, name: &[u8]) -> bool {
     excluded || name.first() == Some(&b'.') || name.last() == Some(&b'~')
 }
 
-/// The disk usage of `blocks` 512-byte blocks in bytes.
 fn blocks_to_size(blocks: u64) -> u64 {
     blocks.saturating_mul(512)
 }
 
-/// Compare `a` and `b` in `order`, or `None` when they are equal.
 fn compare_numbers(a: u64, b: u64, order: SortOrder) -> Option<bool> {
     match (a == b, order) {
         (true, _) => None,
@@ -309,7 +252,6 @@ fn compare_numbers(a: u64, b: u64, order: SortOrder) -> Option<bool> {
     }
 }
 
-/// Whether `a` is listed before `b`.
 fn sort_less(tree: &Tree, options: &BrowserOptions, a: EntryId, b: EntryId) -> bool {
     let (a_entry, b_entry) = (tree.entry(a), tree.entry(b));
     if options.sort_directories_first && is_directory(a_entry.kind) != is_directory(b_entry.kind) {
@@ -319,7 +261,6 @@ fn sort_less(tree: &Tree, options: &BrowserOptions, a: EntryId, b: EntryId) -> b
     let order = options.sort_order;
     let items = |entry: &Entry| directory_of(entry).map_or(0, |id| tree.directory(id).items);
     let numbers: &[(u64, u64)] = match options.sort_column {
-        // Names are compared last in any case.
         SortColumn::Name => &[],
         SortColumn::Blocks => &[
             (a_entry.blocks, b_entry.blocks),
@@ -338,8 +279,6 @@ fn sort_less(tree: &Tree, options: &BrowserOptions, a: EntryId, b: EntryId) -> b
             (Some(a_extended), Some(b_extended)) => {
                 &[(a_extended.latest_mtime, b_extended.latest_mtime)]
             }
-            // Entries with extended information come first in either order, and entries without
-            // keep the order of the tree.
             (a_extended, _) => return a_extended.is_some(),
         },
     };
@@ -380,7 +319,6 @@ fn join_path(path: &mut Vec<u8>, name: &[u8]) {
     }
 }
 
-/// The path of `directory`: the names of the directories from the root down to it, joined.
 fn path_of(tree: &Tree, directory: DirectoryId) -> Vec<u8> {
     let mut names = Vec::new();
     let mut current = Some(directory);
@@ -407,9 +345,20 @@ fn dirname(path: &[u8]) -> Option<&[u8]> {
     }
 }
 
-/// Move `index` in a list of `length` rows for a selection key, with `page` rows to a page, as
-/// `keyInputSelection` in `browser.zig`. Returns whether `key` is a selection key. Other keys do
-/// nothing.
+enum ParentPath {
+    Cut(Vec<u8>),
+    NoSeparator,
+}
+
+impl ParentPath {
+    fn loading(&self) -> &[u8] {
+        match self {
+            Self::Cut(path) => path,
+            Self::NoSeparator => b"",
+        }
+    }
+}
+
 fn select_with_key(key: Key, index: &mut usize, length: usize, page: usize) -> bool {
     match key {
         Key::Char('j') | Key::Down => {
@@ -429,7 +378,6 @@ fn select_with_key(key: Key, index: &mut usize, length: usize, page: usize) -> b
     true
 }
 
-/// The tab that `key` switches the info window of a hard link to.
 fn tab_of_key(key: Key) -> Option<Tab> {
     match key {
         Key::Char('1' | 'h') | Key::Left => Some(Tab::Info),
@@ -447,8 +395,6 @@ fn tab_of_key(key: Key) -> Option<Tab> {
     }
 }
 
-/// Format the item count `count` of a directory in 6 columns: the text before the number, the
-/// number, and its unit.
 fn format_item_count(count: u32, separator: &str) -> (&'static str, String, &'static str) {
     match count {
         0..1000 => ("", format!("  {count:>4}"), ""),
@@ -467,12 +413,9 @@ fn format_item_count(count: u32, separator: &str) -> (&'static str, String, &'st
 /// The screen while the browser lists a directory, which `draw` in `browser.zig` shows while
 /// `dir_loading` is set, as `loadDir` calls `handleEvent` in `main.zig` for it.
 pub struct Loading<'a> {
-    /// The path of the directory that is listed.
     path: &'a [u8],
-    /// Whether the directory is read from a binary export.
     from_file: bool,
     options: &'a BrowserOptions,
-    /// The number of entries listed so far, hidden ones included.
     count: u64,
 }
 
@@ -497,8 +440,6 @@ impl Loading<'_> {
     }
 }
 
-/// Give `loading` the screen of `count` entries listed of the directory at `path`, at the counts
-/// where `loadDir` in `browser.zig` calls `handleEvent`: those without the bits of 1 and 64.
 fn report_loading(
     loading: &mut dyn FnMut(&Loading<'_>),
     path: &[u8],
@@ -506,7 +447,7 @@ fn report_loading(
     options: &BrowserOptions,
     count: u64,
 ) {
-    if count & 0b100_0001 == 0 {
+    if is_event_count(count) {
         loading(&Loading {
             path,
             from_file,
@@ -516,12 +457,9 @@ fn report_loading(
     }
 }
 
-/// Erase `buffer` and draw the first two rows of the browser in it: the header, marked `[from
-/// file]` when `from_file`, and the path `path` of the open directory.
 fn draw_header(buffer: &mut Buffer, path: &[u8], from_file: bool, options: &BrowserOptions) {
     let width = buffer.area.width;
     let style = |style| options.color.style(style);
-    // ncurses erases the screen to the background of the `default` style before each frame.
     buffer.set_style(buffer.area, style(Style::Default));
     draw_line(buffer, 0, 0, ' ', width, style(Style::Hd));
     let x = draw_text(
@@ -608,8 +546,6 @@ impl Browser {
         Ok(Some((browser, tree)))
     }
 
-    /// Open `directory` of `tree`, which `source` reads, with the cursor on the first row.
-    /// `loading` gets the screen while the directory is listed.
     fn with_source(
         tree: &Tree,
         directory: DirectoryId,
@@ -638,7 +574,6 @@ impl Browser {
         browser
     }
 
-    /// Whether the directories are read from a binary export.
     fn reads_file(&self) -> bool {
         match self.source {
             Source::Memory(_) => false,
@@ -646,7 +581,6 @@ impl Browser {
         }
     }
 
-    /// The number of directories that were opened to reach the open one, the open one included.
     fn depth(&self) -> usize {
         match &self.source {
             Source::Memory(parents) => parents.len(),
@@ -654,7 +588,6 @@ impl Browser {
         }
     }
 
-    /// Whether the directory `id` of `tree` has no entries.
     fn is_empty(&self, tree: &Tree, id: DirectoryId) -> bool {
         match &self.source {
             Source::Memory(_) => tree.entries(id).next().is_none(),
@@ -666,8 +599,6 @@ impl Browser {
         }
     }
 
-    /// List the entries of the directory that `options` shows, then sort them, `loadDir` in
-    /// `browser.zig`. `loading` gets the screen while the entries are listed.
     fn load(
         &mut self,
         tree: &Tree,
@@ -701,8 +632,6 @@ impl Browser {
         self.sort(tree, options);
     }
 
-    /// Sort the listing as `options` says, and restore the view of the directory, `sortDir` in
-    /// `browser.zig`.
     fn sort(&mut self, tree: &Tree, options: &BrowserOptions) {
         let start = usize::from(self.items.first() == Some(&None));
         // A stable sort, as Zig's `std.mem.sort`, keeps entries that compare equal in the order
@@ -722,7 +651,6 @@ impl Browser {
         self.load_view(tree);
     }
 
-    /// Remember the view of the directory, `View.save` in `browser.zig`.
     fn save_view(&mut self, tree: &Tree) {
         let cursor = self
             .items
@@ -739,9 +667,6 @@ impl Browser {
         );
     }
 
-    /// Restore the view that was saved for the path of the directory, or start at the top, and
-    /// put the cursor on its entry if that is listed or on the first row, `View.load` in
-    /// `browser.zig`.
     fn load_view(&mut self, tree: &Tree) {
         let view = self.views.get(&self.path).cloned().unwrap_or_default();
         self.top = view.top;
@@ -752,8 +677,6 @@ impl Browser {
             .unwrap_or(0);
     }
 
-    /// Open the subdirectory `directory`, `enterSub` in `browser.zig`, and close the window. From
-    /// a binary export, the subdirectory is read into a tree that replaces `tree`.
     fn enter_subdirectory(
         &mut self,
         tree: &mut Tree,
@@ -774,7 +697,6 @@ impl Browser {
                 parents,
                 directories,
             } => {
-                // Each subdirectory that is listed has its reference, as in ncdu.
                 let itemref = directories
                     .iter()
                     .find(|listed| listed.id == directory)
@@ -800,9 +722,6 @@ impl Browser {
         Ok(())
     }
 
-    /// Open the parent directory, if there is one, `enterParent` in `browser.zig`, and close the
-    /// window. From a binary export, the parent directory is read again into a tree that replaces
-    /// `tree`.
     fn enter_parent(
         &mut self,
         tree: &mut Tree,
@@ -812,10 +731,10 @@ impl Browser {
         if self.depth() < 2 {
             return Ok(());
         }
-        // An empty name leaves a path without a separator to cut, for example a root named `foo`
-        // with a subdirectory without a name, which a scan never gives. ncdu reaches `unreachable`
-        // there.
-        let path = dirname(&self.path).map(<[u8]>::to_vec);
+        let parent_path = match dirname(&self.path) {
+            Some(path) => ParentPath::Cut(path.to_vec()),
+            None => ParentPath::NoSeparator,
+        };
         match &mut self.source {
             Source::Memory(parents) => {
                 parents.pop();
@@ -829,8 +748,6 @@ impl Browser {
                 parents,
                 directories,
             } => {
-                // The open directory leaves `parents` only once its parent is read, so an error
-                // leaves the browser where it was.
                 let Some(&itemref) = parents
                     .len()
                     .checked_sub(2)
@@ -840,8 +757,7 @@ impl Browser {
                 };
                 let listing = reader
                     .read_directory(itemref, options.extended, &mut |_, count| {
-                        let path = path.as_deref().unwrap_or_default();
-                        report_loading(loading, path, true, options, count);
+                        report_loading(loading, parent_path.loading(), true, options, count);
                     })?
                     .ok_or(BinaryImportError::Corrupt { itemref })?;
                 parents.pop();
@@ -850,14 +766,14 @@ impl Browser {
                 self.directory = listing.directory;
             }
         }
-        self.path = path.unwrap_or_else(|| path_of(tree, self.directory));
+        self.path = match parent_path {
+            ParentPath::Cut(path) => path,
+            ParentPath::NoSeparator => path_of(tree, self.directory),
+        };
         self.load_entered(tree, options, loading);
         Ok(())
     }
 
-    /// List the directory that [`Browser::enter_subdirectory`] or [`Browser::enter_parent`]
-    /// opened, and close any window. `loading` gets the screen while the entries are listed,
-    /// unless a binary export already reported the read as the listing.
     fn load_entered(
         &mut self,
         tree: &Tree,
@@ -872,8 +788,6 @@ impl Browser {
         self.state = State::Main;
     }
 
-    /// Show the info of `item` in `tab`, or close the window when `item` is the row of the parent
-    /// directory or `None`, `info.set` in `browser.zig`.
     fn set_info(&mut self, tree: &Tree, item: Option<EntryId>, tab: Tab) {
         if item != self.info.entry {
             self.info = Info::default();
@@ -902,8 +816,6 @@ impl Browser {
         }
     }
 
-    /// Handle `key` in the info window, `info.keyInput` in `browser.zig`. Returns whether the key
-    /// was handled, or else the listing handles it too.
     fn info_key_input(
         &mut self,
         tree: &Tree,
@@ -926,8 +838,6 @@ impl Browser {
             if select_with_key(key, &mut self.info.links_index, links.len(), 5) {
                 return true;
             }
-            // Enter opens the directory of the selected link, closes the window, and then reaches
-            // the listing as well.
             if key == Key::Enter
                 && let Some(&link) = links.get(self.info.links_index)
             {
@@ -969,9 +879,6 @@ impl Browser {
         }
     }
 
-    /// Handle `key` in the help window, `help.keyInput` in `browser.zig`. A key that is not one
-    /// of the window closes it. The keys tab starts at the top again when the tab changes or the
-    /// window closes.
     fn help_key_input(&mut self, key: Key) {
         let help = &mut self.help;
         let tab = help.tab;
@@ -1010,8 +917,6 @@ impl Browser {
         }
     }
 
-    /// Sort by `column`: in `default_order` when it is another column than before, and in the
-    /// other order when it is the same, `sortToggle` in `browser.zig`.
     fn sort_toggle(
         &mut self,
         tree: &Tree,
@@ -1031,12 +936,10 @@ impl Browser {
         self.sort(tree, options);
     }
 
-    /// The open directory, `dir_parent` in `browser.zig`.
     pub fn directory(&self) -> DirectoryId {
         self.directory
     }
 
-    /// The path of the open directory, `dir_path` in `browser.zig`.
     pub fn path(&self) -> &[u8] {
         &self.path
     }
@@ -1292,7 +1195,7 @@ impl Browser {
                 } else {
                     Bg::Default
                 },
-                number_style: false,
+                item_count_left_num_style: false,
             };
             row.draw(buffer);
         }
@@ -1429,9 +1332,6 @@ impl Browser {
         Ok(directory)
     }
 
-    /// Put the cursor on `entry` once the directory is listed again. Without an entry, the cursor
-    /// stays on the name of the deleted entry, which is no longer listed, so the view puts it on
-    /// the first row.
     fn select(&mut self, tree: &Tree, entry: Option<EntryId>) {
         if let Some(entry) = entry {
             self.views.entry(self.path.clone()).or_default().cursor =
@@ -1451,7 +1351,6 @@ impl Browser {
     }
 }
 
-/// The keys of the browser and what they do, on the keys tab of the help window.
 const HELP_KEYS: [(&str, &str); 20] = [
     ("up, k", "Move cursor up"),
     ("down, j", "Move cursor down"),
@@ -1475,10 +1374,8 @@ const HELP_KEYS: [(&str, &str); 20] = [
     ("q", "Quit ncdu"),
 ];
 
-/// The number of keys that the keys tab shows at a time.
 const HELP_KEY_LINES: usize = 10;
 
-/// The flags in front of the entries of the listing, on the format tab of the help window.
 const HELP_FLAGS: [(&str, &str); 8] = [
     ("!", "An error occurred while reading this directory"),
     (".", "An error occurred while reading a subdirectory"),
@@ -1490,18 +1387,15 @@ const HELP_FLAGS: [(&str, &str); 8] = [
     ("H", "Same file was already counted (hard link)"),
 ];
 
-/// The rows of the logo on the about tab, one bit per column, of which bits 28 down to 1 are drawn
-/// and a set bit is drawn in reverse video.
-const HELP_LOGO: [u32; 5] = [
-    0b1_1111_1001_1111_0000_0011_0011_0011,
-    0b1_1001_1001_1000_0000_0011_0011_0011,
-    0b1_1001_1001_1000_0011_1111_0011_0011,
-    0b1_1001_1001_1000_0011_0011_0011_0011,
-    0b1_1001_1001_1111_0011_1111_0011_1111,
+const HELP_LOGO: [&str; 5] = [
+    "######  #####      ##  ##  #",
+    "##  ##  ##         ##  ##  #",
+    "##  ##  ##     ######  ##  #",
+    "##  ##  ##     ##  ##  ##  #",
+    "##  ##  #####  ######  #####",
 ];
 
 impl Help {
-    /// Draw the window over the listing with its current tab.
     fn draw(&self, buffer: &mut Buffer, scheme: ColorScheme) {
         let window = Window::new(buffer, scheme, 15, 60, "ncdu help");
         window.tab(buffer, 30, self.tab == HelpTab::Keys, "1", "Keys");
@@ -1519,7 +1413,6 @@ impl Help {
         }
     }
 
-    /// Draw the keys from `offset`, right aligned, with what they do.
     fn draw_keys(&self, window: &Window, buffer: &mut Buffer) {
         let lines = HELP_KEYS.iter().skip(self.offset).take(HELP_KEY_LINES);
         for (row, &(key, description)) in (2..).zip(lines) {
@@ -1533,7 +1426,6 @@ impl Help {
     }
 }
 
-/// Draw the format of a row of the listing, and the flags in front of the entries.
 fn draw_help_format(window: &Window, buffer: &mut Buffer) {
     window.text(
         buffer,
@@ -1555,12 +1447,10 @@ fn draw_help_format(window: &Window, buffer: &mut Buffer) {
     }
 }
 
-/// Draw the logo, the name, the version, and the author. The version is that of duit, as in the
-/// header of the browser.
 fn draw_help_about(window: &Window, buffer: &mut Buffer) {
     for (row, line) in (3..).zip(HELP_LOGO) {
-        for (column, bit) in (12..).zip((1..=28).rev()) {
-            let style = if line & (1 << bit) > 0 {
+        for (column, cell) in (12..).zip(line.bytes()) {
+            let style = if cell == b'#' {
                 Style::Sel
             } else {
                 Style::Default
@@ -1582,12 +1472,9 @@ fn draw_help_about(window: &Window, buffer: &mut Buffer) {
     window.text(buffer, 10, 16, "https://dev.yorhel.nl/ncdu", Style::Default);
 }
 
-/// The width of the info window.
 const INFO_WIDTH: u16 = 60;
 
 impl Info {
-    /// Draw the window over the listing with the info of `entry`, the entry under the cursor. The
-    /// links of an entry that is read `from_file` are not known.
     fn draw(
         &mut self,
         buffer: &mut Buffer,
@@ -1605,8 +1492,6 @@ impl Info {
             | EntryKind::Special(_) => None,
         };
         let directory = directory_of(data).map(|id| tree.directory(id));
-        // The border, the padding, and the row that says how to close the window, and the rows of
-        // the tab.
         let height = 5 + match self.tab {
             Tab::Links if !from_file => 8,
             Tab::Links | Tab::Info => {
@@ -1645,9 +1530,6 @@ impl Info {
         window.text(buffer, row, x, " to close this window", Style::Default);
     }
 
-    /// Draw the paths of the links to the inode on the rows of a window of `height`, the selected
-    /// one in [`Style::Sel`] and the one of the entry marked with `*`, and the number of the
-    /// selected one.
     fn draw_links(&mut self, window: &Window, buffer: &mut Buffer, tree: &Tree, height: u16) {
         let rows = usize::from(height.saturating_sub(4));
         if self.links_index < self.links_top {
@@ -1681,8 +1563,6 @@ impl Info {
     }
 }
 
-/// Draw the info tab of `entry` in `window`: its name, its type or its extended information, its
-/// sizes, and its item count or its link count and inode.
 fn draw_info_tab(
     window: &Window,
     buffer: &mut Buffer,
@@ -1738,8 +1618,6 @@ fn draw_info_tab(
         row += 1;
     }
 
-    // A size in full and in a human-readable form, and its shared and unique parts when it has a
-    // shared part.
     let sizes = |buffer: &mut Buffer, row: &mut u16, label: &str, size: u64, shared: u64| {
         let mut size_row = |label: &str, style, size| {
             let x = window.text(buffer, *row, 3, label, style);
@@ -1787,32 +1665,27 @@ fn draw_info_tab(
     }
 }
 
-/// One row of the listing, which `Row` in `browser.zig` draws column by column.
+const PERMILLE_SCALE_DOWN_ABOVE: u64 = 1 << 54;
+const PERMILLE_SCALE_DOWN_BITS: u32 = 10;
+
 struct Row<'a> {
     browser: &'a Browser,
     tree: &'a Tree,
     options: &'a BrowserOptions,
-    /// The row on the screen, and the column where the next column of the listing starts.
     y: u16,
     x: u16,
-    /// The width of the screen.
     width: u16,
-    /// The entry, or `None` for the row of the parent directory.
     item: Option<EntryId>,
-    /// [`Bg::Sel`] on the cursor row, and [`Bg::Default`] on the others.
     bg: Bg,
-    /// The item count left [`Style::Num`] set, which ncdu draws the next text without its own
-    /// style in.
-    number_style: bool,
+    /// ncdu leaves [`Style::Num`] set after an item count below 1000, and `no mtime` inherits it.
+    item_count_left_num_style: bool,
 }
 
 impl Row<'_> {
-    /// The columns that are left from `x` to the right edge of the screen.
     fn remaining(&self) -> u16 {
         self.width.saturating_sub(self.x)
     }
 
-    /// The colors and attributes of the foreground `style` on the background of the row.
     fn style(&self, style: Style) -> StyleAttr {
         self.options.color.style(self.bg.fg(style))
     }
@@ -1930,10 +1803,9 @@ impl Row<'_> {
             } else {
                 (entry.size, directory.size)
             };
-            // Keep `number * 1000` in range.
-            if number > 1 << 54 {
-                number >>= 10;
-                total >>= 10;
+            if number > PERMILLE_SCALE_DOWN_ABOVE {
+                number >>= PERMILLE_SCALE_DOWN_BITS;
+                total >>= PERMILLE_SCALE_DOWN_BITS;
             }
             let permille = ((number * 1000).saturating_add(total / 2) / total.max(1)).min(1000);
             x = draw_text(
@@ -1994,8 +1866,7 @@ impl Row<'_> {
         let x = draw_text(buffer, x, self.y, before, self.style(Style::Default));
         let x = draw_text(buffer, x, self.y, &number, self.style(Style::Num));
         draw_text(buffer, x, self.y, unit, self.style(Style::Default));
-        // ncdu sets the style of the number last for a count below 1000.
-        self.number_style = count < 1000;
+        self.item_count_left_num_style = count < 1000;
     }
 
     fn mtime(&mut self, buffer: &mut Buffer) {
@@ -2004,7 +1875,6 @@ impl Row<'_> {
         }
         let x = self.x + 1;
         self.x += 27;
-        // The row of the parent directory shows the mtime of the open directory.
         let entry = self
             .item
             .unwrap_or(self.tree.directory(self.browser.directory).entry);
@@ -2016,7 +1886,7 @@ impl Row<'_> {
                 }
             }
             Some(_) | None => {
-                let style = if self.number_style {
+                let style = if self.item_count_left_num_style {
                     Style::Num
                 } else {
                     Style::Default
@@ -2052,7 +1922,6 @@ impl Row<'_> {
 mod tests {
     use super::{dirname, format_item_count, join_path};
 
-    /// Each range of item counts in its 6 columns. Upstream has no test for `Row.items`.
     #[test]
     fn item_counts() {
         let counts = [
@@ -2085,8 +1954,6 @@ mod tests {
         );
     }
 
-    /// Paths join as Zig's `std.fs.path.join` joins them. Upstream has no test for the path of
-    /// the browser.
     #[test]
     fn join_paths() {
         let joined = |path: &[u8], name: &[u8]| {
@@ -2101,8 +1968,6 @@ mod tests {
         assert_eq!(joined(b"", b"user"), "user");
     }
 
-    /// The `dirnamePosix` test of Zig's `std.fs.path`, which ncdu uses to go to the parent
-    /// directory, and a separator that repeats in the middle.
     #[test]
     fn dirnames() {
         let parent = |path: &str| dirname(path.as_bytes()).map(<[u8]>::to_vec);

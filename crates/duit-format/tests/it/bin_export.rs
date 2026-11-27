@@ -10,15 +10,11 @@ use crate::json_export::{BrokenPipe, FailingFlush, directory, file, many_files};
 #[cfg(feature = "test-ncdu")]
 use crate::ncdu_import;
 
-/// The names of the item keys, by number.
 const KEYS: [&str; 19] = [
     "type", "name", "prev", "asize", "dsize", "dev", "rderr", "cumasize", "cumdsize", "shrasize",
     "shrdsize", "items", "sub", "ino", "nlink", "uid", "gid", "mode", "mtime",
 ];
 
-/// Every kind of entry, with hard links that are all found in a subdirectory, links that are
-/// found in different directories, links that are not all found, a link without a link count, and
-/// links on another device.
 pub(crate) const TREE: &[u8] = b"[1,2,{\"progname\":\"ncdu\",\"progver\":\"2.9.2\",\"timestamp\":1},
 [{\"name\":\"/root\",\"asize\":4096,\"dsize\":4096,\"dev\":1},
 {\"name\":\"file\",\"asize\":100,\"dsize\":4096,\"uid\":501,\"gid\":20,\"mode\":33188,\"mtime\":1700000000},
@@ -45,14 +41,12 @@ pub(crate) const TREE: &[u8] = b"[1,2,{\"progname\":\"ncdu\",\"progver\":\"2.9.2
 {\"name\":\"second\",\"asize\":18446744073709551615,\"dsize\":18446744073709551615}]]]
 ";
 
-/// A root and a file with all extended fields, and a file with some.
 const EXTENDED: &[u8] = b"[1,2,{\"progname\":\"ncdu\",\"progver\":\"2.9.2\",\"timestamp\":1},
 [{\"name\":\"/root\",\"asize\":4096,\"dsize\":4096,\"dev\":1,\"uid\":501,\"gid\":20,\"mode\":16877,\"mtime\":1},
 {\"name\":\"file\",\"asize\":1,\"dsize\":512,\"uid\":0,\"gid\":4294967295,\"mode\":33188,\"mtime\":1700000000},
 {\"name\":\"some\",\"gid\":20,\"mtime\":5}]]
 ";
 
-/// Import the JSON export `input` into a [`BinaryExport`] and return the binary export.
 fn convert(input: &[u8], extended: bool, compress_level: u8, block_size: Option<usize>) -> Vec<u8> {
     let (head, rest) = input.split_at(8);
     let mut export = BinaryExport::new(Vec::new(), extended, compress_level, block_size)
@@ -61,10 +55,6 @@ fn convert(input: &[u8], extended: bool, compress_level: u8, block_size: Option<
     export.finish().expect("export is flushed")
 }
 
-/// Like [`convert`] at the default compression level.
-///
-/// With the `test-ncdu` feature, ncdu converts the same input with `ncdu -f- -O-`. With one
-/// thread, the blocks of both exports must hold the same bytes once decompressed.
 pub(crate) fn export(input: &[u8], extended: bool, block_size: Option<usize>) -> Vec<u8> {
     let output = convert(input, extended, 4, block_size);
     #[cfg(feature = "test-ncdu")]
@@ -88,18 +78,13 @@ pub(crate) fn export(input: &[u8], extended: bool, block_size: Option<usize>) ->
     output
 }
 
-/// The parts of a binary export, with each data block decompressed.
 #[derive(Debug, PartialEq, Eq)]
 struct Blocks {
-    /// The number and the decompressed data of each data block, in the order of the file.
     data: Vec<(u32, Vec<u8>)>,
-    /// The itemref of the root, as the index block holds it.
     root: u64,
 }
 
 impl Blocks {
-    /// Split `export` into its blocks. Every block must repeat its header as its footer, and the
-    /// index block must come last and give the offset and length of every data block.
     fn parse(export: &[u8]) -> Self {
         let u32_at = |offset: usize| {
             u32::from_be_bytes(export[offset..offset + 4].try_into().expect("4 bytes"))
@@ -146,8 +131,6 @@ impl Blocks {
     }
 }
 
-/// An item of a binary export: its itemref and its fields in the order of the file, with
-/// references shown as the `block:offset` of the item they point to.
 pub(crate) struct Item {
     pub(crate) itemref: u64,
     fields: Vec<(&'static str, String)>,
@@ -162,12 +145,10 @@ impl Item {
     }
 }
 
-/// The `block:offset` form of `itemref`.
 pub(crate) fn reference(itemref: u64) -> String {
     format!("{}:{}", itemref >> 24, itemref & 0xff_ffff)
 }
 
-/// A reader of the CBOR items in one decompressed block.
 struct Reader<'a> {
     data: &'a [u8],
     offset: usize,
@@ -180,8 +161,6 @@ impl Reader<'_> {
         byte
     }
 
-    /// Read the head of a data item and return its major type and argument, or `None` for an
-    /// additional information that the writer does not use.
     fn head(&mut self) -> Option<(u8, u64)> {
         let byte = self.byte();
         let length = match byte & 0x1f {
@@ -196,7 +175,6 @@ impl Reader<'_> {
         Some((byte >> 5, argument))
     }
 
-    /// Read the item at `itemref`, which starts at the current offset.
     fn item(&mut self, itemref: u64) -> Item {
         assert_eq!(self.byte(), 0xbf, "item is an indefinite map");
         let mut fields = Vec::new();
@@ -228,7 +206,6 @@ impl Reader<'_> {
     }
 }
 
-/// The items of `export` in the order of the file, and the itemref of the root.
 pub(crate) fn items(export: &[u8]) -> (Vec<Item>, u64) {
     let blocks = Blocks::parse(export);
     let mut items = Vec::new();
@@ -242,7 +219,6 @@ pub(crate) fn items(export: &[u8]) -> (Vec<Item>, u64) {
     (items, blocks.root)
 }
 
-/// The items of `export`, one per line under the number of their block, and the root.
 fn decode(export: &[u8]) -> String {
     let (items, root) = items(export);
     let mut rendered = String::new();
@@ -263,9 +239,6 @@ fn decode(export: &[u8]) -> String {
     rendered
 }
 
-/// Items are written after the items that they point to, and a directory after its entries. A
-/// directory holds the totals of its entries, with each hard link counted once in the directory
-/// that holds all of its links.
 #[test]
 fn tree() {
     assert_snapshot!(decode(&export(TREE, false, None)), @r#"
@@ -296,7 +269,6 @@ fn tree() {
     "#);
 }
 
-/// With `extended`, the extended fields that an entry has are written.
 #[test]
 fn extended() {
     assert_snapshot!(decode(&export(EXTENDED, true, None)), @r#"
@@ -307,7 +279,6 @@ fn extended() {
     "#);
 }
 
-/// A read error marks a directory even after its first entry, unlike in the JSON export.
 #[test]
 fn read_error() {
     let mut export = BinaryExport::new(Vec::new(), false, 4, None).expect("signature is written");
@@ -330,15 +301,12 @@ fn read_error() {
     "#);
 }
 
-/// The JSON export of [`many_files`].
 fn many_files_json() -> Vec<u8> {
     let mut export = JsonExport::new(Vec::new(), 0, false, None).expect("header is written");
     many_files(&mut export).expect("items are written");
     export.finish().expect("export is flushed")
 }
 
-/// A smaller block size splits the items over more blocks, and the references between blocks
-/// lead from the root to every entry.
 #[test]
 fn block_size() {
     let input = many_files_json();
@@ -364,7 +332,6 @@ fn block_size() {
     assert_eq!(names, expected);
 }
 
-/// A higher compression level writes a smaller export of the same blocks.
 #[test]
 fn compress_level() {
     let input = many_files_json();
@@ -379,8 +346,6 @@ fn compress_level() {
     assert_eq!(Blocks::parse(&smallest), Blocks::parse(&fastest));
 }
 
-/// An item that does not fit in an empty block ends the export with an error. An item takes its
-/// name and at most 211 more bytes.
 #[test]
 fn path_too_long() {
     let result = |length: usize| {
@@ -399,7 +364,6 @@ fn path_too_long() {
     );
 }
 
-/// The signature is written and flushed when the export starts.
 #[test]
 fn write_error() {
     let error = BinaryExport::new(BrokenPipe, false, 4, None)

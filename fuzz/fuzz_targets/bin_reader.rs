@@ -1,5 +1,3 @@
-//! Read arbitrary bytes as a binary export, as a whole and as the browser reads it.
-
 #![no_main]
 
 use std::collections::HashSet;
@@ -17,7 +15,6 @@ fuzz_target!(|data: &[u8]| {
     if reader.import(&mut sink).is_ok() {
         sink.finish(&mut |_, _| {});
     }
-    // The browser reads one directory at a time, from the root.
     let mut directories = vec![reader.root()];
     let mut visited = HashSet::new();
     while let Some(itemref) = directories.pop() {

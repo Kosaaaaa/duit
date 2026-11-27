@@ -1,15 +1,13 @@
-//! Import arbitrary bytes as a JSON export, compressed with zstd when they start with its magic
-//! number.
-
 #![no_main]
 
-use duit_format::import;
+use duit_format::{BINARY_SIGNATURE, import};
 use duit_model::MemorySink;
 use libfuzzer_sys::fuzz_target;
 
+const HEAD_LENGTH: usize = BINARY_SIGNATURE.len();
+
 fuzz_target!(|data: &[u8]| {
-    // duit reads the first 8 bytes to tell a JSON export from a binary one.
-    let Some((head, rest)) = data.split_first_chunk::<8>() else {
+    let Some((head, rest)) = data.split_first_chunk::<HEAD_LENGTH>() else {
         return;
     };
     let mut sink = MemorySink::new(true);

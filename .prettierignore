@@ -1,4 +1,3 @@
-# Golden files, kept as ncdu 2.9.2 wrote them.
 crates/duit/tests/fixtures/
 # One line per entry: GitHub renders each line break in the release notes that dist takes from it.
 CHANGELOG.md

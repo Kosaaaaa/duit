@@ -2,29 +2,27 @@ use std::io;
 
 use duit_model::{EntryType, Sink, Special, Stat};
 
-/// The type of an imported item as its fields set it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ItemType {
     Stat(EntryType),
     Special(Special),
 }
 
-/// Add the imported item `name` of type `kind` to `parent` in `sink`, and return it if it is a
-/// directory, whose entries the caller reads next. The entry type of an [`ItemType::Stat`] is
-/// copied into `stat`, which the sink reads it from, and an [`ItemType::Special`] reaches the sink
-/// without `stat`.
 pub(crate) fn add_entry<S: Sink>(
     sink: &mut S,
     parent: &mut S::Directory,
     kind: ItemType,
     name: &[u8],
-    stat: &mut Stat,
+    stat: &Stat,
     read_error: bool,
 ) -> io::Result<Option<S::Directory>> {
     match kind {
         ItemType::Stat(EntryType::Directory) => {
-            stat.entry_type = EntryType::Directory;
-            let mut child = sink.add_directory(parent, name, stat)?;
+            let stat = Stat {
+                entry_type: EntryType::Directory,
+                ..*stat
+            };
+            let mut child = sink.add_directory(parent, name, &stat)?;
             if read_error {
                 sink.set_read_error(&mut child)?;
             }
@@ -33,8 +31,11 @@ pub(crate) fn add_entry<S: Sink>(
         ItemType::Stat(
             entry_type @ (EntryType::Regular | EntryType::NonRegular | EntryType::HardLink),
         ) => {
-            stat.entry_type = entry_type;
-            sink.add_stat(parent, name, stat)?;
+            let stat = Stat {
+                entry_type,
+                ..*stat
+            };
+            sink.add_stat(parent, name, &stat)?;
             Ok(None)
         }
         ItemType::Special(special) => {

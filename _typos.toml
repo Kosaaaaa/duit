@@ -3,6 +3,6 @@ extend-exclude = [".git/**", "**/snapshots/", "*.ncdu", "*.zst"]
 ignore-hidden = false
 
 [default.extend-words]
-ratatui = "ratatui" # terminal UI crate
+ratatui = "ratatui"
 eigth = "eigth"     # ncdu accepts `--graph-style eigth-block`
-Scannin = "Scannin" # a step of the animation that writes "Scanning..."
+Scannin = "Scannin"

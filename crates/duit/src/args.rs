@@ -30,16 +30,10 @@ impl Arg<'_> {
 ///
 /// Errors are the messages that ncdu prints, as bytes, because arguments need not be UTF-8.
 pub struct Args<'a> {
-    /// The arguments that are not read yet.
     list: &'a [Vec<u8>],
-    /// The rest of the group of the last short option, which holds more short options or the
-    /// value of the last one.
     short: &'a [u8],
-    /// The last option, for error messages.
     last: Option<Arg<'a>>,
-    /// The value after `=` of the last long option.
     last_value: Option<&'a [u8]>,
-    /// Whether `--` was read.
     options_ended: bool,
 }
 
@@ -60,7 +54,6 @@ impl<'a> Args<'a> {
         Some(first)
     }
 
-    /// Return the first short option of `group`, and keep the rest of the group for later.
     fn short_option(&mut self, group: &'a [u8]) -> Option<Arg<'a>> {
         let (&byte, rest) = group.split_first()?;
         self.short = rest;
@@ -69,7 +62,6 @@ impl<'a> Args<'a> {
         Some(option)
     }
 
-    /// The message about the last option that ends in `suffix`.
     fn message(&self, suffix: &[u8]) -> Vec<u8> {
         let option = self.last.map(Arg::to_bytes).unwrap_or_default();
         [b"Option '", option.as_slice(), suffix].concat()

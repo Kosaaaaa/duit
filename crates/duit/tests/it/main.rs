@@ -1,5 +1,3 @@
-//! Integration tests for the `duit` binary.
-
 use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::path::Path;
@@ -13,10 +11,13 @@ mod import;
 mod options;
 mod progress;
 
-/// The first bytes of a binary export.
 const BINARY_SIGNATURE: &[u8] = b"\xbfncduEX1";
+const BLOCK_HEADER_LENGTH: usize = 4;
+const BLOCK_LENGTH_MASK: u32 = 0x0fff_ffff;
+const INDEX_BLOCK_TYPE: u32 = 0x1000_0000;
+const INDEX_ENTRY_LENGTH: usize = 8;
+const ROOT_REFERENCE_LENGTH: usize = 8;
 
-/// Run duit with `arguments` in `directory`. Standard input is not a terminal.
 fn duit(directory: &Path, arguments: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_duit"))
         .current_dir(directory)
@@ -26,12 +27,6 @@ fn duit(directory: &Path, arguments: &[&str]) -> Output {
         .expect("duit runs")
 }
 
-/// Run `program` with `arguments` in `directory`, with `HOME` and `XDG_CONFIG_HOME` set as in
-/// `environment` and unset otherwise, so that it reads the user config file that `environment`
-/// selects. Standard input is not a terminal.
-///
-/// The system config files are read from fixed paths that a test cannot redirect, so a test fails
-/// up front if one of them exists rather than producing a different snapshot.
 fn with_config(
     program: &OsStr,
     directory: &Path,
@@ -54,7 +49,6 @@ fn with_config(
         .expect("program runs")
 }
 
-/// Run ncdu with `arguments` in `directory`, like [`duit`].
 #[cfg(feature = "test-ncdu")]
 fn ncdu(directory: &Path, arguments: &[&str]) -> Output {
     Command::new("ncdu")
@@ -65,7 +59,6 @@ fn ncdu(directory: &Path, arguments: &[&str]) -> Output {
         .expect("ncdu 2.9.2 is on PATH")
 }
 
-/// Assert that ncdu exits like duit and writes the same output, apart from the program name.
 #[cfg(feature = "test-ncdu")]
 fn assert_ncdu(directory: &Path, arguments: &[&str]) {
     assert_eq!(
@@ -75,7 +68,6 @@ fn assert_ncdu(directory: &Path, arguments: &[&str]) {
     );
 }
 
-/// A run of ncdu as [`render`] renders it, with the program name in messages replaced by duit's.
 #[cfg(feature = "test-ncdu")]
 fn render_as_duit(output: &Output) -> String {
     render(output)
@@ -85,9 +77,6 @@ fn render_as_duit(output: &Output) -> String {
         .replace("`man ncdu`", "`man duit`")
 }
 
-/// The bytes of an output as text, with control characters other than newline and tab shown as
-/// `cat -v` shows them, such as `^[` for the escape character, and the metadata block of an export
-/// replaced, because it holds the program name, its version, and the time.
 fn text(bytes: &[u8]) -> String {
     let mut text = String::new();
     for character in String::from_utf8_lossy(bytes).chars() {
@@ -132,7 +121,6 @@ fn redact(export: &str, root: &Path) -> String {
     redacted
 }
 
-/// The exit code, standard output, and standard error of a run, as one string.
 fn render(output: &Output) -> String {
     let mut rendered = String::new();
     let _ = writeln!(
@@ -145,7 +133,6 @@ fn render(output: &Output) -> String {
     rendered
 }
 
-/// Run duit once per entry of `cases` in `directory` and render each run under its command line.
 fn table(directory: &Path, cases: &[&[&str]]) -> String {
     let mut rendered = String::new();
     for arguments in cases {
@@ -169,8 +156,6 @@ fn table(directory: &Path, cases: &[&[&str]]) -> String {
     rendered
 }
 
-/// A binary export with one data block per entry of `blocks`, each holding the CBOR items of that
-/// block, and an index block that ends with the reference of the root.
 fn binary_file(blocks: &[&[u8]], root: u64) -> Vec<u8> {
     let frames: Vec<Vec<u8>> = blocks
         .iter()
@@ -180,7 +165,6 @@ fn binary_file(blocks: &[&[u8]], root: u64) -> Vec<u8> {
     binary_frames(&frames, root)
 }
 
-/// A binary export of data blocks that hold `frames`, as [`binary_file`] writes it.
 fn binary_frames(frames: &[&[u8]], root: u64) -> Vec<u8> {
     let mut export = b"\xbfncduEX1".to_vec();
     let mut index = Vec::new();
@@ -199,24 +183,28 @@ fn binary_frames(frames: &[&[u8]], root: u64) -> Vec<u8> {
     [export, index_block(&index)].concat()
 }
 
-/// An index block that holds `entries`, the positions of the data blocks and the root reference.
 fn index_block(entries: &[u8]) -> Vec<u8> {
-    let length = u32::try_from(8 + entries.len()).expect("index fits");
-    let header = (0x1000_0000 | length).to_be_bytes();
+    let length = u32::try_from(2 * BLOCK_HEADER_LENGTH + entries.len()).expect("index fits");
+    let header = (INDEX_BLOCK_TYPE | length).to_be_bytes();
     [&header[..], entries, &header].concat()
 }
 
-/// A CBOR map of an item with `fields`, of indefinite length as ncdu writes it.
+fn data_blocks(export: &[u8]) -> usize {
+    let footer = &export[export.len() - BLOCK_HEADER_LENGTH..];
+    let footer: [u8; BLOCK_HEADER_LENGTH] = footer.try_into().expect("footer is 4 bytes");
+    let length =
+        usize::try_from(u32::from_be_bytes(footer) & BLOCK_LENGTH_MASK).expect("length fits");
+    (length - 2 * BLOCK_HEADER_LENGTH - ROOT_REFERENCE_LENGTH) / INDEX_ENTRY_LENGTH
+}
+
 fn item(fields: &[u8]) -> Vec<u8> {
     [b"\xbf", fields, b"\xff"].concat()
 }
 
-/// A field `key` that refers to the first item of block `number`, as an unsigned integer.
 fn reference(key: u8, number: u8) -> [u8; 6] {
     [key, 0x1a, number, 0, 0, 0]
 }
 
-/// The reference of the first item of block `number`.
 fn block_start(number: u8) -> u64 {
     u64::from(number) << 24
 }

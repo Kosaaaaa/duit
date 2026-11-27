@@ -1,5 +1,3 @@
-//! Helpers that ncdu keeps in `util.zig`: tilde expansion and reading a file line by line.
-
 use std::borrow::Cow;
 use std::env;
 use std::ffi::{CStr, CString, OsString};
@@ -9,21 +7,16 @@ use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStringExt;
 use std::ptr;
 
-/// The bytes before the first NUL byte, where a C string ends.
 pub(crate) fn until_nul(bytes: &[u8]) -> &[u8] {
     bytes.split(|&byte| byte == 0).next().unwrap_or_default()
 }
 
-/// A user whose home directory [`home_directory`] looks up.
 #[derive(Clone, Copy)]
 enum User<'a> {
     Current,
     Name(&'a [u8]),
 }
 
-/// Expand a leading `~` or `~name` in `path` to the home directory of the current user or of the
-/// user `name`, as ncdu does for paths in config files. The home directory of the current user is
-/// `HOME` if it is set. A path with an unknown user is unchanged.
 pub(crate) fn expand_user(path: &[u8]) -> Cow<'_, [u8]> {
     let Some(rest) = path.strip_prefix(b"~") else {
         return Cow::Borrowed(path);
@@ -53,16 +46,13 @@ pub(crate) fn expand_user(path: &[u8]) -> Cow<'_, [u8]> {
     Cow::Owned([home, tail].concat())
 }
 
-/// The largest buffer for an entry of the password database that [`home_directory`] tries.
 const PASSWORD_BUFFER_LIMIT: usize = 1 << 20;
 
-/// The home directory of `user` in the password database, if the user exists and has one.
 #[expect(
     unsafe_code,
     reason = "getpwuid_r and getpwnam_r are foreign functions"
 )]
 fn home_directory(user: User<'_>) -> Option<Vec<u8>> {
-    // ncdu passes the name as a C string, which ends at the first NUL byte.
     let name = match user {
         User::Current => None,
         User::Name(name) => Some(CString::new(until_nul(name)).ok()?),
@@ -110,11 +100,8 @@ fn home_directory(user: User<'_>) -> Option<Vec<u8>> {
     }
 }
 
-/// The size of the buffer that ncdu reads a line of a config file or an exclude file into,
-/// newline included.
 const LINE_BUFFER: usize = 4096;
 
-/// The lines of a file, read as ncdu reads them into a buffer of [`LINE_BUFFER`] bytes.
 pub(crate) struct LineReader {
     reader: BufReader<File>,
     line: Vec<u8>,
@@ -128,8 +115,6 @@ impl LineReader {
         }
     }
 
-    /// Return the next line without its newline, or `None` at the end of the file. Fails with
-    /// ncdu's description of the error, also for a line that does not fit into the buffer.
     pub(crate) fn next_line(&mut self) -> Result<Option<&[u8]>, &'static str> {
         self.line.clear();
         // Zig's reader reports any read error as `ReadFailed`.

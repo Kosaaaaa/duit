@@ -8,16 +8,20 @@ use duit_model::{EntryType, Sink, Special, Stat};
 use zstd::bulk::Compressor;
 
 use crate::bin_format::{
-    BLOCK_LENGTH_BITS, DATA_BLOCK, FOOTER_LENGTH, HEADER_LENGTH, INDEX_BLOCK, ITEM_KEY_COUNT,
-    ItemKey, MAX_BLOCK_LENGTH, Major, NUMBER_LENGTH, SIMPLE_FALSE, SIMPLE_TRUE,
+    BLOCK_LENGTH_BITS, BlockPosition, DATA_BLOCK, FOOTER_LENGTH, HEADER_LENGTH,
+    INDEFINITE_OR_BREAK, INDEX_BLOCK, INDEX_ENTRY_LENGTH, ITEM_KEY_COUNT, ItemKey, ItemRef,
+    MAX_BLOCK_LENGTH, MAX_HEAD_LENGTH, Major, NUMBER_LENGTH, ROOT_REFERENCE_LENGTH, SIMPLE_FALSE,
+    SIMPLE_TRUE,
 };
+use crate::item::ItemType;
 
 /// The first bytes of a binary export.
 pub const BINARY_SIGNATURE: &[u8; 8] = b"\xbfncduEX1";
 
-/// An upper bound on the encoded size of an item without its name: 2 bytes for the start and the
-/// end of the map, and 11 bytes per field, 2 for the key and 9 for a full `u64`.
-const MAX_ITEM_LEN: usize = 2 + 11 * ITEM_KEY_COUNT;
+const MAP_DELIMITERS_LENGTH: usize = 2;
+const MAX_KEY_LENGTH: usize = 2;
+const MAX_ITEM_LEN: usize =
+    MAP_DELIMITERS_LENGTH + (MAX_KEY_LENGTH + MAX_HEAD_LENGTH) * ITEM_KEY_COUNT;
 
 /// Why a [`BinaryExport`] failed, other than an error of its writer. It reaches the caller as the
 /// inner error of an [`io::Error`].
@@ -49,8 +53,6 @@ impl From<BinaryExportError> for io::Error {
     }
 }
 
-/// The uncompressed size of the data block `number`. Without `configured`, it starts at 64 KiB
-/// and grows with the export, which keeps the index block small.
 fn block_size(configured: Option<usize>, number: u32) -> usize {
     configured.unwrap_or(match number {
         0..0x10_0000 => 64 << 10,
@@ -62,15 +64,23 @@ fn block_size(configured: Option<usize>, number: u32) -> usize {
     })
 }
 
-/// The header and the footer of a block of `length` bytes, which includes both. A block too long
-/// for its header is reported as [`BinaryExportError::FileTooLarge`], as ncdu has no message of its
-/// own for it.
-fn block_header(id: u32, length: usize) -> io::Result<[u8; 4]> {
-    let length = u32::try_from(length)
+/// ncdu has no message for a block too long for its header, so the export reports it as too large.
+const OVERSIZE_BLOCK_ERROR: BinaryExportError = BinaryExportError::FileTooLarge;
+
+fn block_length(length: usize) -> Result<u32, BinaryExportError> {
+    u32::try_from(length)
         .ok()
         .filter(|&length| length <= MAX_BLOCK_LENGTH)
-        .ok_or(BinaryExportError::FileTooLarge)?;
+        .ok_or(OVERSIZE_BLOCK_ERROR)
+}
+
+fn block_header(id: u32, length: usize) -> io::Result<[u8; 4]> {
+    let length = block_length(length)?;
     Ok(((id << BLOCK_LENGTH_BITS) | length).to_be_bytes())
+}
+
+fn index_block_length(entries: usize) -> usize {
+    HEADER_LENGTH + INDEX_ENTRY_LENGTH * entries + ROOT_REFERENCE_LENGTH + FOOTER_LENGTH
 }
 
 /// A [`Sink`] that writes the ncdu binary export format.
@@ -84,24 +94,15 @@ pub struct BinaryExport<W: Write> {
     extended: bool,
     compressor: Compressor<'static>,
     configured_block_size: Option<usize>,
-    /// The uncompressed data of the current block.
     buffer: Vec<u8>,
-    /// The size of the current block, which `buffer` does not grow beyond.
     buffer_size: usize,
-    /// The number of the current block, or `None` before the first item.
     block_number: Option<u32>,
-    /// The reference of the item being written.
-    itemref: u64,
-    /// The offset and the length of each data block by number, as `offset << 24 | length`, or 0
-    /// for a block that is not written yet.
-    index: Vec<u64>,
-    /// The number of bytes written to `out`.
+    itemref: ItemRef,
+    index: Vec<Option<BlockPosition>>,
     file_offset: u64,
-    root_itemref: u64,
+    root_itemref: ItemRef,
 }
 
-/// The links to one inode that a directory and its subdirectories hold, whose size is not counted
-/// yet.
 #[derive(Clone, Copy)]
 struct Inode {
     size: u64,
@@ -110,12 +111,17 @@ struct Inode {
     found: u32,
 }
 
+impl Inode {
+    fn all_links_found(self) -> bool {
+        self.link_count > 0 && self.found >= self.link_count
+    }
+}
+
 /// The handle of a directory in a [`BinaryExport`].
 pub struct BinaryDirectory {
     name: Vec<u8>,
     stat: Stat,
-    /// The reference of the last entry written.
-    last_entry: Option<u64>,
+    last_entry: Option<ItemRef>,
     items: u64,
     size: u64,
     blocks: u64,
@@ -143,12 +149,16 @@ impl BinaryDirectory {
         }
     }
 
-    /// Add the sizes of the hard links to this directory. With a `parent`, move the links whose
-    /// every link is found to the totals of the parent, and the others to its links.
-    ///
-    /// An export without link counts has 0 for each link. Such a link is counted once per
-    /// directory and never as shared.
-    fn count_links(&mut self, parent: Option<&mut Self>) {
+    fn add_subdirectory_totals(&mut self, subdirectory: &Self) {
+        self.items = self.items.saturating_add(subdirectory.items);
+        self.size = self.size.saturating_add(subdirectory.size);
+        self.blocks = self.blocks.saturating_add(subdirectory.blocks);
+        if subdirectory.sub_error || subdirectory.read_error {
+            self.sub_error = true;
+        }
+    }
+
+    fn add_link_sizes(&mut self) {
         for inode in self.inodes.values() {
             self.size = self.size.saturating_add(inode.size);
             self.blocks = self.blocks.saturating_add(inode.blocks);
@@ -157,11 +167,11 @@ impl BinaryDirectory {
                 self.shared_blocks = self.shared_blocks.saturating_add(inode.blocks);
             }
         }
-        let Some(parent) = parent else {
-            return;
-        };
+    }
+
+    fn hand_links_to(&mut self, parent: &mut Self) {
         for (number, inode) in self.inodes.drain() {
-            if inode.link_count > 0 && inode.found >= inode.link_count {
+            if inode.all_links_found() {
                 parent.size = parent.size.saturating_add(inode.size);
                 parent.blocks = parent.blocks.saturating_add(inode.blocks);
             } else {
@@ -191,7 +201,6 @@ impl<W: Write> BinaryExport<W> {
         block_size: Option<usize>,
     ) -> io::Result<Self> {
         let compressor = Compressor::new(i32::from(compress_level))?;
-        // The signature is written before a scan or an import starts, as ncdu does.
         out.write_all(BINARY_SIGNATURE)?;
         out.flush()?;
         Ok(Self {
@@ -202,10 +211,10 @@ impl<W: Write> BinaryExport<W> {
             buffer: Vec::new(),
             buffer_size: self::block_size(block_size, 0),
             block_number: None,
-            itemref: 0,
+            itemref: ItemRef(0),
             index: Vec::new(),
-            file_offset: 8,
-            root_itemref: 0,
+            file_offset: BINARY_SIGNATURE.len() as u64,
+            root_itemref: ItemRef(0),
         })
     }
 
@@ -213,25 +222,24 @@ impl<W: Write> BinaryExport<W> {
     /// export, and return the writer. Without a root, the index block refers to a root at 0.
     pub fn finish(mut self) -> io::Result<W> {
         self.flush_block(0)?;
-        while self.index.last() == Some(&0) {
+        while let Some(None) = self.index.last() {
             self.index.pop();
         }
-        let length = HEADER_LENGTH + 8 * self.index.len() + 8 + FOOTER_LENGTH;
+        let length = index_block_length(self.index.len());
         let header = block_header(INDEX_BLOCK, length)?;
         let mut block = Vec::with_capacity(length);
         block.extend_from_slice(&header);
-        for entry in &self.index {
-            block.extend_from_slice(&entry.to_be_bytes());
+        for position in &self.index {
+            let packed = position.map_or(0, |position| position.0);
+            block.extend_from_slice(&packed.to_be_bytes());
         }
-        block.extend_from_slice(&self.root_itemref.to_be_bytes());
+        block.extend_from_slice(&self.root_itemref.0.to_be_bytes());
         block.extend_from_slice(&header);
         self.out.write_all(&block)?;
         self.out.flush()?;
         Ok(self.out)
     }
 
-    /// Write the current block, if it holds an item, and start the next one. `expected_length`
-    /// is the length of the item that does not fit.
     fn flush_block(&mut self, expected_length: usize) -> io::Result<()> {
         if expected_length > self.buffer_size {
             return Err(BinaryExportError::PathTooLong.into());
@@ -254,7 +262,7 @@ impl<W: Write> BinaryExport<W> {
                 .ok()
                 .and_then(|number| self.index.get_mut(number))
             {
-                *entry = (self.file_offset << 24) + length as u64;
+                *entry = Some(BlockPosition::new(self.file_offset, length as u64));
             }
             self.file_offset += length as u64;
             self.out.write_all(&block)?;
@@ -264,8 +272,8 @@ impl<W: Write> BinaryExport<W> {
         let number =
             u32::try_from(self.index.len()).map_err(|_| BinaryExportError::TooManyBlocks)?;
         self.block_number = Some(number);
-        self.index.push(0);
-        if HEADER_LENGTH + 8 * self.index.len() + 8 + FOOTER_LENGTH >= 1 << BLOCK_LENGTH_BITS {
+        self.index.push(None);
+        if index_block_length(self.index.len()) >= 1 << BLOCK_LENGTH_BITS {
             return Err(BinaryExportError::TooManyBlocks.into());
         }
         self.buffer_size = block_size(self.configured_block_size, number);
@@ -303,34 +311,35 @@ impl<W: Write> BinaryExport<W> {
 
     /// Write a reference to the item at `itemref`, if any. A reference into the current block is
     /// written as a negative offset from the item being written, which compresses better.
-    fn reference_field(&mut self, key: ItemKey, itemref: Option<u64>) {
+    fn reference_field(&mut self, key: ItemKey, itemref: Option<ItemRef>) {
         let Some(itemref) = itemref else {
             return;
         };
         self.cbor_head(Major::Positive, key as u64);
-        if self.block_number.map(u64::from) == Some(itemref >> 24) {
-            self.cbor_head(Major::Negative, self.itemref - itemref - 1);
+        if self.block_number.map(u64::from) == Some(itemref.block()) {
+            self.cbor_head(Major::Negative, self.itemref.0 - itemref.0 - 1);
         } else {
-            self.cbor_head(Major::Positive, itemref);
+            self.cbor_head(Major::Positive, itemref.0);
         }
     }
 
-    /// Start an item with its type, name, and the reference to the entry before it, and return
-    /// its reference. A negative `item_type` is a special entry.
-    fn item_start(&mut self, item_type: i8, previous: Option<u64>, name: &[u8]) -> io::Result<u64> {
+    fn item_start(
+        &mut self,
+        kind: ItemType,
+        previous: Option<ItemRef>,
+        name: &[u8],
+    ) -> io::Result<ItemRef> {
         let minimum_length = name.len() + MAX_ITEM_LEN;
         if self.block_number.is_none() || self.buffer.len() + minimum_length > self.buffer_size {
             self.flush_block(minimum_length)?;
         }
         let block_number = self.block_number.map_or(0, u64::from);
-        self.itemref = (block_number << 24) | self.buffer.len() as u64;
-        // An indefinite map, which `item_end` ends.
-        self.buffer.push(((Major::Map as u8) << 5) | 31);
+        self.itemref = ItemRef::new(block_number, self.buffer.len() as u64);
+        self.buffer
+            .push(((Major::Map as u8) << 5) | INDEFINITE_OR_BREAK);
         self.cbor_head(Major::Positive, ItemKey::Type as u64);
-        match u64::try_from(item_type) {
-            Ok(item_type) => self.cbor_head(Major::Positive, item_type),
-            Err(_) => self.cbor_head(Major::Negative, u64::from((-1 - item_type).unsigned_abs())),
-        }
+        let (major, argument) = type_head(kind);
+        self.cbor_head(major, argument);
         self.cbor_head(Major::Positive, ItemKey::Name as u64);
         self.cbor_head(Major::Bytes, name.len() as u64);
         self.buffer.extend_from_slice(name);
@@ -357,19 +366,22 @@ impl<W: Write> BinaryExport<W> {
         }
     }
 
-    /// End the map of an item with the CBOR break.
     fn item_end(&mut self) {
-        self.buffer.push(((Major::Simple as u8) << 5) | 31);
+        self.buffer
+            .push(((Major::Simple as u8) << 5) | INDEFINITE_OR_BREAK);
     }
 }
 
-/// The type of an entry as the format writes it.
-fn entry_type(entry_type: EntryType) -> i8 {
-    match entry_type {
-        EntryType::Directory => 0,
-        EntryType::Regular => 1,
-        EntryType::NonRegular => 2,
-        EntryType::HardLink => 3,
+fn type_head(kind: ItemType) -> (Major, u64) {
+    match kind {
+        ItemType::Stat(EntryType::Directory) => (Major::Positive, 0),
+        ItemType::Stat(EntryType::Regular) => (Major::Positive, 1),
+        ItemType::Stat(EntryType::NonRegular) => (Major::Positive, 2),
+        ItemType::Stat(EntryType::HardLink) => (Major::Positive, 3),
+        ItemType::Special(Special::ReadError) => (Major::Negative, 0),
+        ItemType::Special(Special::Pattern) => (Major::Negative, 1),
+        ItemType::Special(Special::OtherFilesystem) => (Major::Negative, 2),
+        ItemType::Special(Special::KernelFilesystem) => (Major::Negative, 3),
     }
 }
 
@@ -391,16 +403,11 @@ impl<W: Write> Sink for BinaryExport<W> {
         special: Special,
     ) -> io::Result<()> {
         directory.items += 1;
-        let item_type = match special {
-            Special::ReadError => {
-                directory.sub_error = true;
-                -1
-            }
-            Special::Pattern => -2,
-            Special::OtherFilesystem => -3,
-            Special::KernelFilesystem => -4,
-        };
-        directory.last_entry = Some(self.item_start(item_type, directory.last_entry, name)?);
+        if special == Special::ReadError {
+            directory.sub_error = true;
+        }
+        directory.last_entry =
+            Some(self.item_start(ItemType::Special(special), directory.last_entry, name)?);
         self.item_end();
         Ok(())
     }
@@ -417,7 +424,7 @@ impl<W: Write> Sink for BinaryExport<W> {
             directory.blocks = directory.blocks.saturating_add(stat.blocks);
         }
         directory.last_entry =
-            Some(self.item_start(entry_type(stat.entry_type), directory.last_entry, name)?);
+            Some(self.item_start(ItemType::Stat(stat.entry_type), directory.last_entry, name)?);
         self.field(ItemKey::Asize, stat.size);
         self.field(ItemKey::Dsize, disk_usage(stat.blocks));
         if stat.entry_type == EntryType::HardLink {
@@ -464,24 +471,25 @@ impl<W: Write> Sink for BinaryExport<W> {
         let same_device = parent
             .as_ref()
             .is_some_and(|parent| parent.stat.device == directory.stat.device);
-        if let Some(parent) = parent {
-            // The links on another device are counted here, as no link outside can share them.
-            if !same_device {
-                directory.count_links(None);
+        let kind = ItemType::Stat(EntryType::Directory);
+        match parent {
+            Some(parent) if same_device => {
+                parent.add_subdirectory_totals(&directory);
+                directory.add_link_sizes();
+                directory.hand_links_to(parent);
+                parent.last_entry =
+                    Some(self.item_start(kind, parent.last_entry, &directory.name)?);
             }
-            parent.items = parent.items.saturating_add(directory.items);
-            parent.size = parent.size.saturating_add(directory.size);
-            parent.blocks = parent.blocks.saturating_add(directory.blocks);
-            if directory.sub_error || directory.read_error {
-                parent.sub_error = true;
+            Some(parent) => {
+                directory.add_link_sizes();
+                parent.add_subdirectory_totals(&directory);
+                parent.last_entry =
+                    Some(self.item_start(kind, parent.last_entry, &directory.name)?);
             }
-            if same_device {
-                directory.count_links(Some(parent));
+            None => {
+                directory.add_link_sizes();
+                self.root_itemref = self.item_start(kind, None, &directory.name)?;
             }
-            parent.last_entry = Some(self.item_start(0, parent.last_entry, &directory.name)?);
-        } else {
-            directory.count_links(None);
-            self.root_itemref = self.item_start(0, None, &directory.name)?;
         }
 
         let stat = directory.stat;
