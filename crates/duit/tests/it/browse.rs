@@ -7,7 +7,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -22,20 +22,14 @@ use tempfile::TempDir;
 use crate::assert_ncdu;
 use crate::{binary_file, binary_frames, block_start, item, reference, render, table, text};
 
-/// How long a test waits for duit to draw or to exit.
 const TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Text in the footer of the browser, which duit draws once the tree is loaded.
 pub(crate) const FOOTER: &[u8] = b"Total disk usage: ";
 
-/// The sequence that leaves the alternate screen, which duit writes when it restores the terminal.
 pub(crate) const LEAVE_ALTERNATE_SCREEN: &[u8] = b"\x1b[?1049l";
 
-/// The sequence that enters the alternate screen, which duit writes when it takes over the
-/// terminal.
 pub(crate) const ENTER_ALTERNATE_SCREEN: &[u8] = b"\x1b[?1049h";
 
-/// A directory with a copy of the golden files, and a JSON export with a syntax error.
 pub(crate) fn fixture() -> TempDir {
     let directory = TempDir::new().expect("temporary directory is created");
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
@@ -52,11 +46,6 @@ pub(crate) fn fixture() -> TempDir {
     directory
 }
 
-/// `--quit-after-scan` scans or imports into memory and exits without opening the browser, so it
-/// needs no terminal. A binary export is only opened, not read. The cases pass `-0` or `-1`,
-/// because the full-screen progress of `-2` would take over the terminal.
-/// With `-1`, the tree in memory draws the line that it counts hard links on, even after an error
-/// at the root, and erases it only on a terminal.
 #[test]
 fn quit_after_scan() {
     let directory = fixture();
@@ -166,8 +155,6 @@ fn quit_after_scan() {
     ");
 }
 
-/// Without `-o` or `-O`, the errors of the import come before the browser opens. The cases pass
-/// `-0`, as in [`quit_after_scan`].
 #[test]
 fn errors() {
     let directory = fixture();
@@ -193,8 +180,6 @@ fn errors() {
     ");
 }
 
-/// A pseudo-terminal of 80 columns and 24 rows: the side that the test reads and writes, and the
-/// terminal side that duit runs on.
 pub(crate) struct Pty {
     pub(crate) master: File,
     pub(crate) terminal: File,
@@ -205,7 +190,6 @@ pub(crate) fn pty() -> Pty {
     grantpt(&master).expect("pty is granted");
     unlockpt(&master).expect("pty is unlocked");
     let name = ptsname(&master, Vec::new()).expect("pty has a name");
-    // The test process keeps the controlling terminal it has, if any.
     let terminal = OpenOptions::new()
         .read(true)
         .write(true)
@@ -225,9 +209,6 @@ pub(crate) fn pty() -> Pty {
     }
 }
 
-/// Run duit with `arguments` in `directory`, in a new session without a controlling terminal, so
-/// that it cannot reach the terminal that runs the tests. With `controlling`, its standard error
-/// becomes the controlling terminal of the session.
 pub(crate) fn spawn(
     directory: &Path,
     arguments: &[&str],
@@ -253,8 +234,6 @@ pub(crate) fn spawn(
     command.spawn().expect("duit runs")
 }
 
-/// Run duit with `arguments` in `directory` on the terminal of `pty`, as its standard input,
-/// output, and error.
 pub(crate) fn spawn_on(pty: &Pty, directory: &Path, arguments: &[&str]) -> Child {
     spawn_command_on(
         pty,
@@ -264,7 +243,6 @@ pub(crate) fn spawn_on(pty: &Pty, directory: &Path, arguments: &[&str]) -> Child
     )
 }
 
-/// Run duit with `command`, as [`spawn_on`] does.
 fn spawn_command_on(
     pty: &Pty,
     directory: &Path,
@@ -279,7 +257,6 @@ fn spawn_command_on(
     spawn(directory, arguments, command, true)
 }
 
-/// Send what duit writes to the terminal of `pty` to the returned receiver, until it closes.
 pub(crate) fn read_output(pty: &Pty) -> Receiver<Vec<u8>> {
     let mut master = pty.master.try_clone().expect("pty is duplicated");
     let (sender, receiver) = mpsc::channel();
@@ -294,7 +271,6 @@ pub(crate) fn read_output(pty: &Pty) -> Receiver<Vec<u8>> {
     receiver
 }
 
-/// Append what `receiver` reads to `output` until it holds `needle`.
 pub(crate) fn wait_for(receiver: &Receiver<Vec<u8>>, output: &mut Vec<u8>, needle: &[u8]) {
     let deadline = Instant::now() + TIMEOUT;
     while !output.windows(needle.len()).any(|window| window == needle) {
@@ -306,7 +282,24 @@ pub(crate) fn wait_for(receiver: &Receiver<Vec<u8>>, output: &mut Vec<u8>, needl
     }
 }
 
-/// Wait for `child` to exit, and kill it if it does not.
+pub(crate) fn read_to_end(receiver: &Receiver<Vec<u8>>, output: &mut Vec<u8>) {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match receiver.recv_timeout(remaining) {
+            Ok(bytes) => output.extend(bytes),
+            Err(error) => {
+                assert_eq!(
+                    error,
+                    RecvTimeoutError::Disconnected,
+                    "the terminal is closed in time"
+                );
+                return;
+            }
+        }
+    }
+}
+
 pub(crate) fn wait_exit(child: &mut Child) -> ExitStatus {
     let deadline = Instant::now() + TIMEOUT;
     loop {
@@ -321,8 +314,6 @@ pub(crate) fn wait_exit(child: &mut Child) -> ExitStatus {
     }
 }
 
-/// Wait until duit restores the terminal and draws the browser again, and drop what `output` held
-/// before it restored the terminal.
 fn wait_for_return(receiver: &Receiver<Vec<u8>>, output: &mut Vec<u8>) {
     wait_for(receiver, output, LEAVE_ALTERNATE_SCREEN);
     let restored = output
@@ -333,8 +324,6 @@ fn wait_for_return(receiver: &Receiver<Vec<u8>>, output: &mut Vec<u8>) {
     wait_for(receiver, output, FOOTER);
 }
 
-/// Run duit with `arguments` on a terminal, wait until it draws the browser, type `keys`, and
-/// return its exit status with everything it wrote to the terminal.
 fn browse(directory: &Path, arguments: &[&str], keys: &[u8]) -> (ExitStatus, Vec<u8>) {
     let pty = pty();
     let receiver = read_output(&pty);
@@ -347,8 +336,6 @@ fn browse(directory: &Path, arguments: &[&str], keys: &[u8]) -> (ExitStatus, Vec
     (status, output)
 }
 
-/// A scan and an import, plain, compressed, or binary, open the browser, and `q` quits with status
-/// 0 after the terminal is restored.
 #[test]
 fn quit() {
     let directory = fixture();
@@ -363,10 +350,6 @@ fn quit() {
     }
 }
 
-/// Refreshing, deleting, and the shell are disabled by default for an import, and `-rr` disables
-/// the shell for a scan. `b` has no message for reading from a file, so a binary export shows the
-/// same one. The needles have no spaces, because duit does not write a space that is on the screen
-/// already.
 #[test]
 fn features_disabled() {
     let directory = fixture();
@@ -385,14 +368,11 @@ fn features_disabled() {
         wait_for(&receiver, &mut output, FOOTER);
         (&pty.master).write_all(key).expect("key is typed");
         wait_for(&receiver, &mut output, needle);
-        // The first `q` closes the message.
         (&pty.master).write_all(b"qq").expect("keys are typed");
         assert_eq!(wait_exit(&mut child).code(), Some(0), "{arguments:?}");
     }
 }
 
-/// Write an executable script in `directory` that appends `name`, its working directory, and its
-/// `NCDU_LEVEL` to `record`, and exits with status 3. It stands in for a shell.
 fn shell_script(directory: &Path, name: &str, record: &Path) -> PathBuf {
     let path = directory.join(name);
     let script = format!(
@@ -404,10 +384,6 @@ fn shell_script(directory: &Path, name: &str, record: &Path) -> PathBuf {
     path
 }
 
-/// `b` runs `NCDU_SHELL`, or `SHELL` without it, in the open directory, with `NCDU_LEVEL` one
-/// higher than duit's: 1 when it is unset, at most 9, and from the first character only, so 1 for
-/// a letter and 2 for 12. The browser comes back once the shell exits, without a message for its
-/// status 3, and `q` quits.
 #[test]
 fn shell() {
     let directory = TempDir::new().expect("temporary directory is created");
@@ -440,7 +416,6 @@ fn shell() {
         let mut child = spawn_command_on(&pty, directory.path(), &["."], &mut command);
         let mut output = Vec::new();
         wait_for(&receiver, &mut output, FOOTER);
-        // `/sub` is empty, so no key is dropped while it is listed.
         (&pty.master).write_all(b"\rb").expect("keys are typed");
         wait_for_return(&receiver, &mut output);
         (&pty.master).write_all(b"q").expect("key is typed");
@@ -459,8 +434,6 @@ fn shell() {
     ");
 }
 
-/// A shell that cannot run, or that a signal ends, leaves a message on the restored terminal, as
-/// in ncdu, and the browser comes back after Enter. The clear before the browser is ncdu's too.
 #[test]
 fn shell_errors() {
     let directory = fixture();
@@ -504,8 +477,6 @@ fn shell_errors() {
     ");
 }
 
-/// Ctrl-C ends duit with status 1 after the terminal is restored, as ncurses does on `SIGINT`, also
-/// in the confirmation of `--confirm-quit`.
 #[test]
 fn interrupt() {
     let directory = fixture();
@@ -519,7 +490,6 @@ fn interrupt() {
     }
 }
 
-/// Ctrl-\ ends duit with `SIGQUIT` after the terminal is restored.
 #[test]
 fn quit_signal() {
     let directory = fixture();
@@ -544,8 +514,6 @@ fn suspend() {
     assert_eq!(wait_exit(&mut child).code(), Some(0));
 }
 
-/// An ESC that the terminal sends together with the next key, as for Alt+y, is two keys, as ncurses
-/// reads them: the ESC closes the confirmation of `--confirm-quit`, and the `y` does not quit.
 #[test]
 fn escape_then_key() {
     let directory = fixture();
@@ -557,8 +525,6 @@ fn escape_then_key() {
     assert_eq!(status.code(), Some(1));
 }
 
-/// Keys that are typed while a directory is listed are dropped, as ncdu drops them once `loadDir`
-/// has listed 2 entries: the `q` after Enter on `/src` does not quit.
 #[test]
 fn keys_dropped_while_loading() {
     let directory = fixture();
@@ -569,16 +535,12 @@ fn keys_dropped_while_loading() {
         let mut output = Vec::new();
         wait_for(&receiver, &mut output, FOOTER);
         (&pty.master).write_all(b"\rq").expect("keys are typed");
-        // The row of the parent directory of `/src`.
         wait_for(&receiver, &mut output, b"/..");
         (&pty.master).write_all(b"q").expect("keys are typed");
         assert_eq!(wait_exit(&mut child).code(), Some(0), "{export}");
     }
 }
 
-/// With an import from standard input, duit draws on and reads keys from `/dev/tty`, its
-/// controlling terminal, and writes nothing to standard output. A binary export is read from
-/// standard input too when it is a file, which can seek.
 #[test]
 fn import_from_stdin() {
     let directory = fixture();
@@ -608,11 +570,6 @@ fn import_from_stdin() {
     }
 }
 
-/// Without a controlling terminal, and with standard input that is not a terminal, duit cannot open
-/// `/dev/tty` to draw the progress of `-2`, or the browser of a binary export, which is read once
-/// the terminal is open. ncdu writes the message of `strerror`, which differs between systems.
-/// `--quit-after-scan` lets a scan run without a terminal on standard input, and its progress
-/// fails to open `/dev/tty` too.
 #[test]
 fn no_terminal() {
     let directory = fixture();
@@ -663,22 +620,18 @@ fn no_terminal() {
     ");
 }
 
-/// Run duit with `arguments` on a terminal, type `keys` once it draws the browser unless there are
-/// none, and return what it wrote after it restored the terminal, which it exits with status 1.
 fn browse_error(directory: &Path, arguments: &[&str], keys: &[u8]) -> String {
     let pty = pty();
     let receiver = read_output(&pty);
     let mut child = spawn_on(&pty, directory, arguments);
+    drop(pty.terminal);
     let mut output = Vec::new();
     if !keys.is_empty() {
         wait_for(&receiver, &mut output, FOOTER);
         (&pty.master).write_all(keys).expect("keys are typed");
     }
     assert_eq!(wait_exit(&mut child).code(), Some(1), "{arguments:?}");
-    // Everything that duit wrote is on its way once it exited.
-    while let Ok(bytes) = receiver.recv_timeout(Duration::from_millis(500)) {
-        output.extend(bytes);
-    }
+    read_to_end(&receiver, &mut output);
     let restored = output
         .windows(LEAVE_ALTERNATE_SCREEN.len())
         .rposition(|window| window == LEAVE_ALTERNATE_SCREEN)
@@ -686,16 +639,10 @@ fn browse_error(directory: &Path, arguments: &[&str], keys: &[u8]) -> String {
     text(&output[restored..])
 }
 
-/// A binary export is read once the terminal is open, so an error in it stops duit there, as it
-/// stops ncdu, with the message once the terminal is restored: a root that is not a directory, and
-/// a block that is read only when a directory is opened. Entries that refer to each other in a
-/// cycle are an error too, unlike in ncdu, which reads them forever.
 #[test]
 fn read_errors() {
     let directory = fixture();
     let file = item(b"\x00\x01\x01\x41f");
-    // Block 1 holds the root and its subdirectory, whose entry is in block 0, which is not a zstd
-    // frame.
     let subdirectory = item(&[&b"\x00\x00\x01\x43sub"[..], &reference(0x0c, 0)].concat());
     let root = item(&[&b"\x00\x00\x01\x45/root"[..], &reference(0x0c, 1)].concat());
     let frame =
@@ -734,9 +681,6 @@ fn read_errors() {
     ");
 }
 
-/// `r` scans the open directory again and lists what changed on disk since the scan, also with
-/// `-0`, which a refresh ignores. The names have no spaces, because duit does not write a space
-/// that is on the screen already.
 #[test]
 fn refresh() {
     for arguments in [&["."][..], &["-0", "."]] {
@@ -758,8 +702,6 @@ fn refresh() {
     }
 }
 
-/// A refresh of a directory that is gone shows the error screen of `-2`, also with `-0`, and any
-/// key goes back to the browser, where `?` opens the help.
 #[test]
 fn refresh_error() {
     let directory = TempDir::new().expect("temporary directory is created");
@@ -769,8 +711,6 @@ fn refresh_error() {
     let mut child = spawn_on(&pty, directory.path(), &["-0", "."]);
     let mut output = Vec::new();
     wait_for(&receiver, &mut output, FOOTER);
-    // `/sub` is empty, so no key is dropped while it is listed. It is opened from memory, and
-    // removed before `r` is typed.
     (&pty.master).write_all(b"\r").expect("key is typed");
     fs::remove_dir(directory.path().join("sub")).expect("directory is removed");
     (&pty.master).write_all(b"r").expect("key is typed");
@@ -781,7 +721,6 @@ fn refresh_error() {
     assert_eq!(wait_exit(&mut child).code(), Some(0));
 }
 
-/// Wait until `path` no longer exists.
 fn wait_removed(path: &Path) {
     let deadline = Instant::now() + TIMEOUT;
     while path.exists() {
@@ -794,8 +733,6 @@ fn wait_removed(path: &Path) {
     }
 }
 
-/// `d` deletes the entry under the cursor once "yes" is selected and confirmed, and at once with
-/// `--no-confirm-delete`.
 #[test]
 fn delete() {
     let cases: [(&[&str], &[u8]); 2] = [(&["."], b"dh\r"), (&["--no-confirm-delete", "."], b"d")];
@@ -815,8 +752,6 @@ fn delete() {
     }
 }
 
-/// Write an executable script in `directory` with the commands `body`, as a command of
-/// `--delete-command`.
 fn delete_script(directory: &Path, body: &str) -> PathBuf {
     let path = directory.join("delete");
     fs::write(&path, format!("#!/bin/sh\n{body}")).expect("script is written");
@@ -824,10 +759,6 @@ fn delete_script(directory: &Path, body: &str) -> PathBuf {
     path
 }
 
-/// With `--delete-command`, `d` runs the command through `/bin/sh` once confirmed, in the working
-/// directory of duit, with the path of the entry as its argument and in `NCDU_DELETE_PATH`, which
-/// needs no quoting, and with `NCDU_LEVEL` one higher. The entry is gone from the listing after the
-/// command moved it away.
 #[test]
 fn delete_command() {
     let directory = TempDir::new().expect("temporary directory is created");
@@ -869,8 +800,6 @@ fn delete_command() {
     assert_snapshot!(rendered, @r#"[DIR]/a "b" $c|[DIR]/a "b" $c|1|[DIR]"#);
 }
 
-/// A command that exits with a status other than 0 leaves a message on the restored terminal, and
-/// the browser comes back after Enter, with the entry that the command left in place.
 #[test]
 fn delete_command_error() {
     let directory = TempDir::new().expect("temporary directory is created");
@@ -902,8 +831,6 @@ fn delete_command_error() {
     ");
 }
 
-/// A directory at the path after the command is scanned again, whether the entry was a directory
-/// or a file that the command replaced with one, and opening it lists what the command added.
 #[test]
 fn delete_command_directory() {
     for directory_before in [true, false] {
@@ -931,7 +858,6 @@ fn delete_command_directory() {
         wait_for(&receiver, &mut output, FOOTER);
         (&pty.master).write_all(b"dh\r").expect("keys are typed");
         wait_for_return(&receiver, &mut output);
-        // `sub` holds one entry, so no key is dropped while it is listed.
         (&pty.master).write_all(b"\r").expect("key is typed");
         wait_for(&receiver, &mut output, b"added-file");
         (&pty.master).write_all(b"q").expect("key is typed");
@@ -939,8 +865,6 @@ fn delete_command_directory() {
     }
 }
 
-/// A directory that is read-only until the value is dropped, so that the entries in it cannot be
-/// deleted and the temporary directory that holds it can.
 struct ReadOnly(PathBuf);
 
 impl ReadOnly {
@@ -956,7 +880,6 @@ impl Drop for ReadOnly {
     }
 }
 
-/// Ctrl-C in the error window of a deletion ends duit with status 1.
 #[test]
 fn delete_interrupt() {
     let directory = TempDir::new().expect("temporary directory is created");

@@ -16,7 +16,6 @@ doctest = false
 workspace = true
 
 [features]
-# Run tests that compare with the real ncdu 2.9.2, which must be on `PATH`.
 test-ncdu = []
 
 [dependencies]
@@ -27,4 +26,5 @@ rustix = { workspace = true }
 [dev-dependencies]
 duit-format = { workspace = true }
 insta = { workspace = true }
+rustix = { workspace = true, features = ["process"] }
 tempfile = { workspace = true }

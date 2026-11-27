@@ -8,7 +8,6 @@ fn exclude(patterns: &[&[u8]]) -> ExcludePatterns {
     exclude
 }
 
-/// The checks that upstream runs inside `/foo`.
 fn assert_foo(patterns: &DirectoryPatterns<'_>) {
     assert_eq!(patterns.matches(c"root"), Excluded::No);
     assert_eq!(patterns.matches(c"bar"), Excluded::Always);
@@ -22,7 +21,6 @@ fn assert_foo(patterns: &DirectoryPatterns<'_>) {
     assert_eq!(okay.matches(c"notokay"), Excluded::Always);
 }
 
-/// Port of the upstream test "Matching".
 #[test]
 fn matching() {
     let exclude = exclude(&[
@@ -68,7 +66,6 @@ fn wildcard_matches_dot() {
     assert_eq!(exclude.for_path(c"/").matches(c".hidden"), Excluded::Always);
 }
 
-/// A backslash makes a component a wildcard, in which it escapes the next character.
 #[test]
 fn backslash_escapes() {
     let exclude = exclude(&[b"a\\b"]);

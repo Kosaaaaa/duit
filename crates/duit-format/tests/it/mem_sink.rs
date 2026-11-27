@@ -12,43 +12,36 @@ use insta::assert_snapshot;
 use crate::bin_export::{Item, TREE, export, items, reference};
 use crate::json_export::{directory, file};
 
-/// The JSON export that `crates/duit/tests/fixtures/generate.sh` converts with ncdu.
 const SOURCE: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../duit/tests/fixtures/source.json"
 ));
 
-/// The JSON export that ncdu 2.9.2 wrote of [`SOURCE`].
 const SOURCE_JSON: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../duit/tests/fixtures/tree.json"
 ));
 
-/// The JSON export that ncdu 2.9.2 wrote of [`SOURCE`] with `-e`.
 const SOURCE_JSON_EXTENDED: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../duit/tests/fixtures/tree-extended.json"
 ));
 
-/// The binary export that ncdu 2.9.2 wrote of [`SOURCE`].
 const SOURCE_BINARY: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../duit/tests/fixtures/tree.ncdu"
 ));
 
-/// The compressed JSON export of a tree over several blocks, which ncdu 2.9.2 wrote.
 const BLOCKS: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../duit/tests/fixtures/blocks.json.zst"
 ));
 
-/// The binary export that ncdu 2.9.2 wrote of the same tree as [`BLOCKS`].
 const BLOCKS_BINARY: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../duit/tests/fixtures/blocks.ncdu"
 ));
 
-/// Import the JSON export `input` into a [`MemorySink`] and return the tree.
 fn tree_of(input: &[u8], extended: bool) -> Tree {
     let (head, rest) = input.split_at(8);
     let mut sink = MemorySink::new(extended);
@@ -56,7 +49,6 @@ fn tree_of(input: &[u8], extended: bool) -> Tree {
     sink.finish(&mut |_, _| {})
 }
 
-/// Import the JSON export `input` into a [`JsonExport`] with timestamp 0 and return the export.
 fn reexport(input: &[u8], extended: bool) -> Vec<u8> {
     let (head, rest) = input.split_at(8);
     let mut export = JsonExport::new(Vec::new(), 0, extended, None).expect("header is written");
@@ -64,8 +56,6 @@ fn reexport(input: &[u8], extended: bool) -> Vec<u8> {
     export.finish().expect("export is flushed")
 }
 
-/// Import the JSON export `input` into a [`MemorySink`] without stats, replay the tree into a
-/// [`JsonExport`] with timestamp 0, and return the export.
 fn replayed(input: &[u8], extended: bool) -> Vec<u8> {
     let (head, rest) = input.split_at(8);
     let mut sink = MemorySink::without_stats(extended);
@@ -76,26 +66,22 @@ fn replayed(input: &[u8], extended: bool) -> Vec<u8> {
     export.finish().expect("export is flushed")
 }
 
-/// The tree that `build` adds to a [`MemorySink`].
 fn build(extended: bool, build: impl FnOnce(&mut MemorySink) -> io::Result<()>) -> Tree {
     let mut sink = MemorySink::new(extended);
     build(&mut sink).expect("entries are added");
     sink.finish(&mut |_, _| {})
 }
 
-/// The root of `tree`.
 fn root(tree: &Tree) -> DirectoryId {
     tree.root().expect("tree has a root")
 }
 
-/// The entry `name` of `directory`.
 fn find(tree: &Tree, directory: DirectoryId, name: &[u8]) -> EntryId {
     tree.entries(directory)
         .find(|&entry| tree.name(entry) == name)
         .expect("entry exists")
 }
 
-/// The directory of the entry `name` of `directory`.
 fn find_directory(tree: &Tree, directory: DirectoryId, name: &[u8]) -> DirectoryId {
     match tree.entry(find(tree, directory, name)).kind {
         EntryKind::Directory(directory) => Some(directory),
@@ -107,8 +93,6 @@ fn find_directory(tree: &Tree, directory: DirectoryId, name: &[u8]) -> Directory
     .expect("entry is a directory")
 }
 
-/// Every entry of `tree`, one per line and indented by depth, with the entries of a directory in
-/// the order of the tree.
 fn render(tree: &Tree) -> String {
     let mut rendered = String::new();
     if let Some(root) = tree.root() {
@@ -180,8 +164,6 @@ fn render_entry(tree: &Tree, id: EntryId, depth: usize, rendered: &mut String) {
     }
 }
 
-/// The totals of each directory of `tree` by name: the item count, the cumulative sizes, and the
-/// shared sizes when they are above zero, as ncdu writes them to a binary export.
 fn totals(tree: &Tree) -> BTreeMap<String, String> {
     fn walk(tree: &Tree, directory: DirectoryId, totals: &mut BTreeMap<String, String>) {
         for child in tree.entries(directory) {
@@ -217,7 +199,6 @@ fn totals(tree: &Tree) -> BTreeMap<String, String> {
     totals
 }
 
-/// The totals that ncdu wrote for each directory of the binary export `export`, as in [`totals`].
 fn ncdu_totals(export: &[u8]) -> BTreeMap<String, String> {
     fn walk(items: &HashMap<String, &Item>, item: &Item, totals: &mut BTreeMap<String, String>) {
         let field = |key| item.field(key).expect("directory has the field");
@@ -251,10 +232,6 @@ fn ncdu_totals(export: &[u8]) -> BTreeMap<String, String> {
     totals
 }
 
-/// The tree of the golden source has every kind of entry. The entries of a directory are in
-/// reverse order, and a directory holds the totals of its entries, with the two links to one inode
-/// counted once. The directory that holds only one of them shares its size. Each directory has the
-/// totals that ncdu wrote.
 #[test]
 fn golden() {
     let tree = tree_of(SOURCE, true);
@@ -279,7 +256,6 @@ fn golden() {
     "#);
 }
 
-/// The totals of a tree over several blocks without hard links are those that ncdu wrote.
 #[test]
 fn golden_blocks() {
     let tree = tree_of(BLOCKS, false);
@@ -288,9 +264,6 @@ fn golden_blocks() {
     assert_eq!(totals, ncdu_totals(BLOCKS_BINARY));
 }
 
-/// A tree without stats keeps the sizes of each directory itself, so a replay writes the entries
-/// that were imported, which give the totals that ncdu wrote. The replay writes the entries of a
-/// directory in the reverse order of the import, so a second replay writes them in order again.
 #[test]
 fn replay_golden() {
     for (input, extended) in [(SOURCE_JSON, false), (SOURCE_JSON_EXTENDED, true)] {
@@ -303,8 +276,6 @@ fn replay_golden() {
     }
 }
 
-/// A directory on another device than its parent keeps its device, which the directories below it
-/// inherit.
 #[test]
 fn replay_devices() {
     let input: &[u8] = br#"[1,2,{},[{"name":"/root","dev":1},
@@ -316,7 +287,6 @@ fn replay_devices() {
     );
 }
 
-/// The read error of the root is not replayed, as in ncdu.
 #[test]
 fn replay_root_read_error() {
     let input: &[u8] = br#"[1,2,{},[{"name":"/root","read_error":true},{"name":"file"}]]"#;
@@ -324,12 +294,6 @@ fn replay_root_read_error() {
     assert_eq!(replayed(input, false), reexport(readable, false));
 }
 
-/// The hard links of [`TREE`]: links in one directory, links in two directories, links that are
-/// not all found, a link without a link count, and a link on another device. Each directory has
-/// the totals that ncdu wrote to its binary export, except for the shared sizes of the root. The
-/// binary export never counts a link below another device as shared above that device, and the
-/// in-memory tree of ncdu does: only one of the two links of `f` on device 7 is in the tree, so
-/// the root shares its size too.
 #[test]
 fn hard_links() {
     let tree = tree_of(TREE, false);
@@ -342,8 +306,6 @@ fn hard_links() {
     assert_eq!(totals(&tree), expected);
 }
 
-/// Links to one inode with different link counts count as many links as the tree holds, so the
-/// directory that holds both of them shares nothing.
 #[test]
 fn inconsistent_link_count() {
     let tree = build(false, |sink| {
@@ -367,8 +329,6 @@ fn inconsistent_link_count() {
     "#);
 }
 
-/// A directory counts the links of an inode in the directories below it, however deep, so only
-/// the directory that holds one of the two links shares its size.
 #[test]
 fn nested_links() {
     let tree = build(false, |sink| {
@@ -393,8 +353,6 @@ fn nested_links() {
     "#);
 }
 
-/// Entries on several devices, with read errors below the root and extended fields on only some
-/// of the directories.
 fn mixed(sink: &mut MemorySink) -> io::Result<()> {
     let dated = |mtime| Extended {
         mtime: Some(mtime),
@@ -445,10 +403,6 @@ fn mixed(sink: &mut MemorySink) -> io::Result<()> {
     sink.finish_directory(root, None)
 }
 
-/// A device that comes back has the identifier that it had first. A directory gains the latest
-/// mtime of its entries, and of the directories below that have extended fields, even when it has
-/// no mtime of its own. A read error marks every directory above it. Without `extended`, no entry
-/// has extended fields.
 #[test]
 fn tree() {
     let tree = build(true, mixed);
@@ -487,8 +441,6 @@ fn tree() {
     "#);
 }
 
-/// Zeroing a directory takes its totals from the directories above it and clears it and its
-/// entries. The read errors that were below it still mark its parent until the parent is updated.
 #[test]
 fn zero_stats() {
     let mut tree = build(false, mixed);
@@ -515,7 +467,6 @@ fn zero_stats() {
     assert!(!tree.directory(root).sub_error);
 }
 
-/// A hard link of `inode` with a link count of 2.
 fn link(inode: u64, size: u64) -> Stat {
     Stat {
         entry_type: EntryType::HardLink,
@@ -525,10 +476,6 @@ fn link(inode: u64, size: u64) -> Stat {
     }
 }
 
-/// Zeroing a directory takes the hard links below it out of the accounting, and
-/// [`Tree::add_all_stats`] counts the links that remain elsewhere again, now as shared. Zeroing a
-/// hard link takes its size from the directories above it twice, as ncdu does: once with the
-/// accounting of its inode, and once as the size of the entry.
 #[test]
 fn zero_stats_links() {
     let mut tree = build(false, |sink| {
@@ -574,7 +521,6 @@ fn zero_stats_links() {
     "#);
 }
 
-/// Scan `directory` of `tree` again with the entries that `build` adds, as a refresh does.
 fn refresh(
     tree: Tree,
     directory: DirectoryId,
@@ -586,7 +532,6 @@ fn refresh(
     sink.finish(&mut |_, _| {})
 }
 
-/// `/root/sub` before a refresh, below `/root` with a file of its own.
 fn before_refresh(sink: &mut MemorySink) -> io::Result<()> {
     let mut root = sink.create_root(b"/root", &directory(1))?;
     sink.add_stat(&mut root, b"a", &file(1, 1))?;
@@ -602,9 +547,6 @@ fn before_refresh(sink: &mut MemorySink) -> io::Result<()> {
     sink.finish_directory(root, None)
 }
 
-/// The entries of `/root/sub` after the refresh, in the order of `readdir`: `gone` and
-/// `nested/old` are gone, `grow` grew, `swap` is a directory now, and `added` and `nested/new` are
-/// new.
 fn after_refresh(sink: &mut MemorySink, sub: &mut MemoryDirectory) -> io::Result<()> {
     sink.add_stat(sub, b"keep", &file(2, 1))?;
     sink.add_stat(sub, b"grow", &file(40, 2))?;
@@ -617,10 +559,6 @@ fn after_refresh(sink: &mut MemorySink, sub: &mut MemoryDirectory) -> io::Result
     sink.add_stat(sub, b"added", &file(9, 1))
 }
 
-/// A refresh of a directory keeps the entries that it finds again by name, in their place, as
-/// `getEntry` in `mem_sink.zig` does, adds the new ones first, and drops the ones that are gone. A
-/// file that became a directory is a new entry. Every directory then has the totals of a scan of
-/// the new tree, the root above the directory too.
 #[test]
 fn refresh_entries() {
     let tree = build(false, before_refresh);
@@ -661,9 +599,6 @@ fn refresh_entries() {
     "#);
 }
 
-/// A refreshed entry keeps its place only if it is of the same kind: a directory, a hard link, or
-/// any other entry, which turns into a special entry or back. It loses its extended fields when the
-/// new stat has none, and is a new entry when the new stat has them and it has none.
 #[test]
 fn refresh_kinds() {
     let dated = |mtime| Stat {
@@ -706,10 +641,6 @@ fn refresh_kinds() {
     "#);
 }
 
-/// A refresh of a directory with a hard link to an inode that has another link outside of it
-/// counts the inode once again, so nothing changes. Once the link is gone, the other one keeps the
-/// link count that it had and is shared, as `removeLink` in `model.zig` notes: a refresh cannot
-/// tell a removed link from one that is still there.
 #[test]
 fn refresh_links() {
     let tree = build(false, |sink| {
@@ -747,10 +678,6 @@ fn refresh_links() {
     "#);
 }
 
-/// Finishing the tree counts every inode on a scan. After a refresh, it counts only the inodes that
-/// the refresh took out of the totals, unless they are more than an eighth of all inodes. The count reports its progress whenever bits 0 and 6 of how many inodes
-/// are done are clear, as `addAllStats` in `model.zig` calls `handleEvent`. Until the next count
-/// starts, the tree keeps how many inodes the last one went through, as ncdu keeps `add_total`.
 #[test]
 fn count_progress() {
     let mut sink = MemorySink::new(false);
@@ -793,9 +720,6 @@ fn count_progress() {
     ");
 }
 
-/// A refresh whose directory cannot be opened adds nothing, and the tree is finished anyway, as
-/// `scan` in `scan.zig` defers `done`. The directory was not cleared, so the directories above it
-/// count its totals twice, as in ncdu.
 #[test]
 fn refresh_error() {
     let tree = build(false, |sink| {

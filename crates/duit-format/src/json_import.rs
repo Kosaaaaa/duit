@@ -6,14 +6,13 @@ use zstd::stream::read::Decoder;
 
 use crate::item::{ItemType, add_entry};
 
-/// The first bytes of a zstd frame.
 const ZSTD_MAGIC: &[u8] = b"\x28\xb5\x2f\xfd";
 
-/// The size of the buffer that the input is read into.
 const BUFFER_SIZE: usize = 129 * 1024;
 
-/// The longest key whose bytes are kept. Longer keys are read and match no known key.
 const KEY_CAPACITY: usize = 32;
+
+const END_OF_INPUT: u8 = 0;
 
 /// The bytes of a name that are kept. ncdu stops on a name that does not fit with 5 bytes to
 /// spare.
@@ -52,7 +51,6 @@ pub fn import<S: Sink>(sink: &mut S, input: impl Read, head: &[u8]) -> Result<()
     }
 }
 
-/// The fields of the item that is being read. A later field overrides an earlier one, as in ncdu.
 struct Item {
     kind: ItemType,
     stat: Stat,
@@ -60,21 +58,17 @@ struct Item {
     name: Vec<u8>,
 }
 
-/// An array or object whose values are being skipped.
 struct Container {
     is_object: bool,
     first: bool,
 }
 
-/// A streaming reader of ncdu's JSON export, which accepts raw bytes in strings.
 struct Parser<R> {
     input: R,
-    /// Whether the input is decompressed, so that an error without an `errno` comes from zstd.
     compressed: bool,
     buffer: Vec<u8>,
     offset: usize,
     length: usize,
-    /// A byte that was read and given back.
     pending: Option<u8>,
     line: u64,
     byte: u64,
@@ -118,7 +112,6 @@ impl<R: Read> Parser<R> {
         Ok(())
     }
 
-    /// ncdu's description of an error of a read.
     fn describe_read_error(&self, error: &io::Error) -> &'static str {
         if self.compressed && error.raw_os_error().is_none() {
             "decompression error"
@@ -131,32 +124,41 @@ impl<R: Read> Parser<R> {
         }
     }
 
-    /// The next byte, or 0 at the end of the input. A 0 byte in the input ends it too.
     fn next_byte(&mut self) -> Result<u8, ImportError> {
         if let Some(byte) = self.pending.take() {
-            self.byte += 1;
+            self.advance_byte();
             return Ok(byte);
         }
         if self.offset == self.length {
             self.fill()?;
             if self.length == 0 {
-                return Ok(0);
+                return Ok(END_OF_INPUT);
             }
         }
-        let byte = self.buffer.get(self.offset).copied().unwrap_or(0);
+        let byte = self
+            .buffer
+            .get(self.offset)
+            .copied()
+            .unwrap_or(END_OF_INPUT);
         self.offset += 1;
-        self.byte += 1;
+        self.advance_byte();
         Ok(byte)
     }
 
-    /// Give back `byte`, which [`Parser::next_byte`] just returned. At the end of the input, that
-    /// is the 0, which is read again and counted again, as in ncdu.
-    fn undo(&mut self, byte: u8) {
+    fn advance_byte(&mut self) {
+        self.byte += 1;
+    }
+
+    fn retreat_byte(&mut self) {
+        // As in ncdu, undoing the end of the input moves back, although reading it did not.
         self.byte = self.byte.saturating_sub(1);
+    }
+
+    fn undo(&mut self, byte: u8) {
+        self.retreat_byte();
         self.pending = Some(byte);
     }
 
-    /// The next byte that is not whitespace.
     fn next_char(&mut self) -> Result<u8, ImportError> {
         loop {
             match self.next_byte()? {
@@ -197,8 +199,6 @@ impl<R: Read> Parser<R> {
         Ok(unit)
     }
 
-    /// Read a `\u` escape, after the `u`, and append it to `buffer` as UTF-8 if 6 more bytes fit
-    /// below `capacity`.
     fn unicode_escape(&mut self, buffer: &mut Vec<u8>, capacity: usize) -> Result<(), ImportError> {
         let first = self.utf16_unit()?;
         if (0xdc00..0xe000).contains(&first) {
@@ -222,8 +222,6 @@ impl<R: Read> Parser<R> {
         Ok(())
     }
 
-    /// Read a string, after its opening quote, into `buffer`. Bytes beyond `capacity` are read
-    /// and dropped.
     fn string_content(&mut self, buffer: &mut Vec<u8>, capacity: usize) -> Result<(), ImportError> {
         buffer.clear();
         loop {
@@ -307,7 +305,6 @@ impl<R: Read> Parser<R> {
         Ok(())
     }
 
-    /// Read the next key of an object into `buffer`, or return `false` at the end of the object.
     fn key(
         &mut self,
         first: bool,
@@ -333,7 +330,6 @@ impl<R: Read> Parser<R> {
         Ok(())
     }
 
-    /// Whether another element of an array follows.
     fn element(&mut self, first: bool) -> Result<bool, ImportError> {
         match self.next_char()? {
             b',' if !first => Ok(true),
@@ -346,8 +342,6 @@ impl<R: Read> Parser<R> {
         }
     }
 
-    /// Skip the value that starts with `head`, with a stack instead of recursion so that deep
-    /// nesting cannot overflow the call stack.
     fn skip_content(&mut self, head: u8) -> Result<(), ImportError> {
         let mut containers: Vec<Container> = Vec::new();
         let mut head = head;
@@ -356,7 +350,6 @@ impl<R: Read> Parser<R> {
                 b't' => self.literal(&b"true"[1..])?,
                 b'f' => self.literal(&b"false"[1..])?,
                 b'n' => self.literal(&b"null"[1..])?,
-                // As lax as ncdu, which accepts any sequence of these bytes.
                 b'-' | b'0'..=b'9' => loop {
                     let byte = self.next_byte()?;
                     if !matches!(byte, b'-' | b'+' | b'e' | b'E' | b'.' | b'0'..=b'9') {
@@ -400,7 +393,6 @@ impl<R: Read> Parser<R> {
     }
 }
 
-/// Read the value of `key` into `item`.
 fn item_key<R: Read>(
     parser: &mut Parser<R>,
     item: &mut Item,
@@ -414,7 +406,6 @@ fn item_key<R: Read>(
         b"excluded" => {
             let mut value = Vec::new();
             parser.string(&mut value, KEY_CAPACITY)?;
-            // ncdu also writes "frmlnk", which it reads as a pattern.
             item.kind = ItemType::Special(match value.as_slice() {
                 b"otherfs" | b"othfs" => Special::OtherFilesystem,
                 b"kernfs" => Special::KernelFilesystem,
@@ -431,7 +422,6 @@ fn item_key<R: Read>(
         b"mode" => stat.extended.mode = Some(parser.uint(u16::BITS)?),
         b"mtime" => {
             stat.extended.mtime = Some(parser.uint(u64::BITS)?);
-            // The fraction is dropped, because the model holds whole seconds.
             let mut byte = parser.next_byte()?;
             if byte == b'.' {
                 byte = parser.next_byte()?;
@@ -476,8 +466,6 @@ fn item_key<R: Read>(
     Ok(())
 }
 
-/// Read the next item into `item`, with `device` as the device of its parent, and return
-/// whether it is written as an array, as directories are. The root must be one.
 fn read_item<R: Read>(
     parser: &mut Parser<R>,
     item: &mut Item,
@@ -518,7 +506,6 @@ fn read_item<R: Read>(
     Ok(is_array)
 }
 
-/// Read the whole export into `sink`.
 fn export<R: Read, S: Sink>(parser: &mut Parser<R>, sink: &mut S) -> Result<(), ImportError> {
     parser.array()?;
     if parser.uint::<u16>(u16::BITS)? != 1 {
@@ -527,8 +514,7 @@ fn export<R: Read, S: Sink>(parser: &mut Parser<R>, sink: &mut S) -> Result<(), 
     if !parser.element(false)? {
         return parser.fail("expected array element");
     }
-    // The minor version is ignored, as in ncdu.
-    parser.uint::<u16>(u16::BITS)?;
+    let _minor_version = parser.uint::<u16>(u16::BITS)?;
     if !parser.element(false)? {
         return parser.fail("expected array element");
     }
@@ -541,14 +527,12 @@ fn export<R: Read, S: Sink>(parser: &mut Parser<R>, sink: &mut S) -> Result<(), 
     while parser.element(false)? {
         parser.skip()?;
     }
-    if parser.next_char()? != 0 {
+    if parser.next_char()? != END_OF_INPUT {
         return parser.fail("trailing garbage");
     }
     Ok(())
 }
 
-/// Read the root and everything below it into `sink`, with a stack of the open directories
-/// instead of recursion, so that deep nesting cannot overflow the call stack.
 fn items<R: Read, S: Sink>(parser: &mut Parser<R>, sink: &mut S) -> Result<(), ImportError> {
     let mut item = Item {
         kind: ItemType::Stat(EntryType::Directory),
@@ -557,7 +541,6 @@ fn items<R: Read, S: Sink>(parser: &mut Parser<R>, sink: &mut S) -> Result<(), I
         name: Vec::new(),
     };
     read_item(parser, &mut item, 0, true)?;
-    // ncdu crashes on a root whose fields make it something other than a directory.
     if item.kind != ItemType::Stat(EntryType::Directory) {
         return parser.fail("parent item must be a directory");
     }
@@ -584,7 +567,7 @@ fn items<R: Read, S: Sink>(parser: &mut Parser<R>, sink: &mut S) -> Result<(), I
             directory,
             item.kind,
             &item.name,
-            &mut item.stat,
+            &item.stat,
             item.read_error,
         )
         .map_err(ImportError::Sink)?;
@@ -603,7 +586,6 @@ fn items<R: Read, S: Sink>(parser: &mut Parser<R>, sink: &mut S) -> Result<(), I
 mod tests {
     use super::Parser;
 
-    /// Port of the upstream test "JSON parser".
     #[test]
     fn json_parser() {
         let json: &[u8] = br#"{

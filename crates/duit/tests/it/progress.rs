@@ -6,41 +6,45 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::Duration;
 
+use duit_model::is_event_count;
 use insta::assert_snapshot;
 use tempfile::TempDir;
 
 use crate::browse::{
-    ENTER_ALTERNATE_SCREEN, FOOTER, LEAVE_ALTERNATE_SCREEN, fixture, pty, read_output, spawn,
-    spawn_on, wait_exit, wait_for,
+    ENTER_ALTERNATE_SCREEN, FOOTER, LEAVE_ALTERNATE_SCREEN, fixture, pty, read_output, read_to_end,
+    spawn, spawn_on, wait_exit, wait_for,
 };
 use crate::text;
 
-/// An export of `/root` with 3 files, of which the import reads the first before [`PAUSE`] and the
-/// others after it. An import can draw only when its count of files has bits 0 and 6 clear, so it
-/// draws once, at the second file, which comes after the update delay has passed.
 const BEFORE_PAUSE: &[u8] = br#"[1,2,{},[{"name":"/root"},{"name":"a","dsize":4096}"#;
+const FILES_BEFORE_PAUSE: usize = 1;
 const AFTER_PAUSE: &[u8] = br#",{"name":"b","dsize":8192},{"name":"c"}]]"#;
 
-/// Longer than the default update delay of 100 ms, and shorter than the 2 s of `-q`.
 const PAUSE: Duration = Duration::from_millis(500);
 
-/// The end of what duit writes to standard error, the clear of `ui.deinit` in `ui.zig`.
 const CLEAR_TO_END: &[u8] = b"\x1b[J";
 
-/// Where standard output or standard error goes.
 #[derive(Debug, Clone, Copy)]
 enum To {
     Terminal,
     Pipe,
 }
 
-/// An import from standard input with a pause, in `arguments`, with standard output and standard
-/// error on a terminal or a pipe, and `TERM` set to `term`.
-type Case<'a> = (&'a [&'a str], To, To, &'a str);
+#[derive(Debug, Clone, Copy)]
+struct Case<'a> {
+    arguments: &'a [&'a str],
+    stdout: To,
+    stderr: To,
+    term: &'a str,
+}
 
-/// Run `program` for `case` in `directory`, and return what it writes to standard error.
 fn import(program: &str, directory: &Path, case: Case<'_>) -> Vec<u8> {
-    let (arguments, stdout, stderr, term) = case;
+    let Case {
+        arguments,
+        stdout,
+        stderr,
+        term,
+    } = case;
     let pty = pty();
     let receiver = read_output(&pty);
     let output = |to: To| match to {
@@ -75,8 +79,6 @@ fn import(program: &str, directory: &Path, case: Case<'_>) -> Vec<u8> {
     written
 }
 
-/// Run duit for each of `cases`, and render what it writes to standard error under its command
-/// line. With the `test-ncdu` feature, ncdu writes the same.
 fn table(cases: &[Case<'_>]) -> String {
     let directory = TempDir::new().expect("temporary directory is created");
     let mut rendered = String::new();
@@ -88,7 +90,12 @@ fn table(cases: &[Case<'_>]) -> String {
             text(&duit),
             "{case:?}"
         );
-        let (arguments, stdout, stderr, term) = case;
+        let Case {
+            arguments,
+            stdout,
+            stderr,
+            term,
+        } = case;
         let _ = writeln!(
             rendered,
             "$ TERM={term} duit {} (stdout: {stdout:?}, stderr: {stderr:?})\n{}\n",
@@ -99,11 +106,6 @@ fn table(cases: &[Case<'_>]) -> String {
     rendered
 }
 
-/// With `-1`, the scan or the import writes its progress to standard error once the update delay
-/// has passed, and erases it when it is done, if standard error is a terminal that takes ANSI
-/// escapes. `-q` and `--slow-ui-updates` raise the update delay to 2 s, and `--fast-ui-updates`
-/// sets it back to 100 ms. An import has one thread whatever `-t` says, as `json_import.zig` calls
-/// `createThreads(1)`, so it shows one line for it.
 #[test]
 fn line() {
     let arguments: &[&str] = &["-1", "-f", "-", "-o", "export.json"];
@@ -119,12 +121,12 @@ fn line() {
     ];
     let threads: &[&str] = &["-t", "3", "-1", "-f", "-", "-o", "export.json"];
     assert_snapshot!(table(&[
-        (arguments, To::Pipe, To::Pipe, "xterm"),
-        (arguments, To::Pipe, To::Terminal, "xterm"),
-        (arguments, To::Pipe, To::Terminal, "dumb"),
-        (quiet, To::Pipe, To::Terminal, "xterm"),
-        (fast, To::Pipe, To::Terminal, "xterm"),
-        (threads, To::Pipe, To::Terminal, "xterm"),
+        Case { arguments, stdout: To::Pipe, stderr: To::Pipe, term: "xterm" },
+        Case { arguments, stdout: To::Pipe, stderr: To::Terminal, term: "xterm" },
+        Case { arguments, stdout: To::Pipe, stderr: To::Terminal, term: "dumb" },
+        Case { arguments: quiet, stdout: To::Pipe, stderr: To::Terminal, term: "xterm" },
+        Case { arguments: fast, stdout: To::Pipe, stderr: To::Terminal, term: "xterm" },
+        Case { arguments: threads, stdout: To::Pipe, stderr: To::Terminal, term: "xterm" },
     ]), @"
     $ TERM=xterm duit -1 -f - -o export.json (stdout: Pipe, stderr: Pipe)
     2 files /  12.0 KiB
@@ -156,15 +158,33 @@ fn line() {
     ");
 }
 
-/// Without `-0`, `-1`, or `-2`, an export to a file shows the progress of `-1` when standard output
-/// is a terminal, and an export to standard output shows none.
 #[test]
 fn default() {
     assert_snapshot!(table(&[
-        (&["-f", "-", "-o", "export.json"], To::Terminal, To::Terminal, "xterm"),
-        (&["-f", "-", "-O", "export.ncdu"], To::Terminal, To::Terminal, "xterm"),
-        (&["-f", "-", "-o", "export.json"], To::Pipe, To::Terminal, "xterm"),
-        (&["-f", "-", "-o-"], To::Terminal, To::Pipe, "xterm"),
+        Case {
+            arguments: &["-f", "-", "-o", "export.json"],
+            stdout: To::Terminal,
+            stderr: To::Terminal,
+            term: "xterm",
+        },
+        Case {
+            arguments: &["-f", "-", "-O", "export.ncdu"],
+            stdout: To::Terminal,
+            stderr: To::Terminal,
+            term: "xterm",
+        },
+        Case {
+            arguments: &["-f", "-", "-o", "export.json"],
+            stdout: To::Pipe,
+            stderr: To::Terminal,
+            term: "xterm",
+        },
+        Case {
+            arguments: &["-f", "-", "-o-"],
+            stdout: To::Terminal,
+            stderr: To::Pipe,
+            term: "xterm",
+        },
     ]), @"
     $ TERM=xterm duit -f - -o export.json (stdout: Terminal, stderr: Terminal)
     2 files /  12.0 KiB^M
@@ -184,10 +204,6 @@ fn default() {
     ");
 }
 
-/// Without `-o` or `-O`, the scan and the import show the progress of `-2`, which takes over the
-/// terminal at the latest for the step that counts the hard links, as `done` in `mem_sink.zig`
-/// draws it at once. The browser then opens on the same terminal. The needles have no spaces,
-/// because duit does not write a space that is on the screen already.
 #[test]
 fn full() {
     let directory = fixture();
@@ -209,7 +225,6 @@ fn full() {
     }
 }
 
-/// Where `needle` first is in `output`, or the end of `output` if it is not there.
 fn position(output: &[u8], needle: &[u8]) -> usize {
     output
         .windows(needle.len())
@@ -217,7 +232,6 @@ fn position(output: &[u8], needle: &[u8]) -> usize {
         .unwrap_or(output.len())
 }
 
-/// How often `needle` is in `output`.
 fn count(output: &[u8], needle: &[u8]) -> usize {
     output
         .windows(needle.len())
@@ -225,10 +239,6 @@ fn count(output: &[u8], needle: &[u8]) -> usize {
         .count()
 }
 
-/// Run `program` with `arguments`, which import from standard input into memory, with a pause,
-/// on a terminal that it draws on as its controlling terminal. Type `keys` once it draws the
-/// progress of `-2`, and return how it exits with what it wrote. The import draws at the second
-/// file, after [`PAUSE`], and again at the fourth, after a second pause, when duit reads the keys.
 fn full_import(
     program: &str,
     directory: &Path,
@@ -245,6 +255,8 @@ fn full_import(
         .stdout(terminal())
         .stderr(terminal());
     let mut child = spawn(directory, arguments, &mut command, true);
+    drop(command);
+    drop(pty.terminal);
     let mut input = child.stdin.take().expect("standard input is a pipe");
     let mut output = Vec::new();
     input.write_all(BEFORE_PAUSE).expect("import is written");
@@ -259,16 +271,10 @@ fn full_import(
     let _ = input.write_all(br#",{"name":"c"},{"name":"d"}]]"#);
     drop(input);
     let status = wait_exit(&mut child);
-    // Everything that the program wrote is on its way once it exited.
-    while let Ok(bytes) = receiver.recv_timeout(Duration::from_millis(500)) {
-        output.extend(bytes);
-    }
+    read_to_end(&receiver, &mut output);
     (status, output)
 }
 
-/// `q` aborts an import with status 0, before the browser opens, as `ui.quit` does, and
-/// with `--confirm-quit` only after `y`. Ctrl-C ends it with status 1, as ncurses does on
-/// `SIGINT`. The terminal is restored.
 #[test]
 fn full_abort() {
     let directory = TempDir::new().expect("temporary directory is created");
@@ -300,8 +306,6 @@ fn full_abort() {
     }
 }
 
-/// With `-2` and an export, the progress takes over the terminal while the import runs, and gives
-/// it back once the export is complete.
 #[test]
 fn full_export() {
     let directory = TempDir::new().expect("temporary directory is created");
@@ -326,4 +330,10 @@ fn full_export() {
     {"name":"c"},
     {"name":"d"}]]
     "#);
+}
+
+#[test]
+fn pause_ends_before_the_first_import_event() {
+    assert!(!is_event_count(FILES_BEFORE_PAUSE));
+    assert!(is_event_count(FILES_BEFORE_PAUSE + 1));
 }

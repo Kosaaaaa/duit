@@ -1,5 +1,3 @@
-//! The `duit` command.
-
 use std::env;
 use std::ffi::{CStr, CString, OsStr};
 use std::fs::{self, File};
@@ -25,14 +23,10 @@ use duit_model::{
 };
 use duit_scan::{ScanError, ScanOptions, scan, stat_at};
 use duit_tui::{
-    Action, Browser, BrowserOptions, Console, Deletion, InitError, Input, Loading, ScanKey,
-    ScanScreen, ScanState, Ui,
+    Action, Browser, BrowserOptions, CLEAR_TO_END, Console, Deletion, InitError, Input, Loading,
+    ScanKey, ScanScreen, ScanState, Ui,
 };
 use rustix::fs::CWD;
-
-/// The terminal sequence that clears from the cursor to the end of the screen. ncdu writes it to
-/// standard error before an error message and at the end of a scan, to clear a progress line.
-const CLEAR_TO_END: &[u8] = b"\x1b[J";
 
 const HELP: &str = "\
 duit <options> <directory>
@@ -114,7 +108,6 @@ fn set_locale() {
     }
 }
 
-/// The separator between groups of thousands in the locale, if it has one.
 #[expect(unsafe_code)]
 fn thousands_separator() -> Option<String> {
     // SAFETY: `localeconv` returns null or a pointer to a structure that only `setlocale` and
@@ -135,9 +128,6 @@ fn print(output: &[u8]) {
     let _ = io::stdout().write_all(output);
 }
 
-/// Apply the config files if `read_config`, then parse `arguments`, which follow the program
-/// name, and run the mode they select. An error is the message to print before exiting with
-/// status 1.
 fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
     let mut config = Config::default();
     if read_config {
@@ -217,8 +207,6 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
             Some(_) => ScanUi::Off,
             None => ScanUi::Full,
         });
-    // `nc_tty` in `main.zig`: the full-screen interface draws on `/dev/tty` when standard input or
-    // standard output is not for the terminal.
     let open_tty = !io::stdin().is_terminal()
         || export_json
             .or(export_binary)
@@ -251,8 +239,6 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
             });
         }
         let memory = MemorySink::new(config.extended);
-        // `fill` ends with the clear that ncdu writes when it returns after the scan, or when
-        // `ui.init` takes over the terminal.
         let tree = match fill(memory, import_input, scan_directory, &config, &mut progress) {
             Ok(tree) => tree,
             Err(exit) => return exit,
@@ -260,7 +246,6 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
         if quit_after_scan {
             return Ok(ExitCode::SUCCESS);
         }
-        // A scan or an import that succeeds has created the root.
         let Some(root) = tree.root() else {
             return Ok(ExitCode::SUCCESS);
         };
@@ -321,15 +306,6 @@ fn run(arguments: &[Vec<u8>], read_config: bool) -> Result<ExitCode, Vec<u8>> {
     exported.map_or_else(|exit| exit, |()| Ok(ExitCode::SUCCESS))
 }
 
-/// Run the browser that `open` opens, with the tree it reads, until the user quits, the loop at
-/// the end of `main` in `main.zig` with `handleEvent`. Like ncdu, it handles every key that is
-/// waiting before it draws again. As in ncdu, the browser is opened once the terminal is, so that
-/// the root of a binary export is read then, and `open` gives `None` for a root that is not a
-/// directory. While the browser lists a directory, [`Load`] draws the loading screen after
-/// `update_delay`. The browser draws on `ui` if the progress of `-2` took over the terminal. A
-/// refresh scans with the options of `config`, and draws its progress on `screen`, the screen of
-/// the scan before the browser if there was one, as ncdu keeps the confirmation of
-/// `--confirm-quit` and the step of the animation in globals that no scan resets.
 fn browse(
     ui: Option<Ui>,
     mut screen: ScanScreen,
@@ -506,9 +482,6 @@ fn browse(
     }
 }
 
-/// List the open directory of `browser` again after `tree` changed, the `browser.loadDir` call
-/// that follows the `.refresh` and `.delete` states of the loop in `main.zig`, and return `ui`, or
-/// how duit ends once `ui` is closed. [`Load`] draws the loading screen after `update_delay`.
 fn reload(
     mut ui: Ui,
     browser: &mut Browser,
@@ -525,12 +498,6 @@ fn reload(
     Ok(ui)
 }
 
-/// Scan `directory` of `tree` again into the tree, the `.refresh` state of the loop in `main.zig`,
-/// and return `ui`, or how duit ends. The progress is drawn on the full screen of `ui` whatever
-/// `-0` and `-1` say, as ncdu sets `scan_ui` to `.full` before it starts the browser. A directory
-/// that cannot be opened leaves its entries as they were, and shows an error until a key is
-/// pressed. The update delay runs from `drawn`, when the browser was drawn, as ncdu keeps one timer
-/// for every screen. The progress is drawn on `screen`, which keeps its state for the next scan.
 fn refresh(
     ui: Ui,
     screen: &mut ScanScreen,
@@ -543,7 +510,6 @@ fn refresh(
     let mut path = Vec::new();
     tree.format_path(directory, true, &mut path);
     path.push(0);
-    // A name with a NUL byte, which only an import has, ends the path there, as for ncdu.
     let path = CStr::from_bytes_until_nul(&path).unwrap_or_default();
     let mut progress = ScanProgress::new(ScanUi::Full, config.update_delay, options, false);
     progress.ui = Some(ui);
@@ -554,7 +520,6 @@ fn refresh(
     let mut sink = ProgressSink::new(memory, Producer::Scan, &mut report);
     let scanned = scan(&mut sink, path, scan_options(config), &config.exclude);
     let memory = sink.into_inner();
-    // duit ends after an abort, and the tree with it.
     if let Some(exit) = progress.exit.take() {
         return Err(exit);
     }
@@ -573,7 +538,6 @@ fn refresh(
     progress.ui.take().ok_or(Ok(ExitCode::FAILURE))
 }
 
-/// The message that ncdu exits with when it cannot take over the terminal.
 fn init_error(error: InitError) -> Vec<u8> {
     match error {
         InitError::OpenTty(error) => {
@@ -583,7 +547,6 @@ fn init_error(error: InitError) -> Vec<u8> {
     }
 }
 
-/// The message that ncdu exits with when it cannot read the keys.
 fn input_error(error: &io::Error) -> Vec<u8> {
     format!(
         "Error reading keyboard input, assuming TTY has been lost.\n\
@@ -593,18 +556,11 @@ fn input_error(error: &io::Error) -> Vec<u8> {
     .into_bytes()
 }
 
-/// A directory that the browser lists, as `loadDir` in `browser.zig` calls `handleEvent` in
-/// `main.zig` while it lists one: once `update_delay` has passed since the listing started or
-/// since the loading screen was drawn, the loading screen is drawn again, and the keys that wait
-/// are dropped, as the browser ignores keys while it lists.
 struct Load<'a> {
     ui: &'a mut Ui,
     update_delay: Duration,
     drawn: Instant,
-    /// Whether the browser reported a directory that it lists, which it does once it has listed 2
-    /// entries.
     listed: bool,
-    /// How duit ends once the listing is done, after an error reading the keys.
     exit: Option<Result<ExitCode, Vec<u8>>>,
 }
 
@@ -619,7 +575,6 @@ impl<'a> Load<'a> {
         }
     }
 
-    /// Handle the screen `loading` that the browser reports.
     fn report(&mut self, loading: &Loading<'_>) {
         self.listed = true;
         if self.drawn.elapsed() > self.update_delay {
@@ -629,9 +584,6 @@ impl<'a> Load<'a> {
         }
     }
 
-    /// Read the input that waits and drop it. Ctrl-C ends duit at the next check of the keys
-    /// during the listing, where ncurses raises `SIGINT` at once. A resize needs no redraw, because
-    /// the next frame is drawn at the new size.
     fn drop_keys(&mut self) {
         while self.exit.is_none() {
             match self.ui.getch(false) {
@@ -643,8 +595,6 @@ impl<'a> Load<'a> {
         }
     }
 
-    /// End the listing, dropping the keys that wait if a directory was listed, and return how
-    /// duit ends, if it does.
     fn finish(mut self) -> Option<Result<ExitCode, Vec<u8>>> {
         if self.listed {
             self.drop_keys();
@@ -653,23 +603,16 @@ impl<'a> Load<'a> {
     }
 }
 
-/// A deletion that the browser runs, as `delete.zig` calls `handleEvent` in `main.zig` before each
-/// entry that it deletes and while it waits for a key in its error window. The window is drawn
-/// when the deletion waits, and else once `update_delay` has passed since the screen was drawn.
-/// The keys that wait then go to the deletion while it runs. Ctrl-C aborts it, and duit ends.
 struct Delete<'a> {
     ui: &'a mut Ui,
     options: &'a BrowserOptions,
     update_delay: Duration,
     drawn: Instant,
-    /// How duit ends once the deletion is aborted, after Ctrl-C or an error reading the keys.
     exit: Option<Result<ExitCode, Vec<u8>>>,
 }
 
 impl Delete<'_> {
     fn handle_event(&mut self, deletion: &mut Deletion, tree: &Tree, block: bool) {
-        // shortcut: keys are read only when the window is drawn, because `getch` without `block`
-        // waits up to 1 ms. Read them before each entry once it returns at once.
         if !block && self.drawn.elapsed() <= self.update_delay {
             return;
         }
@@ -703,25 +646,15 @@ impl Delete<'_> {
     }
 }
 
-/// An export or the in-memory tree, which an import or a scan writes into.
 trait Consumer: Sink {
-    /// What the consumer gives when it is complete.
     type Output;
 
-    /// How many inodes the last count of the hard links went through, if [`Consumer::finish`]
-    /// adds the sizes of the hard links, which ncdu shows as a step of the scan, as `done` in
-    /// `mem_sink.zig` does. The first frame of the step shows this count, which ncdu keeps from
-    /// the last count until the next one starts.
     fn counted_inodes(&self) -> Option<usize> {
         None
     }
 
-    /// Write the end of the export and flush it, or complete the tree, and give `progress` the
-    /// progress of the count of the hard links.
     fn finish(self, progress: &mut dyn FnMut(usize, usize)) -> io::Result<Self::Output>;
 
-    /// Drop the export without writing what is still buffered, as ncdu does when it stops on an
-    /// error.
     fn discard(self);
 }
 
@@ -744,7 +677,6 @@ impl<W: Write> Consumer for BinaryExport<W> {
         Self::finish(self).map(drop)
     }
 
-    /// The blocks that are full are written already, and the current one is dropped.
     fn discard(self) {}
 }
 
@@ -762,17 +694,11 @@ impl Consumer for MemorySink {
     fn discard(self) {}
 }
 
-/// An import file, opened by [`open_import`].
 enum ImportInput {
-    /// A JSON export, whose first 8 bytes are read.
     Json(File, [u8; 8]),
-    /// A binary export, whose index block is read.
     Binary(BinaryReader<File>),
 }
 
-/// Write the import of `import_input`, or else the scan of `scan_directory`, into `consumer`, and
-/// show its `progress`. An error is how duit ends instead: with a status once the user aborts, or
-/// with a message.
 fn fill<C: Consumer>(
     consumer: C,
     import_input: Option<ImportInput>,
@@ -816,7 +742,10 @@ fn fill<C: Consumer>(
         return Ok(output);
     }
 
-    let (consumer, root_error) = scan_into(consumer, scan_directory, config, progress)?;
+    let Scanned {
+        consumer,
+        root_error,
+    } = scan_into(consumer, scan_directory, config, progress)?;
     let output = progress.finish(consumer)?;
     if let Some(description) = root_error {
         return Err(Err(opening_directory(description)));
@@ -825,25 +754,22 @@ fn fill<C: Consumer>(
     Ok(output)
 }
 
-/// A consumer after a scan, with the description of the error if the root could not be read.
-type Scanned<C> = (C, Option<&'static str>);
+struct Scanned<C> {
+    consumer: C,
+    root_error: Option<&'static str>,
+}
 
-/// Write the scan of `scan_directory` into `consumer`, and show its `progress`. Give back the
-/// consumer, with the description of the error if the root could not be read, which still ends an
-/// export, as in ncdu. An error is how duit ends instead.
 fn scan_into<C: Consumer>(
     consumer: C,
     scan_directory: Option<&[u8]>,
     config: &Config,
     progress: &mut ScanProgress,
 ) -> Result<Scanned<C>, Result<ExitCode, Vec<u8>>> {
-    // ncdu scans the absolute path if it can resolve one.
     let directory = scan_directory.unwrap_or(b".");
     let path = fs::canonicalize(OsStr::from_bytes(directory)).map_or_else(
         |_| directory.to_vec(),
         |path| path.into_os_string().into_vec(),
     );
-    // Arguments are C strings and cannot hold a NUL byte.
     let path = CString::new(path).map_err(|_| Err(opening_directory("Unexpected")))?;
     let mut report = |state: &Progress| progress.report(state);
     let mut sink = ProgressSink::new(consumer, Producer::Scan, &mut report);
@@ -853,23 +779,23 @@ fn scan_into<C: Consumer>(
         consumer.discard();
         return Err(exit);
     }
-    match scanned {
-        Ok(()) => Ok((consumer, None)),
-        Err(ScanError::Stat(error)) => Ok((consumer, Some(stat_error(&error)))),
-        Err(ScanError::Open(error)) => Ok((consumer, Some(open_error(&error)))),
+    let root_error = match scanned {
+        Ok(()) => None,
+        Err(ScanError::Stat(error)) => Some(stat_error(&error)),
+        Err(ScanError::Open(error)) => Some(open_error(&error)),
         // As `ui.die` in ncdu, which writes nothing more.
         Err(ScanError::Spawn(error)) => {
             consumer.discard();
-            Err(Err(spawning_thread(&error)))
+            return Err(Err(spawning_thread(&error)));
         }
-        Err(ScanError::Sink(error)) => Err(Err(writing(&error))),
-    }
+        Err(ScanError::Sink(error)) => return Err(Err(writing(&error))),
+    };
+    Ok(Scanned {
+        consumer,
+        root_error,
+    })
 }
 
-/// Scan `scan_directory` with several threads into memory, and write the tree into `export` once
-/// the scan is done, as `createThreads` and `done` in `sink.zig` do, because a JSON export is
-/// written depth-first. The progress counts again from 0 for the export. Unlike ncdu, which
-/// crashes there, a root that cannot be read ends the export as with one thread.
 fn export_from_memory<W: Write>(
     export: JsonExport<W>,
     scan_directory: Option<&[u8]>,
@@ -877,7 +803,10 @@ fn export_from_memory<W: Write>(
     progress: &mut ScanProgress,
 ) -> Result<(), Result<ExitCode, Vec<u8>>> {
     let memory = MemorySink::without_stats(config.extended);
-    let (memory, root_error) = match scan_into(memory, scan_directory, config, progress) {
+    let Scanned {
+        consumer: memory,
+        root_error,
+    } = match scan_into(memory, scan_directory, config, progress) {
         Ok(scanned) => scanned,
         Err(exit) => {
             export.discard();
@@ -905,7 +834,6 @@ fn export_from_memory<W: Write>(
     Ok(())
 }
 
-/// The options of a scan, from `config`.
 fn scan_options(config: &Config) -> ScanOptions {
     ScanOptions {
         same_filesystem: config.same_filesystem,
@@ -916,25 +844,15 @@ fn scan_options(config: &Config) -> ScanOptions {
     }
 }
 
-/// The progress of a scan or an import, which `handleEvent` in `main.zig` draws with `draw` in
-/// `sink.zig` once `update_delay` has passed since it last drew, or when a draw is forced. The
-/// timer starts before the export file is opened, as in ncdu.
-///
-/// With `-2`, the first draw takes over the terminal, as `ui.init` in `ui.zig` does, and the
-/// browser keeps it. Dropping the progress restores a terminal that the browser did not take.
 struct ScanProgress {
     scan_ui: ScanUi,
     update_delay: Duration,
-    /// The options that the screen of `-2` draws with, and that `-1` takes `--si` from.
     options: BrowserOptions,
     drawn: Instant,
     console: Console,
     screen: ScanScreen,
-    /// Whether the screen of `-2` draws on `/dev/tty`, as [`Ui::init`] takes it.
     open_tty: bool,
     ui: Option<Ui>,
-    /// How duit ends once the user aborted the scan or the import, after Ctrl-C, or after the
-    /// screen of `-2` failed.
     exit: Option<Result<ExitCode, Vec<u8>>>,
 }
 
@@ -961,13 +879,10 @@ impl ScanProgress {
         }
     }
 
-    /// Handle an event of the scan or the import, which has reported `progress`, and fail to stop
-    /// it once duit is to end.
     fn report(&mut self, progress: &Progress) -> io::Result<()> {
         if progress.zeroing() {
             self.handle_event(&ScanState::Zeroing, true);
         } else if self.drawn.elapsed() > self.update_delay {
-            // The paths are joined only for a draw, as the scan reports an event for each entry.
             let directories = progress.directories();
             let directories: Vec<Option<&[u8]>> =
                 directories.iter().map(Option::as_deref).collect();
@@ -999,8 +914,6 @@ impl ScanProgress {
         self.drawn = Instant::now();
     }
 
-    /// Draw `state` on the full screen, taking over the terminal first, and handle the keys that
-    /// wait. `q` aborts the scan or the import with status 0, as `ui.quit` in `ui.zig` does.
     fn draw_full(&mut self, state: &ScanState<'_>) {
         let Self {
             options,
@@ -1024,8 +937,6 @@ impl ScanProgress {
             }
         };
         ui.draw(|frame| screen.draw(frame, state, options));
-        // shortcut: keys are read only when the screen is drawn, because `getch` without `block`
-        // waits up to 1 ms. Read them at each event once it returns at once.
         while exit.is_none() {
             match ui.getch(false) {
                 Ok(Some(Input::Key(key))) => match screen.key_input(state, key, options) {
@@ -1040,9 +951,6 @@ impl ScanProgress {
         }
     }
 
-    /// Draw `state` on the full screen that the progress took over, and wait for the key that
-    /// closes it, as `main.zig` calls `handleEvent` until the error of a refresh is closed. Fails
-    /// with how duit ends after Ctrl-C or an error reading the keys.
     fn wait(&mut self, state: &ScanState<'_>) -> Result<(), Result<ExitCode, Vec<u8>>> {
         let Self {
             options,
@@ -1067,9 +975,6 @@ impl ScanProgress {
         }
     }
 
-    /// Complete `consumer` once the scan or the import is done, and erase the progress of `-1`, as
-    /// `done` in `sink.zig` does. Ctrl-C or an error reading the keys while the hard links are
-    /// counted ends duit once they are counted.
     fn finish<C: Consumer>(&mut self, consumer: C) -> Result<C::Output, Result<ExitCode, Vec<u8>>> {
         if let Some(total) = consumer.counted_inodes() {
             self.handle_event(&ScanState::CountingHardLinks { done: total, total }, true);
@@ -1093,8 +998,6 @@ impl ScanProgress {
         Ok(output)
     }
 
-    /// Write the clear that ncdu writes at the end of a scan, as `ui.init` takes over the
-    /// terminal or `ui.deinit` gives it back, when the progress did not take it over.
     fn clear(&self) {
         if self.ui.is_none() {
             let _ = io::stderr().write_all(CLEAR_TO_END);
@@ -1110,9 +1013,6 @@ impl Drop for ScanProgress {
     }
 }
 
-/// Open the import file at `path`, or standard input for `-`, and read its first 8 bytes, which
-/// tell the formats apart. A binary export is read with random access, from its index block at the
-/// end, so it must be a file that can seek.
 fn open_import(path: &[u8]) -> Result<ImportInput, Vec<u8>> {
     let reading = |description: &str| {
         [
@@ -1125,7 +1025,6 @@ fn open_import(path: &[u8]) -> Result<ImportInput, Vec<u8>> {
         .concat()
     };
     let mut file = if path == b"-" {
-        // A read of the duplicated descriptor fails as a read of standard input would.
         io::stdin()
             .as_fd()
             .try_clone_to_owned()
@@ -1156,7 +1055,6 @@ fn open_import(path: &[u8]) -> Result<ImportInput, Vec<u8>> {
         })
 }
 
-/// The message that ncdu exits with when it cannot read a binary export.
 fn binary_import_error(error: BinaryImportError) -> Vec<u8> {
     match error {
         BinaryImportError::Corrupt { itemref } => {

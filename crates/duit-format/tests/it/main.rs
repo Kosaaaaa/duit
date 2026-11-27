@@ -1,5 +1,3 @@
-//! Integration tests for duit's import and export formats.
-
 #[cfg(feature = "test-ncdu")]
 use std::io::Write;
 #[cfg(feature = "test-ncdu")]
@@ -13,7 +11,6 @@ mod json_export;
 mod json_import;
 mod mem_sink;
 
-/// Run `ncdu -f-` with `arguments`, which select the export, and `input` on standard input.
 #[cfg(feature = "test-ncdu")]
 fn ncdu_import(input: &[u8], arguments: &[&str]) -> Output {
     let mut child = Command::new("ncdu")

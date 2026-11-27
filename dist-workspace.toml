@@ -1,46 +1,26 @@
 [workspace]
 members = ["cargo:."]
 
-# Config for `dist`, which builds the release archives and the installer.
 [dist]
-# `.github/workflows/release.yml` is maintained by hand, so that it passes zizmor. Compare it with the
-# output of `dist generate` after a dist upgrade, and port the changes that apply.
 allow-dirty = ["ci"]
-# The dist version that CI installs.
 cargo-dist-version = "0.34.0"
-# CI backends to support
 ci = "github"
-# The installers to generate for each app
 installers = ["shell"]
-# The archive format to use for non-windows builds (defaults .tar.xz)
 unix-archive = ".tar.gz"
-# Target platforms to build apps for (Rust target-triple syntax). The Linux builds link musl
-# statically, so one binary runs on any distribution.
 targets = [
   "aarch64-apple-darwin",
   "aarch64-unknown-linux-musl",
   "x86_64-apple-darwin",
   "x86_64-unknown-linux-musl",
 ]
-# Whether to add README, LICENSE, and CHANGELOG files to the archives on their own (default true)
 auto-includes = false
-# Files to add to every archive, next to the binary
 include = ["LICENSE", "README.md", "crates/duit/duit.1"]
-# Whether dist should create a Github Release or use an existing draft
 create-release = true
-# Which actions to run on pull requests
 pr-run-mode = "plan"
-# Whether CI should trigger releases with dispatches instead of tag pushes
 dispatch-releases = true
-# Which phase dist should use to create the GitHub release
 github-release = "announce"
-# Whether to enable GitHub Attestations
 github-attestations = true
-# When to generate GitHub Attestations
 github-attestations-phase = "announce"
-# Whether to install an updater program
 install-updater = false
-# Path that installers should place binaries in
 install-path = ["$XDG_BIN_HOME/", "$XDG_DATA_HOME/../bin", "~/.local/bin"]
-# Where to host releases
 hosting = ["github"]

@@ -8,15 +8,12 @@ use std::process::{Command, Stdio};
 use insta::assert_snapshot;
 use tempfile::TempDir;
 
-use crate::{BINARY_SIGNATURE, duit, redact, render, table, text};
+use crate::{BINARY_SIGNATURE, data_blocks, duit, redact, render, table, text};
 #[cfg(feature = "test-ncdu")]
 use crate::{assert_ncdu, ncdu};
 
-/// The start of a valid `CACHEDIR.TAG`.
 const CACHEDIR_TAG: &[u8] = b"Signature: 8a477f597d28d172789f06886806bc55";
 
-/// One directory per scan option, each with a single entry that the option changes. A single entry
-/// keeps the export independent of the order of `readdir`.
 fn fixture() -> TempDir {
     let directory = TempDir::new().expect("temporary directory is created");
     let root = directory.path();
@@ -37,7 +34,6 @@ fn fixture() -> TempDir {
     directory
 }
 
-/// The scan options reach the scan. The scan itself is tested in `duit-scan`.
 #[test]
 fn options() {
     let directory = fixture();
@@ -171,13 +167,9 @@ fn options() {
     "#);
 }
 
-/// The items of `export` with the entries of each directory sorted, so that the order of
-/// `readdir` does not matter but the directory of each entry does. Each item is on a line of its
-/// own, followed by the `]` that close directories.
 fn sorted(export: &str) -> String {
     let mut lines = export.lines();
     let mut output = lines.next().unwrap_or_default().to_owned();
-    // The open directories, each with its item and its entries, in an array that holds the root.
     let mut open: Vec<(String, Vec<String>)> = vec![(String::new(), Vec::new())];
     for line in lines {
         let (item, rest) = line.split_at(line.rfind('}').map_or(0, |end| end + 1));
@@ -203,13 +195,6 @@ fn sorted(export: &str) -> String {
     output
 }
 
-/// A scan with several threads writes the export once the scan is done, from the tree in memory,
-/// as ncdu does. The entries of a directory are written in the opposite order of `readdir` then,
-/// and the export is otherwise that of a scan with one thread. A binary export is written as the
-/// scan goes, as with one thread, so the order of its items differs, but not the items, over
-/// blocks small enough that entries refer to entries in other blocks. The root has more
-/// directories than the threads read at once, with a hard link between two of them and an excluded
-/// file in each.
 #[test]
 fn threads() {
     let directory = TempDir::new().expect("temporary directory is created");
@@ -222,7 +207,6 @@ fn threads() {
         fs::write(path.join("sub/nested"), b"x").expect("file is written");
     }
     fs::hard_link(root.join("d00/file"), root.join("d01/link")).expect("hard link is created");
-    // Outside of the scanned directory, so that no binary export scans another.
     let exports = TempDir::new().expect("temporary directory is created");
     for flags in [&["--exclude", "skip"][..], &["-e", "--exclude", "skip"]] {
         let arguments = |threads| [&["-t", threads, "-o-"][..], flags].concat();
@@ -248,26 +232,27 @@ fn threads() {
             .concat();
             let output = duit(root, &arguments);
             assert!(output.status.success(), "{}", render(&output));
-            // The index block ends with its header, whose length counts 8 bytes per data block.
             let written = fs::read(file).expect("export is written");
-            let header: [u8; 4] = written[written.len() - 4..].try_into().expect("4 bytes");
-            let blocks = ((u32::from_be_bytes(header) & 0x0fff_ffff) - 16) / 8;
+            let blocks = data_blocks(&written);
             assert!(blocks >= 2, "{blocks} data blocks");
             export(&["-f", file, "-o-", "-e"])
         };
         assert_eq!(binary("4"), binary("1"), "{flags:?}");
     }
-    // Unlike ncdu, which crashes, a root that cannot be read ends the export as with one thread.
-    // A binary export and a scan into memory end as with one thread too.
-    for arguments in [
-        &["-o-", "missing"][..],
-        &["-O-", "missing"],
-        &["-0", "--quit-after-scan"],
-    ] {
-        let with_threads = |threads| duit(root, &[&["-t", threads][..], arguments].concat());
+    let with_threads = |threads| duit(root, &["-t", threads, "-0", "--quit-after-scan"]);
+    let output = with_threads("4");
+    assert_eq!(render(&output), render(&with_threads("1")));
+    assert!(output.status.success());
+}
+
+#[test]
+fn threads_missing_root_exits_like_one_thread() {
+    let directory = TempDir::new().expect("temporary directory is created");
+    for export in ["-o-", "-O-"] {
+        let with_threads = |threads| duit(directory.path(), &["-t", threads, export, "missing"]);
         let output = with_threads("4");
-        assert_eq!(render(&output), render(&with_threads("1")), "{arguments:?}");
-        assert_eq!(output.status.success(), arguments[0] == "-0");
+        assert_eq!(render(&output), render(&with_threads("1")), "{export}");
+        assert!(!output.status.success(), "{export}");
     }
 }
 
@@ -312,7 +297,6 @@ fn thread_spawn_error() {
     ");
 }
 
-/// `-o FILE` writes the same export as `-o-` writes to standard output.
 #[test]
 fn file() {
     let directory = fixture();
@@ -331,8 +315,6 @@ fn file() {
     );
 }
 
-/// `-c` writes the export as a zstd frame that decompresses to the export without `-c`. A scan
-/// that fails at the root still ends the frame.
 #[test]
 fn compress() {
     let directory = fixture();
@@ -390,7 +372,6 @@ fn compress() {
     ");
 }
 
-/// ncdu imports an export that duit compressed.
 #[cfg(feature = "test-ncdu")]
 #[test]
 fn compress_import() {
@@ -403,8 +384,6 @@ fn compress_import() {
     );
 }
 
-/// A write to a closed pipe fails, and the export ends with the error. Both programs ignore
-/// `SIGPIPE`.
 #[test]
 fn write_error() {
     let directory = fixture();
@@ -425,9 +404,6 @@ fn write_error() {
     let output = run(executable, &["-o-", "plain"]);
     #[cfg(feature = "test-ncdu")]
     assert_eq!(run(OsStr::new("ncdu"), &["-o-", "plain"]), output);
-    // The compressed and the binary export fail with the same error, and so does the export of a
-    // binary import. The binary export writes its signature before the import is read, so the
-    // write fails first.
     assert!(
         duit(directory.path(), &["-O", "export.ncdu", "plain"])
             .status
@@ -460,8 +436,6 @@ fn write_error() {
     "#);
 }
 
-/// `-O` writes a binary export, which ncdu reads as it reads its own export of the same scan. `-e`,
-/// `--compress-level`, and `--export-block-size` change the export.
 #[test]
 fn binary() {
     let directory = fixture();
@@ -534,7 +508,6 @@ fn binary() {
     ");
 }
 
-/// `-O-` writes the binary export that `-O FILE` writes to standard output.
 #[test]
 fn binary_stdout() {
     let directory = fixture();
@@ -549,8 +522,6 @@ fn binary_stdout() {
     );
 }
 
-/// A scan that fails at the root still ends the binary export, with an index block that holds no
-/// block and a root reference of 0.
 #[test]
 fn binary_errors() {
     let directory = fixture();

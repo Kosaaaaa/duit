@@ -8,8 +8,6 @@ publish = false
 [package.metadata]
 cargo-fuzz = true
 
-# A workspace of its own, apart from the one at the root: the targets build on nightly with
-# `cargo fuzz`, and the checks and the lockfile of the root workspace stay stable-only.
 [workspace]
 
 [dependencies]

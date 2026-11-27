@@ -7,13 +7,15 @@ use duit_model::{
 use zstd::zstd_safe;
 
 use crate::bin_format::{
-    BLOCK_LENGTH_BITS, FOOTER_LENGTH, HEADER_LENGTH, INDEX_BLOCK, ItemKey, MAX_BLOCK_LENGTH, Major,
-    NUMBER_LENGTH, SIMPLE_TRUE,
+    BLOCK_LENGTH_BITS, BlockPosition, FOOTER_LENGTH, HEADER_LENGTH, INDEFINITE_OR_BREAK,
+    INDEX_BLOCK, INDEX_ENTRY_LENGTH, ItemKey, ItemRef, MAX_BLOCK_LENGTH, Major, NUMBER_LENGTH,
+    ROOT_REFERENCE_LENGTH, SIMPLE_TRUE,
 };
 use crate::item::{ItemType, add_entry};
 
-/// The number of decompressed data blocks that a [`BinaryReader`] keeps.
 const CACHED_BLOCKS: usize = 8;
+
+const MAX_CONTAINER_LENGTH: u64 = 1 << 24;
 
 /// Why [`BinaryReader::open`] failed.
 #[derive(Debug)]
@@ -53,53 +55,37 @@ pub enum BinaryImportError {
 /// number of its block shifted left by 24 bits, plus its offset in the decompressed block.
 pub struct BinaryReader<R> {
     input: R,
-    /// The index block without its header and footer: the position of each data block as
-    /// `offset << 24 | length`, then the root reference, each a big-endian `u64`.
-    index: Vec<u8>,
-    /// The blocks that were decompressed last.
+    block_positions: Vec<BlockPosition>,
+    root: u64,
     blocks: Vec<Block>,
-    /// The number of block lookups, which orders the blocks by their last use.
     lookups: u64,
 }
 
-/// A decompressed data block.
 struct Block {
     number: u32,
     last_use: u64,
     data: Vec<u8>,
 }
 
-/// The fields of the item that is being read.
 struct Item {
     kind: ItemType,
     stat: Stat,
     name: Vec<u8>,
     read_error: bool,
-    /// The entry before this one in its directory.
     previous: Option<u64>,
-    /// The last entry of a directory.
     last_entry: Option<u64>,
 }
 
-/// The fields of an item as the browser reads it, which [`parse_listed`] parses.
 struct ListedItem {
     kind: ItemType,
     name: Vec<u8>,
-    /// The sizes, which are the totals of the export for a directory, the device of a directory,
-    /// the inode and the link count of a hard link, and the extended information.
     stat: Stat,
-    /// The number of entries below a directory, and the sizes of its hard links that are shared,
-    /// as the export stores them.
     items: u32,
     shared_blocks: u64,
     shared_size: u64,
-    /// The `rderr` field of a directory, which is true when the directory could not be read
-    /// completely, and false when an entry below it could not be read.
     read_error: bool,
     sub_error: bool,
-    /// The entry before this one in its directory.
     previous: Option<u64>,
-    /// The last entry of a directory.
     last_entry: Option<u64>,
 }
 
@@ -127,10 +113,8 @@ pub struct ListedDirectory {
     pub empty: bool,
 }
 
-/// A directory whose entries are being read.
 struct OpenDirectory<D> {
     directory: D,
-    /// The entry to read next, which is the entry before the one read last.
     next: Option<u64>,
     device: u64,
 }
@@ -151,23 +135,25 @@ impl<R: Read + Seek> BinaryReader<R> {
         if header >> BLOCK_LENGTH_BITS != INDEX_BLOCK || header & 7 != 0 {
             return Err(BinaryOpenError::Corrupt);
         }
-        // The length without the header and the footer. ncdu reads past the end of an index that
-        // is too short to hold the root reference.
         let length = usize::try_from(header & MAX_BLOCK_LENGTH)
             .ok()
             .and_then(|length| length.checked_sub(HEADER_LENGTH + FOOTER_LENGTH))
-            .filter(|&length| length >= 8 && (length as u64) < size)
+            .filter(|&length| length >= ROOT_REFERENCE_LENGTH && (length as u64) < size)
             .ok_or(BinaryOpenError::Corrupt)?;
-        // An index that would start before the file is read by ncdu at a negative offset, which
-        // fails as an invalid argument.
         let start = size
             .checked_sub((length + FOOTER_LENGTH) as u64)
-            .ok_or_else(|| BinaryOpenError::Read(io::ErrorKind::InvalidInput.into()))?;
+            .ok_or_else(negative_offset_error)?;
         let mut index = vec![0; length];
         read_at(&mut input, &mut index, start).map_err(BinaryOpenError::Read)?;
+        let (entries, _) = index.as_chunks::<INDEX_ENTRY_LENGTH>();
+        let (root, positions) = entries.split_last().ok_or(BinaryOpenError::Corrupt)?;
         Ok(Self {
             input,
-            index,
+            block_positions: positions
+                .iter()
+                .map(|position| BlockPosition(u64::from_be_bytes(*position)))
+                .collect(),
+            root: u64::from_be_bytes(*root),
             blocks: Vec::with_capacity(CACHED_BLOCKS),
             lookups: 0,
         })
@@ -226,7 +212,7 @@ impl<R: Read + Seek> BinaryReader<R> {
                 &mut open.directory,
                 item.kind,
                 &item.name,
-                &mut item.stat,
+                &item.stat,
                 item.read_error,
             )
             .map_err(BinaryImportError::Sink)?;
@@ -279,7 +265,6 @@ impl<R: Read + Seek> BinaryReader<R> {
         let id = add_listed_directory(&mut tree, None, &directory, extended)
             .map_err(|_| BinaryImportError::Corrupt { itemref })?;
         let mut directories = Vec::new();
-        // Each entry that the tree adds comes first, so the last entry is added last.
         for (entry, item) in entries.iter().rev() {
             let kind = match item.kind {
                 ItemType::Stat(EntryType::Directory) => {
@@ -298,7 +283,7 @@ impl<R: Read + Seek> BinaryReader<R> {
                 ItemType::Special(special) => FileKind::Special(special),
             };
             let entry_extended = EntryExtended::of(&item.stat, extended);
-            tree.create(id, kind, &item.stat, entry_extended, &item.name)
+            tree.prepend_file(id, kind, &item.stat, entry_extended, &item.name)
                 .map_err(|_| BinaryImportError::Corrupt { itemref: *entry })?;
         }
         Ok(Some(Listing {
@@ -310,12 +295,19 @@ impl<R: Read + Seek> BinaryReader<R> {
 
     /// The reference of the root, which ends the index, `getRoot` in `bin_reader.zig`.
     pub fn root(&self) -> u64 {
-        self.index
-            .last_chunk::<8>()
-            .map_or(0, |root| u64::from_be_bytes(*root))
+        self.root
     }
 
-    /// Read the item at `itemref` into `item`, with `device` as the device of its directory.
+    fn block_position(&self, number: u32) -> Option<BlockPosition> {
+        let number = usize::try_from(number).ok()?;
+        // As in ncdu, the root reference at the end of the index reads as the position of the
+        // block after the last.
+        self.block_positions
+            .get(number)
+            .copied()
+            .or_else(|| (number == self.block_positions.len()).then_some(BlockPosition(self.root)))
+    }
+
     fn read_item(
         &mut self,
         itemref: u64,
@@ -326,27 +318,23 @@ impl<R: Read + Seek> BinaryReader<R> {
         parse_item(data, itemref, device, item).ok_or(BinaryImportError::Corrupt { itemref })
     }
 
-    /// Read the item at `itemref` as the browser reads it.
     fn read_listed(&mut self, itemref: u64) -> Result<ListedItem, BinaryImportError> {
         let data = self.item_data(itemref)?;
         parse_listed(data, itemref).ok_or(BinaryImportError::Corrupt { itemref })
     }
 
-    /// The decompressed data of the block of `itemref`, from the item to the end of the block,
-    /// `readItem` in `bin_reader.zig`.
     fn item_data(&mut self, itemref: u64) -> Result<&[u8], BinaryImportError> {
         let corrupt = || BinaryImportError::Corrupt { itemref };
-        // A reference has 56 bits.
-        let number = u32::try_from(itemref >> 24).map_err(|_| corrupt())?;
+        let reference = ItemRef(itemref);
+        let number = u32::try_from(reference.block()).map_err(|_| corrupt())?;
         let block = self.block(number, itemref)?;
-        let offset = usize::try_from(itemref & 0xff_ffff).map_err(|_| corrupt())?;
+        let offset = usize::try_from(reference.offset()).map_err(|_| corrupt())?;
         block
             .get(offset..)
             .filter(|data| !data.is_empty())
             .ok_or_else(corrupt)
     }
 
-    /// The decompressed data block `number`, which holds the item at `itemref`.
     fn block(&mut self, number: u32, itemref: u64) -> Result<&[u8], BinaryImportError> {
         self.lookups += 1;
         let cached = self.blocks.iter().position(|block| block.number == number);
@@ -380,25 +368,14 @@ impl<R: Read + Seek> BinaryReader<R> {
         Ok(&block.data)
     }
 
-    /// Read and decompress the data block `number`, which holds the item at `itemref`. As in
-    /// ncdu, the header and the footer of the block are not checked, but unlike ncdu its number
-    /// is.
     fn load(&mut self, number: u32, itemref: u64) -> Result<Vec<u8>, BinaryImportError> {
         let corrupt = || BinaryImportError::Corrupt { itemref };
-        // As in ncdu, the root reference at the end of the index reads as the position of the
-        // block after the last.
-        let position = usize::try_from(number)
-            .ok()
-            .and_then(|number| number.checked_mul(8))
-            .and_then(|start| self.index.get(start..)?.first_chunk::<8>())
-            .map(|position| u64::from_be_bytes(*position))
-            .ok_or_else(corrupt)?;
-        let offset = position >> 24;
-        let length = usize::try_from(position & 0xff_ffff).map_err(|_| corrupt())?;
+        let position = self.block_position(number).ok_or_else(corrupt)?;
+        let offset = position.offset();
+        let length = usize::try_from(position.length()).map_err(|_| corrupt())?;
         if length <= HEADER_LENGTH + NUMBER_LENGTH + FOOTER_LENGTH {
             return Err(corrupt());
         }
-        // The number of the block, then its zstd frame.
         let mut block = vec![0; length - HEADER_LENGTH - FOOTER_LENGTH];
         read_at(&mut self.input, &mut block, offset + HEADER_LENGTH as u64).map_err(|error| {
             if error.kind() == io::ErrorKind::UnexpectedEof {
@@ -407,8 +384,6 @@ impl<R: Read + Seek> BinaryReader<R> {
                 BinaryImportError::Read(error)
             }
         })?;
-        // ncdu writes the number of each block but does not read it, so several entries of the
-        // index can point at one block, and each of them costs a decompression of the same frame.
         let (stored, frame) = block.split_first_chunk::<4>().ok_or_else(corrupt)?;
         if *stored != number.to_be_bytes() {
             return Err(corrupt());
@@ -430,16 +405,15 @@ impl<R: Read + Seek> BinaryReader<R> {
     }
 }
 
-/// Fill `buffer` from `input` at `offset`.
+fn negative_offset_error() -> BinaryOpenError {
+    BinaryOpenError::Read(io::ErrorKind::InvalidInput.into())
+}
+
 fn read_at(input: &mut (impl Read + Seek), buffer: &mut [u8], offset: u64) -> io::Result<()> {
     input.seek(SeekFrom::Start(offset))?;
     input.read_exact(buffer)
 }
 
-/// Call `field` with the key and the value of each field of the item that starts `data`, in
-/// order, `ItemParser` in `bin_reader.zig`. A field whose key the format does not use is skipped,
-/// and `field` reads or skips the content of each value it gets. `None` if the item is not a valid
-/// map, or if `field` returns `None`.
 fn fields<'a>(
     data: &'a [u8],
     mut field: impl FnMut(&mut Cbor<'a>, ItemKey, Value) -> Option<()>,
@@ -449,8 +423,7 @@ fn fields<'a>(
     if head.major != Major::Map {
         return None;
     }
-    // The keys left in a map of definite length.
-    let mut keys_left = (!head.indefinite).then_some(head.argument);
+    let mut keys_left = head.definite();
     loop {
         let key = match &mut keys_left {
             Some(0) => return Some(()),
@@ -473,18 +446,13 @@ fn fields<'a>(
             continue;
         }
         let value = cbor.next()?;
-        match ItemKey::from_u64(key.argument) {
+        match key.definite().and_then(ItemKey::from_u64) {
             Some(key) => field(&mut cbor, key, value)?,
             None => cbor.skip(value)?,
         }
     }
 }
 
-/// Parse the item at `itemref` from `data`, which starts with it, into `item`, with `device` as
-/// the device of its directory, `readFields` in `bin_reader.zig`. `None` if it is not valid.
-///
-/// The fields are read in order, so a later field overrides an earlier one with the same key.
-/// The fields that only the browser reads, such as the totals of a directory, are skipped.
 fn parse_item(data: &[u8], itemref: u64, device: u64, item: &mut Item) -> Option<()> {
     item.stat = Stat {
         device,
@@ -536,12 +504,6 @@ fn link_count(value: Value) -> Option<u32> {
     value.unsigned::<u32>().filter(|&count| count < 1 << 31)
 }
 
-/// Parse the item at `itemref` from `data`, which starts with it, as the browser reads it, `get`
-/// in `bin_reader.zig`. `None` if it is not valid.
-///
-/// As in ncdu, the fields are read twice: once for the type, the name, and the extended
-/// information, and once for the fields that the type has. A directory has the totals of the
-/// export rather than its own sizes, and the fields that its type does not have are skipped.
 fn parse_listed(data: &[u8], itemref: u64) -> Option<ListedItem> {
     let mut kind = None;
     let mut name: &[u8] = b"";
@@ -636,8 +598,6 @@ fn parse_listed(data: &[u8], itemref: u64) -> Option<ListedItem> {
     Some(item)
 }
 
-/// Add the directory of `item` to `parent` in `tree`, or as a directory without a parent, with the
-/// totals that the export stores.
 fn add_listed_directory(
     tree: &mut Tree,
     parent: Option<DirectoryId>,
@@ -646,7 +606,7 @@ fn add_listed_directory(
 ) -> Result<DirectoryId, TreeError> {
     let device = tree.device_id(item.stat.device)?;
     let entry_extended = EntryExtended::of(&item.stat, extended);
-    let id = tree.create_directory(parent, device, &item.stat, entry_extended, &item.name)?;
+    let id = tree.prepend_directory(parent, device, &item.stat, entry_extended, &item.name)?;
     tree.set_totals(
         id,
         item.items,
@@ -658,8 +618,6 @@ fn add_listed_directory(
     Ok(id)
 }
 
-/// The item type of the value of the `type` field. An unknown type is a pattern if it is negative
-/// and a non-regular file otherwise, as in ncdu.
 fn item_type(value: i32) -> ItemType {
     match value {
         0 => ItemType::Stat(EntryType::Directory),
@@ -673,30 +631,39 @@ fn item_type(value: i32) -> ItemType {
     }
 }
 
-/// The head of a CBOR data item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Argument {
+    Definite(u64),
+    Indefinite,
+    Break,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Value {
     major: Major,
-    /// Whether the length is indefinite, for a string, an array, or a map. For a simple value,
-    /// this is the break that ends an item of indefinite length.
-    indefinite: bool,
-    argument: u64,
+    argument: Argument,
 }
 
 impl Value {
+    fn definite(self) -> Option<u64> {
+        match self.argument {
+            Argument::Definite(argument) => Some(argument),
+            Argument::Indefinite | Argument::Break => None,
+        }
+    }
+
     fn is_break(self) -> bool {
-        self.major == Major::Simple && self.indefinite
+        self.argument == Argument::Break
     }
 
     fn is_true(self) -> bool {
-        self.major == Major::Simple && self.argument == SIMPLE_TRUE
+        self.major == Major::Simple && self.argument == Argument::Definite(SIMPLE_TRUE)
     }
 
-    /// The value of an integer.
     fn integer(self) -> Option<i128> {
         match self.major {
-            Major::Positive => Some(i128::from(self.argument)),
-            Major::Negative => Some(-i128::from(self.argument) - 1),
+            Major::Positive => Some(i128::from(self.definite()?)),
+            Major::Negative => Some(-i128::from(self.definite()?) - 1),
             Major::Bytes | Major::Text | Major::Array | Major::Map | Major::Tag | Major::Simple => {
                 None
             }
@@ -707,14 +674,11 @@ impl Value {
         T::try_from(self.integer()?).ok()
     }
 
-    /// The item that this reference from the item at `current` refers to. A negative reference
-    /// is an offset back from `current` in the same block.
     fn itemref(self, current: u64) -> Option<u64> {
+        let argument = self.definite()?;
         match self.major {
-            Major::Positive => Some(self.argument),
-            Major::Negative if self.argument < current & 0xff_ffff => {
-                Some(current - self.argument - 1)
-            }
+            Major::Positive => Some(argument),
+            Major::Negative if argument < ItemRef(current).offset() => Some(current - argument - 1),
             Major::Negative
             | Major::Bytes
             | Major::Text
@@ -726,12 +690,11 @@ impl Value {
     }
 }
 
-/// The entry of [`Cbor::skip`]'s stack for a container of indefinite length. A count of data items
-/// never reaches it, because a block is smaller than 16 MiB.
-const INDEFINITE: u32 = u32::MAX;
+enum Remaining {
+    Items(u32),
+    UntilBreak,
+}
 
-/// A reader of the CBOR data items in a decompressed block. Every method returns `None` for data
-/// that is not valid.
 struct Cbor<'a> {
     buffer: &'a [u8],
 }
@@ -744,7 +707,6 @@ impl<'a> Cbor<'a> {
         Some(taken)
     }
 
-    /// The `N`-byte big-endian argument that follows a head.
     fn argument<const N: usize>(&mut self) -> Option<u64> {
         let bytes = self.take(N as u64)?;
         Some(
@@ -766,26 +728,22 @@ impl<'a> Cbor<'a> {
             6 => Major::Tag,
             7..=u8::MAX => Major::Simple,
         };
-        let (argument, indefinite) = match byte & 0x1f {
-            argument @ 0..=0x17 => (u64::from(argument), false),
-            0x18 => (self.argument::<1>()?, false),
-            0x19 => (self.argument::<2>()?, false),
-            0x1a => (self.argument::<4>()?, false),
-            0x1b => (self.argument::<8>()?, false),
-            0x1f => match major {
-                Major::Bytes | Major::Text | Major::Array | Major::Map | Major::Simple => (0, true),
+        let argument = match byte & 0x1f {
+            argument @ 0..=0x17 => Argument::Definite(u64::from(argument)),
+            0x18 => Argument::Definite(self.argument::<1>()?),
+            0x19 => Argument::Definite(self.argument::<2>()?),
+            0x1a => Argument::Definite(self.argument::<4>()?),
+            0x1b => Argument::Definite(self.argument::<8>()?),
+            INDEFINITE_OR_BREAK => match major {
+                Major::Bytes | Major::Text | Major::Array | Major::Map => Argument::Indefinite,
+                Major::Simple => Argument::Break,
                 Major::Positive | Major::Negative | Major::Tag => return None,
             },
             0x1c..=0x1e | 0x20..=u8::MAX => return None,
         };
-        Some(Value {
-            major,
-            indefinite,
-            argument,
-        })
+        Some(Value { major, argument })
     }
 
-    /// The next data item, after any tags.
     fn next(&mut self) -> Option<Value> {
         loop {
             let value = self.head()?;
@@ -795,14 +753,10 @@ impl<'a> Cbor<'a> {
         }
     }
 
-    /// The content of a byte or text string of definite length. Text is not checked to be
-    /// UTF-8.
     fn bytes(&mut self, value: Value) -> Option<&'a [u8]> {
         match value.major {
-            Major::Bytes | Major::Text if !value.indefinite => self.take(value.argument),
-            Major::Bytes
-            | Major::Text
-            | Major::Positive
+            Major::Bytes | Major::Text => self.take(value.definite()?),
+            Major::Positive
             | Major::Negative
             | Major::Array
             | Major::Map
@@ -811,64 +765,58 @@ impl<'a> Cbor<'a> {
         }
     }
 
-    /// Skip the content of `value`, with a stack instead of recursion so that deep nesting
-    /// cannot overflow the call stack. As in ncdu, an array or a map of more than 2^24 entries is
-    /// not valid, and the chunks of an indefinite string are skipped as any data items.
     fn skip(&mut self, value: Value) -> Option<()> {
-        // The data items left to skip in each container, or `INDEFINITE` for a container of
-        // indefinite length, which ends at a break. Containers of definite length inside one
-        // another share a count, so that only containers of indefinite length deepen the stack.
-        // Each data item takes at least one byte, so a count larger than the bytes that are left
-        // cannot be skipped, and failing on it early keeps every count below the size of a block.
-        // A count then fits in a `u32`, which keeps the stack at 4 bytes per level.
-        let mut containers: Vec<u32> = Vec::new();
+        let mut containers: Vec<Remaining> = Vec::new();
         let mut value = value;
         loop {
             match value.major {
-                Major::Bytes | Major::Text | Major::Array | Major::Map if value.indefinite => {
-                    containers.push(INDEFINITE);
+                Major::Bytes | Major::Text | Major::Array | Major::Map
+                    if value.argument == Argument::Indefinite =>
+                {
+                    containers.push(Remaining::UntilBreak);
                 }
                 Major::Bytes | Major::Text => {
-                    self.take(value.argument)?;
+                    self.take(value.definite()?)?;
                 }
                 Major::Array | Major::Map => {
-                    if value.argument > 1 << 24 {
+                    let length = value.definite()?;
+                    if length > MAX_CONTAINER_LENGTH {
                         return None;
                     }
                     let count = if value.major == Major::Map {
-                        value.argument * 2
+                        length * 2
                     } else {
-                        value.argument
+                        length
                     };
-                    let left = containers
-                        .pop_if(|left| *left != INDEFINITE)
-                        .map_or(0, u64::from)
-                        + count;
+                    let enclosing = match containers.last() {
+                        Some(&Remaining::Items(left)) => {
+                            containers.pop();
+                            u64::from(left)
+                        }
+                        Some(Remaining::UntilBreak) | None => 0,
+                    };
+                    let left = enclosing + count;
                     if left > u64::try_from(self.buffer.len()).ok()? {
                         return None;
                     }
-                    containers.push(
-                        u32::try_from(left)
-                            .ok()
-                            .filter(|&left| left != INDEFINITE)?,
-                    );
+                    containers.push(Remaining::Items(u32::try_from(left).ok()?));
                 }
                 Major::Positive | Major::Negative | Major::Tag | Major::Simple => {}
             }
             value = loop {
                 match containers.last_mut() {
                     None => return Some(()),
-                    Some(&mut INDEFINITE) => {
+                    Some(Remaining::UntilBreak) => {
                         let next = self.next()?;
                         if !next.is_break() {
                             break next;
                         }
                         containers.pop();
                     }
-                    Some(0) => {
+                    Some(Remaining::Items(0)) => {
                         containers.pop();
                     }
-                    Some(left) => {
+                    Some(Remaining::Items(left)) => {
                         *left -= 1;
                         break self.next()?;
                     }
@@ -882,7 +830,6 @@ impl<'a> Cbor<'a> {
 mod tests {
     use super::{Cbor, Value};
 
-    /// Port of the upstream test "CBOR int parsing".
     #[test]
     fn cbor_int_parsing() {
         let cases: &[(&[u8], i128)] = &[
@@ -922,7 +869,6 @@ mod tests {
         }
     }
 
-    /// Port of the upstream test "CBOR string parsing".
     #[test]
     fn cbor_string_parsing() {
         let mut cbor = Cbor { buffer: b"\x40" };
@@ -941,7 +887,6 @@ mod tests {
         assert_eq!(cbor.buffer, b"-end");
     }
 
-    /// Port of the upstream test "CBOR skip parsing".
     #[test]
     fn cbor_skip_parsing() {
         let cases: &[&[u8]] = &[
@@ -970,8 +915,6 @@ mod tests {
         }
     }
 
-    /// A container that holds more data items than there are bytes left cannot be skipped, also
-    /// when the items are spread over nested containers.
     #[test]
     fn cbor_skip_count_beyond_buffer() {
         let cases: &[(&[u8], Option<()>)] = &[

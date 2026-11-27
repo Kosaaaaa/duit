@@ -8,7 +8,6 @@ use insta::assert_snapshot;
 
 use crate::bin_export::TREE;
 
-/// The binary export of [`TREE`].
 fn tree() -> Vec<u8> {
     let (head, rest) = TREE.split_at(8);
     let mut export = BinaryExport::new(Vec::new(), true, 4, None).expect("signature is written");
@@ -16,7 +15,6 @@ fn tree() -> Vec<u8> {
     export.finish().expect("export is flushed")
 }
 
-/// Whether `input`, a binary export with its signature, is read without an error.
 fn reads(input: &[u8]) -> bool {
     let Ok(mut reader) = BinaryReader::open(Cursor::new(input)) else {
         return false;
@@ -25,8 +23,6 @@ fn reads(input: &[u8]) -> bool {
     reader.import(&mut export).is_ok()
 }
 
-/// Whether every directory of `input`, a binary export with its signature, is read as the browser
-/// reads it, from the root, without an error.
 fn browses(input: &[u8]) -> bool {
     let Ok(mut reader) = BinaryReader::open(Cursor::new(input)) else {
         return false;
@@ -47,7 +43,6 @@ fn browses(input: &[u8]) -> bool {
     true
 }
 
-/// Convert the JSON export `input` into a binary export.
 fn binary(input: &[u8]) -> Vec<u8> {
     let (head, rest) = input.split_at(8);
     let mut export = BinaryExport::new(Vec::new(), true, 4, None).expect("signature is written");
@@ -55,8 +50,6 @@ fn binary(input: &[u8]) -> Vec<u8> {
     export.finish().expect("export is flushed")
 }
 
-/// The root of the binary export `input` as the browser reads it, then its entries in the order of
-/// the tree, one per line.
 fn root_listing(input: &[u8]) -> String {
     let mut reader = BinaryReader::open(Cursor::new(input)).expect("index is read");
     let root = reader.root();
@@ -127,9 +120,6 @@ fn root_listing(input: &[u8]) -> String {
     rendered
 }
 
-/// A directory is read with the totals, the item count, the shared sizes, and the errors that the
-/// export stores for it, `rderr` being false for an error below it. Its entries come from the last
-/// one in the export, and a subdirectory without entries is marked as empty.
 #[test]
 fn read_directory() {
     let export = binary(
@@ -151,7 +141,6 @@ fn read_directory() {
     ");
 }
 
-/// Every prefix of an export is an error.
 #[test]
 fn truncated() {
     let export = tree();
@@ -161,8 +150,6 @@ fn truncated() {
     }
 }
 
-/// An export with any one byte changed is read or is an error, and never panics, also when the
-/// browser reads it.
 #[test]
 fn corrupted() {
     let export = tree();

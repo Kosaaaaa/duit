@@ -1,9 +1,5 @@
-//! Helpers that ncdu keeps in `util.zig` and that only the UI calls: number formatting and natural
-//! sort order.
-
 use std::cmp::Ordering;
 
-/// Format `number` tenths as a right-aligned `###.#`, five columns wide. `number` is at most 9999.
 pub(crate) fn fmt5dec(number: u64) -> String {
     format!("{:>3}.{}", number / 10, number % 10)
 }
@@ -17,23 +13,21 @@ fn is_whitespace(byte: u8) -> bool {
 /// Compare `a` and `b` in natural order, where runs of digits compare as numbers. A port of
 /// `strnatcmp()` from <https://github.com/sourcefrog/natsort/>.
 pub(crate) fn strnatcmp(a: &[u8], b: &[u8]) -> Ordering {
-    // The algorithm reads one byte past the end, where the C string has its NUL terminator.
-    let at = |string: &[u8], index: usize| string.get(index).copied().unwrap_or(0);
+    let byte_or_nul = |string: &[u8], index: usize| string.get(index).copied().unwrap_or(0);
     let mut a_index = 0;
     let mut b_index = 0;
     loop {
-        while is_whitespace(at(a, a_index)) {
+        while is_whitespace(byte_or_nul(a, a_index)) {
             a_index += 1;
         }
-        while is_whitespace(at(b, b_index)) {
+        while is_whitespace(byte_or_nul(b, b_index)) {
             b_index += 1;
         }
 
-        if at(a, a_index).is_ascii_digit() && at(b, b_index).is_ascii_digit() {
-            if at(a, a_index) == b'0' || at(b, b_index) == b'0' {
-                // Compare left-aligned, as fractional parts.
+        if byte_or_nul(a, a_index).is_ascii_digit() && byte_or_nul(b, b_index).is_ascii_digit() {
+            if byte_or_nul(a, a_index) == b'0' || byte_or_nul(b, b_index) == b'0' {
                 loop {
-                    let (a_byte, b_byte) = (at(a, a_index), at(b, b_index));
+                    let (a_byte, b_byte) = (byte_or_nul(a, a_index), byte_or_nul(b, b_index));
                     match (a_byte.is_ascii_digit(), b_byte.is_ascii_digit()) {
                         (false, false) => break,
                         (false, true) => return Ordering::Less,
@@ -48,11 +42,9 @@ pub(crate) fn strnatcmp(a: &[u8], b: &[u8]) -> Ordering {
                     b_index += 1;
                 }
             } else {
-                // Compare right-aligned: the longer run is greater, and otherwise the first
-                // differing digit decides.
                 let mut bias = Ordering::Equal;
                 loop {
-                    let (a_byte, b_byte) = (at(a, a_index), at(b, b_index));
+                    let (a_byte, b_byte) = (byte_or_nul(a, a_index), byte_or_nul(b, b_index));
                     match (a_byte.is_ascii_digit(), b_byte.is_ascii_digit()) {
                         (false, false) => {
                             if bias != Ordering::Equal || (a_byte == 0 && b_byte == 0) {
@@ -72,7 +64,7 @@ pub(crate) fn strnatcmp(a: &[u8], b: &[u8]) -> Ordering {
                 }
             }
         }
-        let (a_byte, b_byte) = (at(a, a_index), at(b, b_index));
+        let (a_byte, b_byte) = (byte_or_nul(a, a_index), byte_or_nul(b, b_index));
         if a_byte == 0 && b_byte == 0 {
             return Ordering::Equal;
         }
@@ -91,7 +83,6 @@ mod tests {
 
     use super::{fmt5dec, strnatcmp};
 
-    /// Port of the upstream test "fmt5dec".
     #[test]
     fn fmt5dec_numbers() {
         assert_eq!(fmt5dec(0), "  0.0");
@@ -102,11 +93,8 @@ mod tests {
         assert_eq!(fmt5dec(9999), "999.9");
     }
 
-    /// Port of the upstream test "strnatcmp".
     #[test]
     fn strnatcmp_sorted() {
-        // Test strings from https://github.com/sourcefrog/natsort/
-        // Includes sorted-words, sorted-dates and sorted-fractions.
         let words: [&[u8]; 42] = [
             b"1-02",
             b"1-2",
@@ -151,7 +139,6 @@ mod tests {
             b"x2-y7",
             b"x8-y8",
         ];
-        // Test each string against each other string, simple and thorough.
         for (index, word) in words.iter().enumerate() {
             assert_eq!(strnatcmp(word, word), Ordering::Equal);
             for other in &words[..index] {
@@ -163,7 +150,6 @@ mod tests {
         }
     }
 
-    /// Whitespace includes vertical tab and form feed, as in Zig's `std.ascii.isWhitespace`.
     #[test]
     fn strnatcmp_whitespace() {
         assert_eq!(strnatcmp(b"\x0b\x0ca", b"a"), Ordering::Equal);

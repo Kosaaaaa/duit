@@ -8,10 +8,8 @@ use ratatui::backend::TestBackend;
 
 use crate::render;
 
-/// The default update delay, under 1 s, with which the screen of a scan animates.
 const UPDATE_DELAY: Duration = Duration::from_millis(100);
 
-/// A scan that has read 1234 entries of 1 GiB, and reads `/root/sub`.
 const RUNNING: ScanState<'static> = ScanState::Running {
     files: 1234,
     bytes: 1 << 30,
@@ -19,7 +17,6 @@ const RUNNING: ScanState<'static> = ScanState::Running {
     last_error: None,
 };
 
-/// Draw `state` with `screen` on a terminal of `width` by `height`.
 fn draw(
     screen: &mut ScanScreen,
     state: &ScanState<'_>,
@@ -33,9 +30,6 @@ fn draw(
     terminal
 }
 
-/// The first screen of a scan, in a box at the center of the terminal: the counters, the
-/// directory, the key that aborts, and the first step of the animation, as `drawProgress` in
-/// `sink.zig` draws them. Upstream has no test for `drawProgress`.
 #[test]
 fn running() {
     let mut screen = ScanScreen::new(UPDATE_DELAY);
@@ -92,8 +86,6 @@ fn running() {
     "#);
 }
 
-/// After a read error, a warning names the path that failed. The directory and the path are
-/// converted to UTF-8 and shortened to the box, in the colors of `--color dark`.
 #[test]
 fn running_error() {
     let directory = [b"/\xff".as_slice(), &[b'd'; 100]].concat();
@@ -150,9 +142,6 @@ fn running_error() {
     "#);
 }
 
-/// The size is shown in a box wider than 48 columns, which is 5 columns narrower than the
-/// terminal, and the animation in one wider than 40 with an update delay under 1 s, so not with
-/// `-q`. `(waiting)` stands for no directory, and the thousands separator is the locale's.
 #[test]
 fn widths() {
     let state = ScanState::Running {
@@ -233,10 +222,6 @@ fn widths() {
     "#);
 }
 
-/// With several threads, the box has a row for the directory of each thread, or `(waiting)` for a
-/// thread that waits for one, and the warning and the key that aborts move down with them, as
-/// `drawProgress` in `sink.zig` draws them. The rows of the threads are at most 10 fewer than the
-/// rows of the terminal, and at least one.
 #[test]
 fn threads() {
     let state = ScanState::Running {
@@ -300,8 +285,6 @@ fn threads() {
     "#);
 }
 
-/// Each draw moves the animation one step: "Scanning..." is written from the left, then erased
-/// from the left, in 22 steps.
 #[test]
 fn animation() {
     let mut screen = ScanScreen::new(UPDATE_DELAY);
@@ -339,8 +322,6 @@ fn animation() {
     "#);
 }
 
-/// `q` aborts the scan, and with `--confirm-quit` only after `y` or `Y`. Another key, or a
-/// second `q`, cancels the confirmation, as `keyInput` in `sink.zig` handles them.
 #[test]
 fn quit() {
     let mut screen = ScanScreen::new(UPDATE_DELAY);
@@ -381,9 +362,6 @@ fn quit() {
     );
 }
 
-/// A refresh that cannot open its directory waits for any key, then returns to the browser, as
-/// `drawError` and `keyInput` in `sink.zig` do. The path is converted to UTF-8 and shortened. With
-/// `--color dark-bg`, the screen around the box is erased to the background of the default style.
 #[test]
 fn error() {
     let path = [b"/\xff".as_slice(), &[b'a'; 100]].concat();
@@ -426,9 +404,6 @@ fn error() {
     );
 }
 
-/// While the counts of a refreshed directory are cleared and while the hard links are counted,
-/// the screen says so, and every key is ignored. The count of the hard links shows how many inodes
-/// are done, once it has any to go through. Once the scan is done, nothing is drawn.
 #[test]
 fn steps() {
     let mut screen = ScanScreen::new(UPDATE_DELAY);

@@ -1,8 +1,16 @@
 use std::io;
+use std::ops::BitAnd;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::{Sink, Special, Stat};
+
+pub fn is_event_count<T>(count: T) -> bool
+where
+    T: BitAnd<Output = T> + From<u8> + PartialEq,
+{
+    count & T::from(0b100_0001) == T::from(0)
+}
 
 /// The producer that reports to a [`ProgressSink`], which decides where it handles an event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,17 +33,10 @@ pub enum Producer {
 pub struct Progress {
     files: u64,
     bytes: u64,
-    /// The path of the directory that entries were added to last.
     path: Vec<u8>,
-    /// The directories from the root to the one of `path`, each with the length of `path` before
-    /// its name, or none when no directory is being read.
     open: Vec<(Rc<Node>, usize)>,
-    /// The path of the last entry that could not be read, `last_error` in `sink.zig`.
     last_error: Option<Vec<u8>>,
-    /// The sink clears the counts of the directory that a refresh scans again, `zeroing` in
-    /// `sink.zig`.
     zeroing: bool,
-    /// The directory that each thread reads, for a scan with several threads.
     threads: Option<Arc<ThreadDirectories>>,
 }
 
@@ -79,8 +80,6 @@ impl Progress {
         self.zeroing
     }
 
-    /// Show `node` as the directory being read. Only the names below the directories that
-    /// `node` shares with the one shown are joined, so a walk depth-first does constant work.
     fn show(&mut self, node: &Rc<Node>) {
         let mut missing = Vec::new();
         let mut next = Some(node);
@@ -107,7 +106,6 @@ impl Progress {
         }
     }
 
-    /// The path of `node`, joined with `name` if it is given.
     fn path_of(&self, node: &Rc<Node>, name: Option<&[u8]>) -> Vec<u8> {
         let mut path = if self
             .open
@@ -135,8 +133,6 @@ impl Progress {
     }
 }
 
-/// Join `name` to `path`, as `Dir.path` in `sink.zig` joins the names of a directory and its
-/// parents: with a `/` unless `name` is the root or `path` ends with one.
 fn push_name(path: &mut Vec<u8>, is_root: bool, name: &[u8]) {
     if !is_root && !path.ends_with(b"/") {
         path.push(b'/');
@@ -144,20 +140,14 @@ fn push_name(path: &mut Vec<u8>, is_root: bool, name: &[u8]) {
     path.extend_from_slice(name);
 }
 
-/// A directory that is not finished, with its name and its parent, as `Dir` in `sink.zig` keeps
-/// them to join its path. A scan with several threads adds entries to any directory that is not
-/// finished, so each directory can give its own path.
 #[derive(Debug)]
 struct Node {
     name: Box<[u8]>,
     parent: Option<Rc<Self>>,
-    /// The number of directories above this one.
     depth: usize,
 }
 
 impl Drop for Node {
-    /// Drop the parents that only this node holds one at a time, so that a deep tree does not
-    /// overflow the stack.
     fn drop(&mut self) {
         let mut parent = self.parent.take();
         while let Some(node) = parent {
@@ -191,7 +181,6 @@ impl DirectoryPath {
         })
     }
 
-    /// The path, as `Dir.path` in `sink.zig` joins it.
     fn join(&self) -> Vec<u8> {
         let mut names = Vec::new();
         let mut next = Some(self);
@@ -208,8 +197,6 @@ impl DirectoryPath {
 }
 
 impl Drop for DirectoryPath {
-    /// Drop the parents that only this path holds one at a time, so that a deep tree does not
-    /// overflow the stack.
     fn drop(&mut self) {
         let mut parent = self.parent.take();
         while let Some(path) = parent {
@@ -237,14 +224,10 @@ impl ThreadDirectories {
     /// `sink.zig`.
     pub fn set(&self, thread: usize, directory: Option<Arc<DirectoryPath>>) {
         if let Some(slot) = self.directories.get(thread) {
-            // A thread that panics while it holds the lock leaves a path or none, so a poisoned
-            // lock is used as it is.
             *slot.lock().unwrap_or_else(PoisonError::into_inner) = directory;
         }
     }
 
-    /// The path of the directory that each thread reads, joined while its lock is held, as
-    /// `drawProgress` in `sink.zig` joins it.
     fn paths(&self) -> Vec<Option<Vec<u8>>> {
         self.directories
             .iter()
@@ -296,12 +279,10 @@ impl<'a, S: Sink> ProgressSink<'a, S> {
         self.sink
     }
 
-    /// Get ready to add an entry to `directory`: show it, or handle an event first if the
-    /// producer handles one there.
     fn item_start(&mut self, directory: &ProgressDirectory<S::Directory>) -> io::Result<()> {
         match self.producer {
             Producer::Scan | Producer::Import => self.progress.show(&directory.node),
-            Producer::Replay if self.progress.files & 0b100_0001 == 0 => {
+            Producer::Replay if is_event_count(self.progress.files) => {
                 (self.handle_event)(&self.progress)?;
             }
             Producer::Replay => {}
@@ -309,11 +290,10 @@ impl<'a, S: Sink> ProgressSink<'a, S> {
         Ok(())
     }
 
-    /// Handle an event after an item, if the producer handles one there.
     fn item_done(&mut self) -> io::Result<()> {
         let due = match self.producer {
             Producer::Scan => true,
-            Producer::Import => self.progress.files & 0b100_0001 == 0,
+            Producer::Import => is_event_count(self.progress.files),
             Producer::Replay => false,
         };
         if due {
@@ -389,8 +369,6 @@ impl<S: Sink> Sink for ProgressSink<'_, S> {
         self.item_done()
     }
 
-    /// A directory is done after its entries, so no event is handled here. A scan reads the first
-    /// entry next, and handles the event after it.
     fn add_directory(
         &mut self,
         parent: &mut Self::Directory,
@@ -412,14 +390,12 @@ impl<S: Sink> Sink for ProgressSink<'_, S> {
         Ok(directory)
     }
 
-    /// The path of the directory is the last error then.
     fn set_read_error(&mut self, directory: &mut Self::Directory) -> io::Result<()> {
         self.sink.set_read_error(&mut directory.directory)?;
         self.progress.last_error = Some(self.progress.path_of(&directory.node, None));
         Ok(())
     }
 
-    /// The parent is shown next. A scan handles no event after the root, whose walk ends there.
     fn finish_directory(
         &mut self,
         directory: Self::Directory,
@@ -440,12 +416,10 @@ impl<S: Sink> Sink for ProgressSink<'_, S> {
         self.item_done()
     }
 
-    /// Handle an event while the producer waits.
     fn idle(&mut self) -> io::Result<()> {
         (self.handle_event)(&self.progress)
     }
 
-    /// The progress shows the directory of each thread from then on.
     fn threads(&mut self, threads: Arc<ThreadDirectories>) {
         self.progress.threads = Some(threads);
     }
@@ -459,8 +433,6 @@ mod tests {
     use super::{DirectoryPath, Producer, Progress, ProgressSink, ThreadDirectories};
     use crate::{EntryType, MemorySink, Sink, Special, Stat};
 
-    /// The counters and the directory at each event of the entries that `build` adds, as a
-    /// `producer` reports them.
     fn events(
         producer: Producer,
         build: impl FnOnce(&mut ProgressSink<'_, MemorySink>) -> io::Result<()>,
@@ -487,7 +459,6 @@ mod tests {
         }
     }
 
-    /// Every kind of entry, in a root whose name ends with a `/` and a subdirectory.
     fn tree(sink: &mut impl Sink) -> io::Result<()> {
         let mut root = sink.create_root(b"/", &directory())?;
         let file = Stat {
@@ -510,10 +481,6 @@ mod tests {
         sink.finish_directory(root, None)
     }
 
-    /// As in `sink.zig`, every entry but the root counts as a file, and adds its blocks, which a
-    /// hard link shares with its other links. A scan handles an event at each step of its walk,
-    /// as `Thread.run` in `scan.zig` calls `main.handleEvent` before it reads the next entry of
-    /// the directory on top of its stack, but not after the root.
     #[test]
     fn scan() {
         assert_eq!(
@@ -529,9 +496,6 @@ mod tests {
         );
     }
 
-    /// An import handles an event after each item, a directory after its entries, when the count
-    /// of files has bits 0 and 6 clear, as `json_import.zig` and `bin_reader.zig` call
-    /// `main.handleEvent`. After the root, no directory is being read.
     #[test]
     fn import() {
         let events = events(Producer::Import, |sink| {
@@ -548,9 +512,6 @@ mod tests {
         assert_eq!(events.last(), Some(&(130, 0, None)));
     }
 
-    /// The last read error names the directory that failed to read, unlike ncdu, which names the
-    /// root, or the entry that failed in its directory, as `setReadError` and `addSpecial` in
-    /// `sink.zig` store `last_error`. Other special entries leave it as it is.
     #[test]
     fn last_error() {
         let mut errors = Vec::new();
@@ -587,9 +548,6 @@ mod tests {
         );
     }
 
-    /// A scan with several threads adds entries to a directory after other directories were
-    /// added. The directory of an event is the one that an entry was added to last, or the parent
-    /// of the directory finished last, and a read error names the directory it marks.
     #[test]
     fn interleaved() {
         let mut events = Vec::new();
@@ -628,9 +586,6 @@ mod tests {
         );
     }
 
-    /// With several threads, an event shows the directory that each thread reads, joined as
-    /// `Dir.path` in `sink.zig` joins it, or none for a thread that waits for one, as `setDir` in
-    /// `sink.zig` sets `current_dir`. Without them, it shows the directory being read.
     #[test]
     fn threads() {
         let threads = Arc::new(ThreadDirectories::new(2));
@@ -679,10 +634,6 @@ mod tests {
         assert_eq!(events, [vec![path(b"root")]]);
     }
 
-    /// A replay of the tree handles an event before each item when the count of files has bits 0
-    /// and 6 clear, and none after the entries of a directory, as `rec` in `mem_src.zig` calls
-    /// `main.handleEvent`. As `run` in `mem_src.zig` sets no directory for the root, the entries
-    /// of the root show none until a subdirectory is finished.
     #[test]
     fn replay() {
         let events = events(Producer::Replay, |sink| {
@@ -706,7 +657,6 @@ mod tests {
         assert_eq!(events.last(), Some(&(130, 512, Some("root".to_owned()))));
     }
 
-    /// An error of the event handler is returned to the producer.
     #[test]
     fn handle_event_error() {
         let mut fail = |progress: &Progress| {
@@ -726,9 +676,6 @@ mod tests {
         assert_eq!(error.to_string(), "aborted");
     }
 
-    /// A refresh of a directory with more than 10 000 items handles an event before it clears
-    /// their counts, once the directory could be opened, as `createRoot` in `mem_sink.zig` draws
-    /// `zeroing`. The next event is that of the root.
     #[test]
     fn zeroing() {
         for (items, expected) in [(10_000, &[false][..]), (10_001, &[true, false])] {
@@ -756,7 +703,6 @@ mod tests {
         }
     }
 
-    /// The bytes saturate, as `+|` and `*|` do in `sink.zig`.
     #[test]
     fn saturating_bytes() {
         let events = events(Producer::Scan, |sink| {

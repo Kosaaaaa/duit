@@ -1,6 +1,6 @@
 use std::io;
 
-use crate::tree::{DirectoryId, EntryId, EntryKind, Tree};
+use crate::tree::{DirectoryId, EntryExtended, EntryId, EntryKind, Tree};
 use crate::{EntryType, Extended, Sink, Stat};
 
 /// Give `directory` of `tree` as the root to `sink`, and everything below it depth-first, `run`
@@ -14,8 +14,6 @@ pub fn replay<S: Sink>(tree: &Tree, directory: DirectoryId, sink: &mut S) -> io:
     tree.format_path(directory, true, &mut path);
     let stat = to_stat(tree, tree.directory(directory).entry, EntryType::Directory);
     let root = sink.create_root(&path, &stat)?;
-    // A stack of the open directories instead of recursion, so that deep nesting cannot overflow
-    // the call stack.
     let mut directories = vec![(root, tree.entries(directory))];
     while let Some((parent, entries)) = directories.last_mut() {
         let Some(id) = entries.next() else {
@@ -49,8 +47,6 @@ pub fn replay<S: Sink>(tree: &Tree, directory: DirectoryId, sink: &mut S) -> io:
     Ok(())
 }
 
-/// The [`Stat`] of the entry `id` of `tree`, of `entry_type`, `toStat` in `mem_src.zig`. Only a
-/// directory and a hard link have a device, the one of the directory that holds the link.
 fn to_stat(tree: &Tree, id: EntryId, entry_type: EntryType) -> Stat {
     let entry = tree.entry(id);
     let (device, inode, link_count) = match entry.kind {
@@ -62,18 +58,7 @@ fn to_stat(tree: &Tree, id: EntryId, entry_type: EntryType) -> Stat {
         }
         EntryKind::Regular | EntryKind::NonRegular | EntryKind::Special(_) => (0, 0, 1),
     };
-    // ncdu keeps the latest mtime below a directory as its mtime, which is the directory's own in
-    // a tree without stats.
-    let extended = tree
-        .extended(id)
-        .map(|entry_extended| Extended {
-            mtime: entry_extended
-                .extended
-                .mtime
-                .map(|_| entry_extended.latest_mtime),
-            ..entry_extended.extended
-        })
-        .unwrap_or_default();
+    let extended = tree.extended(id).map(with_latest_mtime).unwrap_or_default();
     Stat {
         entry_type,
         blocks: entry.blocks,
@@ -82,5 +67,15 @@ fn to_stat(tree: &Tree, id: EntryId, entry_type: EntryType) -> Stat {
         inode,
         link_count,
         extended,
+    }
+}
+
+fn with_latest_mtime(entry_extended: &EntryExtended) -> Extended {
+    Extended {
+        mtime: entry_extended
+            .extended
+            .mtime
+            .map(|_| entry_extended.latest_mtime),
+        ..entry_extended.extended
     }
 }

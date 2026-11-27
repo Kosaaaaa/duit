@@ -7,8 +7,6 @@ use tempfile::TempDir;
 use crate::assert_ncdu;
 use crate::{duit, render, table};
 
-/// A directory with the files that the cases of [`errors`] name: a regular file, an exclude file
-/// with the longest line that ncdu reads, and one with a line that is one byte longer.
 fn fixture() -> TempDir {
     let directory = TempDir::new().expect("temporary directory is created");
     fs::write(directory.path().join("file"), b"x").expect("file is written");
@@ -19,7 +17,6 @@ fn fixture() -> TempDir {
     directory
 }
 
-/// Every flag of ncdu, with each accepted form of its value, ends at the unknown last option.
 const ALL_FLAGS: &[&str] = &[
     "-q",
     "--slow-ui-updates",
@@ -125,7 +122,6 @@ const ALL_FLAGS: &[&str] = &[
     "--bogus",
 ];
 
-/// Arguments that ncdu rejects. ncdu checks the arguments in order and stops at the first error.
 const ERRORS: &[&[&str]] = &[
     &["-"],
     &["--", "-", "-o-", "file"],
@@ -576,7 +572,6 @@ fn errors() {
     "#);
 }
 
-/// ncdu does not support pseudo filesystems outside Linux.
 #[cfg(not(target_os = "linux"))]
 #[test]
 fn exclude_kernfs() {
@@ -594,7 +589,6 @@ fn exclude_kernfs() {
     "#);
 }
 
-/// The help ends the parsing, so an argument after it is not checked.
 #[test]
 fn help() {
     let directory = TempDir::new().expect("temporary directory is created");

@@ -4,12 +4,10 @@ use std::path::Path;
 use insta::assert_snapshot;
 use tempfile::TempDir;
 
-use crate::{BINARY_SIGNATURE, duit, render, table, text};
+use crate::{BINARY_SIGNATURE, data_blocks, duit, render, table, text};
 #[cfg(feature = "test-ncdu")]
 use crate::{assert_ncdu, ncdu, render_as_duit};
 
-/// A directory with a copy of the golden files: the exports that ncdu 2.9.2 wrote of
-/// `source.json`, and of a tree over several blocks, by `tests/fixtures/generate.sh`.
 fn fixture() -> TempDir {
     let directory = TempDir::new().expect("temporary directory is created");
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
@@ -21,9 +19,6 @@ fn fixture() -> TempDir {
     directory
 }
 
-/// duit reads the JSON, compressed JSON, and binary exports that ncdu wrote, with and without
-/// `-e`. The binary reader lists the entries of each directory in reverse order, as in ncdu. An
-/// export without extended fields gains none with `-e`, and one with them loses them without it.
 #[test]
 fn golden() {
     let directory = fixture();
@@ -34,7 +29,6 @@ fn golden() {
         &["-f", "tree.ncdu", "-o-"],
         &["-f", "tree-extended.ncdu", "-o-", "-e"],
     ];
-    // Each run writes the same output as the case after it.
     let same: &[(&[&str], &[&str])] = &[
         (&["-f", "tree.json", "-o-", "-e"], cases[0]),
         (&["-f", "tree-extended.json", "-o-"], cases[0]),
@@ -155,17 +149,6 @@ fn golden() {
     "#);
 }
 
-/// The number of data blocks of a binary export. The index block ends with its header, whose
-/// length counts 8 bytes per data block.
-fn data_blocks(root: &Path, name: &str) -> u32 {
-    let export = fs::read(root.join(name)).expect("export is read");
-    let header: [u8; 4] = export[export.len() - 4..].try_into().expect("4 bytes");
-    ((u32::from_be_bytes(header) & 0x0fff_ffff) - 16) / 8
-}
-
-/// duit reads a binary export that ncdu wrote over several blocks, and writes it back over several
-/// blocks. Two conversions restore the order of the entries, so the second reads as the JSON export
-/// of the same tree.
 #[test]
 fn golden_blocks() {
     let directory = fixture();
@@ -180,7 +163,7 @@ fn golden_blocks() {
     ];
     assert!(duit(root, &arguments).status.success());
     for name in ["blocks.ncdu", "twice.ncdu"] {
-        let blocks = data_blocks(root, name);
+        let blocks = data_blocks(&fs::read(root.join(name)).expect("export is read"));
         assert!(blocks >= 4, "{name}: {blocks} data blocks");
     }
     let json = render(&duit(root, &["-f", "blocks.json.zst", "-o-"]));
@@ -196,7 +179,6 @@ fn golden_blocks() {
     }
 }
 
-/// The export that a run with `arguments` wrote, to the file of `-o` or `-O`, or else to `stdout`.
 fn written(root: &Path, arguments: &[&str], stdout: &[u8]) -> Vec<u8> {
     match arguments
         .windows(2)
@@ -207,11 +189,8 @@ fn written(root: &Path, arguments: &[&str], stdout: &[u8]) -> Vec<u8> {
     }
 }
 
-/// The first bytes of a zstd frame.
 const ZSTD_MAGIC: &[u8] = b"\x28\xb5\x2f\xfd";
 
-/// An export as text: a JSON export as [`text`] shows it, after a line that marks it if it is
-/// compressed, and a binary export byte for byte.
 fn shown(export: &[u8]) -> String {
     if export.starts_with(BINARY_SIGNATURE) {
         export.escape_ascii().to_string()
@@ -235,10 +214,6 @@ fn read_by_ncdu(root: &Path, export: &[u8]) -> String {
     render(&ncdu(root, &["-f", "read.ncdu", "-o-", "-e"]))
 }
 
-/// The conversions that no other test covers write the export of a conversion that one does:
-/// `-O-` writes the export of `-O FILE`, `-o FILE` that of `-o-`, `-c -o-` that of `-c -o FILE`,
-/// a compressed import that of a plain one, `-c` has no effect on `-O`, and `--export-block-size`
-/// none on `-o`. ncdu writes the same exports.
 #[test]
 fn conversions() {
     let directory = fixture();

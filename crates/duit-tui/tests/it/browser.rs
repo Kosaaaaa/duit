@@ -19,15 +19,11 @@ use tempfile::TempDir;
 
 use crate::render;
 
-/// The JSON export that `crates/duit/tests/fixtures/generate.sh` converts with ncdu. It has every
-/// kind of entry.
 const SOURCE: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../duit/tests/fixtures/source.json"
 ));
 
-/// A tree with hidden entries: the largest file, a backup file, a directory that shares a hard
-/// link with the root, and excluded entries. The other entries include a long name.
 const HIDDEN: &str = r#"[1,2,{"progname":"ncdu","progver":"2.9.2"},
 [{"name":"/data","asize":4096,"dsize":4096},
 {"name":".big","asize":40960,"dsize":40960},
@@ -41,7 +37,6 @@ const HIDDEN: &str = r#"[1,2,{"progname":"ncdu","progver":"2.9.2"},
 {"name":"mnt","excluded":"otherfs"},
 {"name":"proc","excluded":"kernfs"}]]"#;
 
-/// Files whose sizes fill the bars of the graph in steps of an eighth.
 const GRAPH: &str = r#"[1,2,{"progname":"ncdu","progver":"2.9.2"},
 [{"name":"/graph","asize":0,"dsize":0},
 {"name":"a","asize":45056,"dsize":45056},
@@ -51,9 +46,6 @@ const GRAPH: &str = r#"[1,2,{"progname":"ncdu","progver":"2.9.2"},
 {"name":"e","asize":512,"dsize":512},
 {"name":"f","asize":0,"dsize":0}]]"#;
 
-/// Entries with extended information, at 10:00 UTC on different days so that the dates are the
-/// same in most time zones. The directory `old` is older than its file, and `nomtime` has extended
-/// information without an mtime.
 const MTIME: &str = r#"[1,2,{"progname":"ncdu","progver":"2.9.2"},
 [{"name":"/mtime","asize":4096,"dsize":4096,"mtime":1704103200},
 [{"name":"old","asize":4096,"dsize":4096,"mtime":1704189600},{"name":"new.txt","asize":100,"dsize":4096,"mtime":1704362400}],
@@ -62,8 +54,6 @@ const MTIME: &str = r#"[1,2,{"progname":"ncdu","progver":"2.9.2"},
 {"name":"nomtime","asize":100,"dsize":4096,"uid":1000},
 {"name":"plain","asize":100,"dsize":4096}]]"#;
 
-/// Names that sort differently in natural and in byte order, a directory, and two excluded
-/// entries, of which only the one on another filesystem is shown as a directory.
 const NAMES: &str = r#"[1,2,{"progname":"ncdu","progver":"2.9.2"},
 [{"name":"/names","asize":0,"dsize":0},
 {"name":"file10","asize":10,"dsize":4096},
@@ -73,7 +63,6 @@ const NAMES: &str = r#"[1,2,{"progname":"ncdu","progver":"2.9.2"},
 {"name":"zfs","excluded":"otherfs"},
 {"name":"apattern","excluded":"pattern"}]]"#;
 
-/// Eleven hard links to one inode, three of them in a subdirectory, one with a long name.
 const LINKS: &str = r#"[1,2,{"progname":"ncdu","progver":"2.9.2"},
 [{"name":"/links","asize":4096,"dsize":4096},
 {"name":"a","asize":100,"dsize":4096,"ino":9,"hlnkc":true,"nlink":11},
@@ -89,15 +78,12 @@ const LINKS: &str = r#"[1,2,{"progname":"ncdu","progver":"2.9.2"},
 {"name":"a-file-name-that-is-long-enough-to-be-shortened-in-the-window","asize":100,"dsize":4096,"ino":9,"hlnkc":true,"nlink":11},
 {"name":"x","asize":100,"dsize":4096,"ino":9,"hlnkc":true,"nlink":11}]]]"#;
 
-/// Import the JSON export `input` and return the tree.
 fn tree_of(input: &[u8], extended: bool) -> Tree {
     let mut sink = MemorySink::new(extended);
     import(&mut sink, input, &[]).expect("input is imported");
     sink.finish(&mut |_, _| {})
 }
 
-/// A JSON export whose root holds a directory with each number of files in `counts`, and one
-/// file. Every entry is empty.
 fn item_counts(counts: &[(&str, usize)]) -> String {
     let mut export =
         String::from(r#"[1,2,{"progname":"ncdu","progver":"2.9.2"},[{"name":"/items"},"#);
@@ -112,12 +98,10 @@ fn item_counts(counts: &[(&str, usize)]) -> String {
     export
 }
 
-/// The root of `tree`.
 fn root(tree: &Tree) -> DirectoryId {
     tree.root().expect("tree has a root")
 }
 
-/// The directory `name` of the root of `tree`.
 fn subdirectory(tree: &Tree, name: &[u8]) -> DirectoryId {
     tree.entries(root(tree))
         .find(|&entry| tree.name(entry) == name)
@@ -131,8 +115,6 @@ fn subdirectory(tree: &Tree, name: &[u8]) -> DirectoryId {
         .expect("directory exists")
 }
 
-/// The options of an import, which ncdu marks in the header, and which disables refreshing,
-/// deleting, and the shell unless they are enabled.
 fn imported() -> BrowserOptions {
     BrowserOptions {
         imported: true,
@@ -143,11 +125,6 @@ fn imported() -> BrowserOptions {
     }
 }
 
-/// Open `directory` of `tree` on a terminal of `width` by `height`, and draw it again after each
-/// of `keys`, as ncdu does between key presses. Returns the text of each line of the last screen,
-/// quoted, with the version replaced by `[VERSION]`, then one line of attributes per line: `R` for
-/// reverse video, `B` for bold, `#` for both, and `.` for neither. When a cell has a color, the
-/// foreground and the background colors of each line follow, as one [`color_code`] per cell.
 fn screen(
     tree: &Tree,
     directory: DirectoryId,
@@ -159,8 +136,6 @@ fn screen(
     run(browser, tree.clone(), options, keys, size, None)
 }
 
-/// Open the root of `tree` as [`screen`] does, where the command of `--delete-command` leaves
-/// `stat` at the path of the entry, or nothing without it.
 fn command_screen(
     tree: &Tree,
     options: &BrowserOptions,
@@ -171,8 +146,6 @@ fn command_screen(
     run(browser, tree.clone(), options, keys, (80, 12), stat)
 }
 
-/// Open the binary export `fixture` of `crates/duit/tests/fixtures` as [`screen`] opens a tree,
-/// reading it from the file one directory at a time.
 fn file_screen(fixture: &str, options: &BrowserOptions, keys: &[Key], size: (u16, u16)) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../duit/tests/fixtures")
@@ -185,12 +158,6 @@ fn file_screen(fixture: &str, options: &BrowserOptions, keys: &[Key], size: (u16
     run(browser, tree, options, keys, size, None)
 }
 
-/// Draw `browser` on a terminal of `width` by `height`, and again after each of `keys`, and render
-/// the last screen as [`screen`] describes.
-///
-/// A deletion runs only in a temporary directory. Its windows that wait for a key take the next
-/// of `keys`. When none is left, the deletion is aborted, and its window is the last screen. The
-/// command of `--delete-command` runs, and leaves `stat` at the path of the entry.
 fn run(
     mut browser: Browser,
     mut tree: Tree,
@@ -254,8 +221,6 @@ fn run(
     render(&terminal)
 }
 
-/// Replace the time of day and the offset of each timestamp in `screen`, which depend on the time
-/// zone, and keep the date.
 fn redact_times(screen: &str) -> String {
     const MASK: &[u8] = b"dddd-dd-dd dd:dd:dd +dddd";
     let mut screen = screen.as_bytes().to_vec();
@@ -279,8 +244,6 @@ fn redact_times(screen: &str) -> String {
     String::from_utf8(screen).expect("screen is UTF-8")
 }
 
-/// The default columns, sorted by disk usage: a flag for every kind of entry, the shared size of
-/// the directory with a hard link outside of it, and the graph. Names are escaped and shortened.
 #[test]
 fn default_columns() {
     let tree = tree_of(SOURCE, false);
@@ -324,8 +287,6 @@ fn default_columns() {
     "#);
 }
 
-/// `--shared-column=unique` shows the size that only the directory holds, and the size of every
-/// other entry as unique.
 #[test]
 fn shared_column_unique() {
     let tree = tree_of(SOURCE, false);
@@ -373,7 +334,6 @@ fn shared_column_unique() {
     "#);
 }
 
-/// `--shared-column=off` drops the shared column.
 #[test]
 fn shared_column_off() {
     let tree = tree_of(SOURCE, false);
@@ -421,8 +381,6 @@ fn shared_column_off() {
     "#);
 }
 
-/// `--si --apparent-size` shows apparent sizes in powers of 1000 in a narrower column, and the
-/// footer marks the apparent size. The order stays by disk usage.
 #[test]
 fn si_apparent_size() {
     let tree = tree_of(SOURCE, false);
@@ -471,8 +429,6 @@ fn si_apparent_size() {
     "#);
 }
 
-/// Hidden entries are shown by default. The directory that shares a hard link widens the size
-/// column, and the readonly mode is marked in the header.
 #[test]
 fn hidden_shown() {
     let tree = tree_of(HIDDEN.as_bytes(), false);
@@ -512,9 +468,6 @@ fn hidden_shown() {
     "#);
 }
 
-/// `--hide-hidden` hides names that start with `.` or end with `~`, and excluded entries. The
-/// hidden directory with a shared size no longer widens the size column, but the hidden file
-/// still scales the graph.
 #[test]
 fn hidden_hidden() {
     let tree = tree_of(HIDDEN.as_bytes(), false);
@@ -544,8 +497,6 @@ fn hidden_hidden() {
     "#);
 }
 
-/// `--show-percent --graph-style=eighth-block` shows the share of the directory and bars in
-/// eighths.
 #[test]
 fn graph_eighth_block_percent() {
     let tree = tree_of(GRAPH.as_bytes(), false);
@@ -576,7 +527,6 @@ fn graph_eighth_block_percent() {
     "#);
 }
 
-/// `--graph-style=half-block` fills bars in halves.
 #[test]
 fn graph_half_block() {
     let tree = tree_of(GRAPH.as_bytes(), false);
@@ -606,7 +556,6 @@ fn graph_half_block() {
     "#);
 }
 
-/// `--show-percent --hide-graph` shows the percentage alone.
 #[test]
 fn percent_without_graph() {
     let tree = tree_of(GRAPH.as_bytes(), false);
@@ -637,8 +586,6 @@ fn percent_without_graph() {
     "#);
 }
 
-/// `--show-itemcount --sort=itemcount` shows the number of items of each directory, with a
-/// thousands separator from 1000 on, and nothing for a file.
 #[test]
 fn item_count() {
     let tree = tree_of(
@@ -668,8 +615,6 @@ fn item_count() {
     "#);
 }
 
-/// `--show-mtime --sort=mtime` shows the latest mtime of each entry, puts the entries without
-/// extended information last, and `no mtime` where the mtime is unknown.
 #[test]
 fn mtime() {
     let tree = tree_of(MTIME.as_bytes(), true);
@@ -699,7 +644,6 @@ fn mtime() {
     "#);
 }
 
-/// The row of the parent directory shows the mtime of the directory that is open.
 #[test]
 fn mtime_parent_row() {
     let tree = tree_of(MTIME.as_bytes(), true);
@@ -722,8 +666,6 @@ fn mtime_parent_row() {
     "#);
 }
 
-/// `--sort=name --disable-natsort --group-directories-first` puts directories and directories on
-/// another filesystem first, then sorts names byte by byte.
 #[test]
 fn sort_name_bytes_directories_first() {
     let tree = tree_of(NAMES.as_bytes(), false);
@@ -756,7 +698,6 @@ fn sort_name_bytes_directories_first() {
     "#);
 }
 
-/// `--sort=name-desc` sorts names in reverse natural order, with directories among the files.
 #[test]
 fn sort_name_natural_descending() {
     let tree = tree_of(NAMES.as_bytes(), false);
@@ -787,8 +728,6 @@ fn sort_name_natural_descending() {
     "#);
 }
 
-/// A subdirectory starts with the row of its parent, and its path joins the names. The cursor row
-/// is in reverse video.
 #[test]
 fn subdirectory_cursor() {
     let tree = tree_of(SOURCE, false);
@@ -809,7 +748,6 @@ fn subdirectory_cursor() {
     "#);
 }
 
-/// The listing scrolls to keep the cursor on the screen.
 #[test]
 fn scroll_to_cursor() {
     let tree = tree_of(SOURCE, false);
@@ -833,8 +771,6 @@ fn scroll_to_cursor() {
     "#);
 }
 
-/// On a narrow terminal, the graph and the mtime need more columns than are left and are not
-/// shown, the item count fits, and names are shortened.
 #[test]
 fn narrow_terminal() {
     let tree = tree_of(HIDDEN.as_bytes(), true);
@@ -866,7 +802,6 @@ fn narrow_terminal() {
     "#);
 }
 
-/// Page down moves the cursor by the rows of the listing, and stops at the last row.
 #[test]
 fn page_down_to_end() {
     let tree = tree_of(SOURCE, false);
@@ -890,7 +825,6 @@ fn page_down_to_end() {
     "#);
 }
 
-/// End moves the cursor to the last row, down stops there, and page up and up move it back.
 #[test]
 fn end_page_up() {
     let tree = tree_of(SOURCE, false);
@@ -915,7 +849,6 @@ fn end_page_up() {
     "#);
 }
 
-/// Home moves the cursor to the first row, and up stops there.
 #[test]
 fn home() {
     let tree = tree_of(SOURCE, false);
@@ -927,8 +860,6 @@ fn home() {
     );
 }
 
-/// Going back to a directory restores both the cursor and the scroll position it had, so the
-/// cursor stays on the first row of the listing.
 #[test]
 fn enter_parent_restores_view() {
     let tree = tree_of(SOURCE, false);
@@ -953,7 +884,6 @@ fn enter_parent_restores_view() {
     "#);
 }
 
-/// Opening a directory again puts the cursor on the entry it was on.
 #[test]
 fn enter_subdirectory_restores_cursor() {
     let tree = tree_of(SOURCE, false);
@@ -974,7 +904,6 @@ fn enter_subdirectory_restores_cursor() {
     "#);
 }
 
-/// Enter on the row of the parent directory goes back to it.
 #[test]
 fn enter_parent_row() {
     let tree = tree_of(SOURCE, false);
@@ -999,8 +928,6 @@ fn enter_parent_row() {
     "#);
 }
 
-/// Enter does nothing on a file or on a directory that was not read, such as one on another
-/// filesystem, and going to the parent does nothing in the root.
 #[test]
 fn enter_without_directory() {
     let tree = tree_of(SOURCE, false);
@@ -1021,8 +948,6 @@ fn enter_without_directory() {
     }
 }
 
-/// Going to the parent directory cuts the last component of the path, so a root whose name ends
-/// with `/` loses it, and the view that was saved under its name is not found.
 #[test]
 fn enter_parent_cuts_path() {
     let tree = tree_of(
@@ -1047,8 +972,6 @@ fn enter_parent_cuts_path() {
     "#);
 }
 
-/// A sort key keeps the cursor on its entry and restores the scroll position that was saved
-/// with the previous key.
 #[test]
 fn sort_keeps_cursor() {
     let tree = tree_of(SOURCE, false);
@@ -1074,8 +997,6 @@ fn sort_keeps_cursor() {
     "#);
 }
 
-/// A sort key before any other key puts the cursor on the first row, as no view of the directory
-/// was saved yet.
 #[test]
 fn sort_first_key() {
     let tree = tree_of(SOURCE, false);
@@ -1099,7 +1020,6 @@ fn sort_first_key() {
     "#);
 }
 
-/// The same sort key again reverses the order.
 #[test]
 fn sort_name_toggle() {
     let tree = tree_of(NAMES.as_bytes(), false);
@@ -1126,7 +1046,6 @@ fn sort_name_toggle() {
     "#);
 }
 
-/// `a` switches to apparent sizes and sorts by them, and `s` then reverses the order.
 #[test]
 fn sort_apparent_size_ascending() {
     let tree = tree_of(SOURCE, false);
@@ -1155,7 +1074,6 @@ fn sort_apparent_size_ascending() {
     "#);
 }
 
-/// `C` sorts by item count in descending order, and again in ascending order.
 #[test]
 fn sort_item_count_ascending() {
     let tree = tree_of(
@@ -1181,7 +1099,6 @@ fn sort_item_count_ascending() {
     "#);
 }
 
-/// `m` shows the mtime and `M` sorts by it, in descending order and then in ascending order.
 #[test]
 fn sort_mtime_ascending() {
     let tree = tree_of(MTIME.as_bytes(), true);
@@ -1210,7 +1127,6 @@ fn sort_mtime_ascending() {
     "#);
 }
 
-/// Without `-e`, `m` and `M` do nothing.
 #[test]
 fn mtime_keys_without_extended() {
     let tree = tree_of(MTIME.as_bytes(), false);
@@ -1221,7 +1137,6 @@ fn mtime_keys_without_extended() {
     );
 }
 
-/// `t` lists the directories first.
 #[test]
 fn sort_directories_first_toggle() {
     let tree = tree_of(NAMES.as_bytes(), false);
@@ -1248,7 +1163,6 @@ fn sort_directories_first_toggle() {
     "#);
 }
 
-/// `e` hides the hidden entries and keeps the cursor on its entry.
 #[test]
 fn hide_hidden_keeps_cursor() {
     let tree = tree_of(HIDDEN.as_bytes(), false);
@@ -1275,7 +1189,6 @@ fn hide_hidden_keeps_cursor() {
     "#);
 }
 
-/// When `e` hides the entry under the cursor, the cursor goes to the first row.
 #[test]
 fn hide_hidden_cursor_entry() {
     let tree = tree_of(HIDDEN.as_bytes(), false);
@@ -1302,9 +1215,6 @@ fn hide_hidden_cursor_entry() {
     "#);
 }
 
-/// `g` cycles through the graph, the percentage, both, and neither, `u` cycles the shared column
-/// through unique and off, `c` shows the item counts, and `a` twice goes back to disk usage. Each
-/// draws as its option does.
 #[test]
 fn display_keys() {
     let tree = tree_of(SOURCE, false);
@@ -1356,16 +1266,12 @@ fn display_keys() {
         screen(&imported(), &[Key::Char('c')]),
         screen(&item_count, &[])
     );
-    // The first `a` puts the cursor on `sparse`, the first row by apparent size, as no view was
-    // saved yet, and the second keeps it there.
     assert_eq!(
         screen(&imported(), &[Key::Char('a'); 2]),
         screen(&imported(), &[Key::Down; 5])
     );
 }
 
-/// With `--confirm-quit`, `q` opens a window that asks for confirmation. The window clears the
-/// reverse video of the cursor row below it.
 #[test]
 fn quit_confirmation() {
     let tree = tree_of(SOURCE, false);
@@ -1398,8 +1304,6 @@ fn quit_confirmation() {
     "#);
 }
 
-/// `q` quits, or with `--confirm-quit` asks first: `y` or `Y` quits, and any other key closes
-/// the window and does nothing else.
 #[test]
 fn quit_keys() {
     let tree = tree_of(SOURCE, false);
@@ -1447,7 +1351,6 @@ fn quit_keys() {
     );
 }
 
-/// Refreshing an import is disabled unless `--enable-refresh` enables it, which a message says.
 #[test]
 fn refresh_disabled_imported() {
     let tree = tree_of(SOURCE, false);
@@ -1479,7 +1382,6 @@ fn refresh_disabled_imported() {
     "#);
 }
 
-/// `r` asks the main loop to scan the open directory again, which [`Browser::directory`] gives.
 #[test]
 fn refresh() {
     let mut tree = tree_of(SOURCE, false);
@@ -1503,7 +1405,6 @@ fn refresh() {
     assert_eq!(browser.directory(), subdirectory(&tree, b"src"));
 }
 
-/// Refreshing a scan is disabled with `--disable-refresh`.
 #[test]
 fn refresh_disabled() {
     let tree = tree_of(SOURCE, false);
@@ -1539,8 +1440,6 @@ fn refresh_disabled() {
     "#);
 }
 
-/// The shell is disabled with `--disable-shell`, and the message names `--enable-shell` also for a
-/// scan.
 #[test]
 fn shell_disabled() {
     let tree = tree_of(SOURCE, false);
@@ -1576,7 +1475,6 @@ fn shell_disabled() {
     "#);
 }
 
-/// Deleting from an import is disabled unless `--enable-delete` enables it, which a message says.
 #[test]
 fn delete_disabled_imported() {
     let tree = tree_of(SOURCE, false);
@@ -1608,8 +1506,6 @@ fn delete_disabled_imported() {
     "#);
 }
 
-/// Deleting from a scan is disabled with `--disable-delete`, also on the row of the parent
-/// directory. In a root without entries, `d` does nothing.
 #[test]
 fn delete_disabled() {
     let tree = tree_of(SOURCE, false);
@@ -1654,8 +1550,6 @@ fn delete_disabled() {
     );
 }
 
-/// A tree to delete from, whose root is named `[DIR]`: three files, and a directory with a file and
-/// a directory with a file below it.
 const DELETE: &str = r#"[1,2,{"progname":"ncdu","progver":"2.9.2"},
 [{"name":"[DIR]","asize":4096,"dsize":4096},
 {"name":"a.txt","asize":1000,"dsize":4096},
@@ -1667,7 +1561,6 @@ const DELETE: &str = r#"[1,2,{"progname":"ncdu","progver":"2.9.2"},
 [{"name":"deep","asize":4096,"dsize":4096},{"name":"g","asize":6000,"dsize":8192}]],
 {"name":"keep","asize":100,"dsize":4096}]]]"#;
 
-/// The files of [`DELETE`].
 const DELETE_FILES: [&str; 6] = [
     "a.txt",
     "b.txt",
@@ -1677,8 +1570,6 @@ const DELETE_FILES: [&str; 6] = [
     "top/keep",
 ];
 
-/// A temporary directory with the empty files `files`, each with the directories above it, and the
-/// tree of the JSON export `export`, whose root `[DIR]` is named after the directory.
 fn on_disk(export: &str, files: &[&str]) -> (TempDir, Tree) {
     let directory = TempDir::new().expect("temporary directory is created");
     for file in files {
@@ -1692,8 +1583,6 @@ fn on_disk(export: &str, files: &[&str]) -> (TempDir, Tree) {
     (directory, tree)
 }
 
-/// `screen` with the path of `directory` replaced by `[DIR]`, and the line of the path filled with
-/// `-` to its width again.
 fn redact_directory(screen: &str, directory: &TempDir) -> String {
     let path = directory.path().to_str().expect("path is UTF-8");
     let fill = "-".repeat(path.chars().count() - "[DIR]".len());
@@ -1710,8 +1599,6 @@ fn redact_directory(screen: &str, directory: &TempDir) -> String {
     redacted
 }
 
-/// A directory that is read-only until the value is dropped, so that the entries in it cannot be
-/// deleted and the temporary directory that holds it can.
 struct ReadOnly(PathBuf);
 
 impl ReadOnly {
@@ -1727,8 +1614,6 @@ impl Drop for ReadOnly {
     }
 }
 
-/// `d` asks before it deletes, with "no" selected, over the listing. A directory is deleted with
-/// all of its contents.
 #[test]
 fn delete_confirmation() {
     let tree = tree_of(SOURCE, false);
@@ -1761,8 +1646,6 @@ fn delete_confirmation() {
     "#);
 }
 
-/// Left and `h` select the button on the left, and Right and `l` the one on the right. A file is
-/// deleted without its contents.
 #[test]
 fn delete_confirmation_keys() {
     let tree = tree_of(SOURCE, false);
@@ -1804,7 +1687,6 @@ fn delete_confirmation_keys() {
     "#);
 }
 
-/// Enter on "no", or `q` on any button, closes the confirmation and deletes nothing.
 #[test]
 fn delete_cancel() {
     let (directory, tree) = on_disk(DELETE, &DELETE_FILES);
@@ -1828,8 +1710,6 @@ fn delete_cancel() {
     }
 }
 
-/// "yes" deletes the file, takes its sizes from the totals, and puts the cursor on the entry after
-/// it.
 #[test]
 fn delete_file() {
     let (directory, tree) = on_disk(DELETE, &DELETE_FILES);
@@ -1870,8 +1750,6 @@ fn delete_file() {
     assert!(!directory.path().join("b.txt").exists());
 }
 
-/// Deleting a directory deletes everything below it, and takes its sizes and items from the
-/// totals of its parent and of the root.
 #[test]
 fn delete_directory() {
     let (directory, tree) = on_disk(DELETE, &DELETE_FILES);
@@ -1920,8 +1798,6 @@ fn delete_directory() {
     assert!(directory.path().join("top/keep").exists());
 }
 
-/// After the last entry is deleted, the cursor is on the entry before it, and after the only entry,
-/// on the row of the parent directory.
 #[test]
 fn delete_cursor() {
     let (directory, tree) = on_disk(DELETE, &DELETE_FILES);
@@ -1972,8 +1848,6 @@ fn delete_cursor() {
     assert!(!directory.path().join("top/dir").exists());
 }
 
-/// "don't ask me again" deletes, and the deletes after it are not confirmed, as with
-/// `--no-confirm-delete`.
 #[test]
 fn delete_without_confirmation() {
     let (directory, tree) = on_disk(DELETE, &DELETE_FILES);
@@ -2029,8 +1903,6 @@ fn delete_without_confirmation() {
     assert!(!directory.path().join("top").exists());
 }
 
-/// Deleting a hard link takes its inode from the totals, and the other link of the inode is counted
-/// again, still as shared, because its link count stays 2.
 #[test]
 fn delete_hard_link() {
     let export = r#"[1,2,{"progname":"ncdu","progver":"2.9.2"},
@@ -2076,15 +1948,12 @@ fn delete_hard_link() {
     assert!(!directory.path().join("x").exists());
 }
 
-/// A read-only directory with two files, which cannot be deleted.
 const READ_ONLY: &str = r#"[1,2,{"progname":"ncdu","progver":"2.9.2"},
 [{"name":"[DIR]","asize":4096,"dsize":4096},
 [{"name":"ro","asize":4096,"dsize":4096},
 {"name":"a","asize":10,"dsize":4096},
 {"name":"b","asize":10,"dsize":4096}]]]"#;
 
-/// An entry that cannot be deleted opens an error window on an erased screen, with the path from
-/// below the root, and "abort" selected.
 #[test]
 fn delete_error() {
     let (directory, tree) = on_disk(READ_ONLY, &["ro/a", "ro/b"]);
@@ -2125,9 +1994,6 @@ fn delete_error() {
     "#);
 }
 
-/// "abort" and `q` stop the deletion, "ignore" goes on to the next entry, where the error window
-/// opens with "ignore" selected, and "ignore all" goes on without error windows, also in the next
-/// deletion. A directory that still holds an entry is kept without an error.
 #[test]
 fn delete_error_options() {
     let (directory, tree) = on_disk(READ_ONLY, &["ro/a", "ro/b"]);
@@ -2186,9 +2052,6 @@ fn delete_error_options() {
     assert!(directory.path().join("ro/b").exists());
 }
 
-/// A directory that is not empty on disk, although it is empty in the tree, opens the error window.
-/// The window joins the directory to the last entry that the deletion went through, which is the
-/// directory itself when the tree has no entries in it.
 #[test]
 fn delete_error_not_empty() {
     let export = r#"[1,2,{"progname":"ncdu","progver":"2.9.2"},
@@ -2232,8 +2095,6 @@ fn delete_error_not_empty() {
     assert!(directory.path().join("full/unknown").exists());
 }
 
-/// While it deletes, the deletion draws on an erased screen the path of the entry that it deletes,
-/// from below the root, here a directory in the root.
 #[test]
 fn delete_progress() {
     let (directory, mut tree) = on_disk(DELETE, &DELETE_FILES);
@@ -2285,8 +2146,6 @@ fn delete_progress() {
     assert!(!directory.path().join("top").exists());
 }
 
-/// With `--delete-command`, `d` asks to run the command on the entry, both shortened, the same for
-/// a directory as for a file.
 #[test]
 fn delete_command_confirmation() {
     let tree = tree_of(SOURCE, false);
@@ -2324,9 +2183,6 @@ fn delete_command_confirmation() {
     "#);
 }
 
-/// When nothing is left at the path after the command, the entry is taken out of the tree and its
-/// sizes from the totals, and the cursor goes to the entry after it. duit does not delete the file
-/// itself.
 #[test]
 fn delete_command_removed() {
     let (directory, tree) = on_disk(DELETE, &DELETE_FILES);
@@ -2365,8 +2221,6 @@ fn delete_command_removed() {
     assert!(directory.path().join("b.txt").exists());
 }
 
-/// A file that the command leaves at the path is added again with the sizes that it has now, in
-/// the totals too, and the cursor stays on it.
 #[test]
 fn delete_command_changed() {
     let (directory, tree) = on_disk(DELETE, &DELETE_FILES);
@@ -2411,8 +2265,6 @@ fn delete_command_changed() {
     "#);
 }
 
-/// A hard link that the command leaves at the path is added as a hard link, whose sizes the
-/// totals count once for its inode.
 #[test]
 fn delete_command_hard_link() {
     let (directory, tree) = on_disk(DELETE, &DELETE_FILES);
@@ -2459,7 +2311,6 @@ fn delete_command_hard_link() {
     "#);
 }
 
-/// `i` shows the name, the type, and the sizes of a file.
 #[test]
 fn info_file() {
     let tree = tree_of(SOURCE, false);
@@ -2496,8 +2347,6 @@ fn info_file() {
     "#);
 }
 
-/// The info of a directory adds the shared and unique parts of its sizes, which hard links with
-/// links outside of it give, and its number of items.
 #[test]
 fn info_directory() {
     let tree = tree_of(SOURCE, false);
@@ -2542,8 +2391,6 @@ fn info_directory() {
     "#);
 }
 
-/// With `-e`, the mode, the owner, and the latest mtime replace the type, and a hard link has
-/// tabs, its link count, and its inode. `--si` sizes count in powers of 1000.
 #[test]
 fn info_extended_hard_link() {
     let tree = tree_of(SOURCE, true);
@@ -2589,8 +2436,6 @@ fn info_extended_hard_link() {
     "#);
 }
 
-/// Extended information without a mode or an mtime leaves out its fields, and the row that the
-/// mtime would take stays empty.
 #[test]
 fn info_extended_without_mtime() {
     let tree = tree_of(MTIME.as_bytes(), true);
@@ -2631,7 +2476,6 @@ fn info_extended_without_mtime() {
     "#);
 }
 
-/// An entry that could not be read has no sizes, and counts as excluded.
 #[test]
 fn info_read_error() {
     let tree = tree_of(SOURCE, false);
@@ -2668,8 +2512,6 @@ fn info_read_error() {
     "#);
 }
 
-/// The links tab lists the paths of the links to the inode below the root, sorted, and marks the
-/// selected entry. The cursor of the list moves on its own.
 #[test]
 fn info_links() {
     let tree = tree_of(SOURCE, false);
@@ -2718,8 +2560,6 @@ fn info_links() {
     "#);
 }
 
-/// The links tab scrolls to keep its cursor on the screen, and pages by 5 links. Long paths are
-/// shortened.
 #[test]
 fn info_links_scroll() {
     let tree = tree_of(LINKS.as_bytes(), false);
@@ -2766,9 +2606,6 @@ fn info_links_scroll() {
     "#);
 }
 
-/// Enter in the links tab opens the directory of the selected link with the cursor on it, but
-/// keeps the path, the scroll position, and the parent directories of the directory that was open:
-/// there is no row of the parent directory, and going to the parent does nothing.
 #[test]
 fn info_links_enter() {
     let tree = tree_of(SOURCE, false);
@@ -2799,7 +2636,6 @@ fn info_links_enter() {
     "#);
 }
 
-/// The keys of the info window, and the keys of the listing that close it.
 #[test]
 fn info_keys() {
     let tree = tree_of(SOURCE, false);
@@ -2811,7 +2647,6 @@ fn info_keys() {
     let (i, j, k) = (Key::Char('i'), Key::Down, Key::Up);
     let link = [j, j, j, j];
 
-    // `i` and `q` close the window, and `q` does not quit.
     assert_ne!(screen_of(root, &[i]), screen_of(root, &[]));
     assert_eq!(screen_of(root, &[i, i]), screen_of(root, &[]));
     assert_eq!(screen_of(root, &[i, Key::Char('q')]), screen_of(root, &[]));
@@ -2826,22 +2661,17 @@ fn info_keys() {
     };
     key_input(i);
     assert!(!key_input(Key::Char('q')));
-    // The cursor keys move the cursor of the listing, and the window shows the entry under it.
     assert_eq!(screen_of(root, &[i, j, j]), screen_of(root, &[j, j, i]));
     assert_eq!(
         screen_of(root, &[i, Key::End]),
         screen_of(root, &[Key::End, i])
     );
-    // On the row of the parent directory, the window closes, and `i` does not open it.
     assert_eq!(screen_of(src, &[j, i, k]), screen_of(src, &[j, k]));
     assert_eq!(screen_of(src, &[i]), screen_of(src, &[]));
-    // Sort and display keys keep the window open on the same entry.
     assert_eq!(
         screen_of(root, &[j, i, Key::Char('n'), Key::Char('g')]),
         screen_of(root, &[j, Key::Char('n'), Key::Char('g'), i])
     );
-    // Opening a directory, going to the parent, and `e` close the window. Without a parent
-    // directory, `h` does nothing and the window stays.
     assert_eq!(
         screen_of(root, &[i, Key::Enter]),
         screen_of(root, &[Key::Enter])
@@ -2855,7 +2685,6 @@ fn info_keys() {
         screen_of(root, &[Key::Char('e')])
     );
     assert_eq!(screen_of(root, &[i, Key::Char('h')]), screen_of(root, &[i]));
-    // The tabs are only for hard links, and switch with `1`, `h`, or left and `2`, `l`, or right.
     assert_eq!(screen_of(root, &[i, Key::Char('2')]), screen_of(root, &[i]));
     let tab = |keys: &[Key]| screen_of(root, &[&link[..], &[i], keys].concat());
     assert_eq!(tab(&[Key::Char('l')]), tab(&[Key::Char('2')]));
@@ -2863,14 +2692,11 @@ fn info_keys() {
     assert_eq!(tab(&[Key::Char('2'), Key::Char('1')]), tab(&[]));
     assert_eq!(tab(&[Key::Char('2'), Key::Char('h')]), tab(&[]));
     assert_eq!(tab(&[Key::Char('2'), Key::Left]), tab(&[]));
-    // In the links tab, the cursor keys move the cursor of the list, not that of the listing.
     assert_eq!(tab(&[Key::Char('2'), j, Key::Char('1')]), tab(&[]));
     assert_eq!(
         tab(&[Key::Char('2'), Key::End]),
         tab(&[Key::Char('2'), j, j])
     );
-    // The window keeps the cursor of the list until it shows another entry, also after `e`
-    // closed it.
     assert_eq!(
         tab(&[Key::Char('2'), j, Key::Char('e'), i, Key::Char('2')]),
         screen_of(
@@ -2884,8 +2710,6 @@ fn info_keys() {
     );
 }
 
-/// `?` opens the help window on the keys tab, with the first 10 keys and a mark that there are
-/// more.
 #[test]
 fn help() {
     let tree = tree_of(SOURCE, false);
@@ -2930,7 +2754,6 @@ fn help() {
     "#);
 }
 
-/// The keys tab scrolls one line at a time, and stops at the last key.
 #[test]
 fn help_scroll() {
     let tree = tree_of(SOURCE, false);
@@ -2975,7 +2798,6 @@ fn help_scroll() {
     "#);
 }
 
-/// The format tab explains the flags in front of the entries.
 #[test]
 fn help_format() {
     let tree = tree_of(SOURCE, false);
@@ -3020,7 +2842,6 @@ fn help_format() {
     "#);
 }
 
-/// The about tab draws the logo in reverse video, and the version of duit.
 #[test]
 fn help_about() {
     let tree = tree_of(SOURCE, false);
@@ -3065,7 +2886,6 @@ fn help_about() {
     "#);
 }
 
-/// The keys of the help window, which takes every key, and `?` in the info window.
 #[test]
 fn help_keys() {
     let tree = tree_of(SOURCE, false);
@@ -3073,7 +2893,6 @@ fn help_keys() {
     let (help, i, j, k) = (Key::Char('?'), Key::Char('i'), Key::Down, Key::Up);
     let tab = |key: char| [help, Key::Char(key)];
 
-    // Any key other than those of the window closes it, and the listing does not see it.
     assert_ne!(screen_of(&[help]), screen_of(&[]));
     for key in [
         Key::Char('q'),
@@ -3087,7 +2906,6 @@ fn help_keys() {
     ] {
         assert_eq!(screen_of(&[help, key]), screen_of(&[]), "{key:?}");
     }
-    // `q` does not quit, and does not ask to.
     let mut options = imported();
     let mut tree = tree.clone();
     let mut browser = Browser::new(&tree, root(&tree), &options, &mut |_| {});
@@ -3113,7 +2931,6 @@ fn help_keys() {
         ),
         screen_of(&[])
     );
-    // The tabs switch with `1`, `2`, and `3`, and with `h` or left and `l` or right.
     assert_ne!(screen_of(&tab('2')), screen_of(&[help]));
     assert_ne!(screen_of(&tab('3')), screen_of(&tab('2')));
     assert_eq!(
@@ -3138,8 +2955,6 @@ fn help_keys() {
         screen_of(&[help])
     );
     assert_eq!(screen_of(&[help, Key::Char('h')]), screen_of(&[help]));
-    // Space, `j`, down, and page down scroll the keys tab down one line, and `k`, up, and page up
-    // scroll it up.
     let scrolled = screen_of(&[help, j]);
     assert_ne!(scrolled, screen_of(&[help]));
     assert_eq!(screen_of(&[help, Key::Char('j')]), scrolled);
@@ -3149,7 +2964,6 @@ fn help_keys() {
     assert_eq!(screen_of(&[help, j, j, k]), scrolled);
     assert_eq!(screen_of(&[help, j, j, Key::PageUp]), scrolled);
     assert_eq!(screen_of(&[help, k]), screen_of(&[help]));
-    // The other tabs do not scroll.
     assert_eq!(
         screen_of(&[&tab('2')[..], &[j]].concat()),
         screen_of(&tab('2'))
@@ -3158,8 +2972,6 @@ fn help_keys() {
         screen_of(&[&tab('3')[..], &[j, k]].concat()),
         screen_of(&tab('3'))
     );
-    // A key that keeps the tab keeps the scroll position, and one that changes the tab or closes
-    // the window starts at the top again.
     assert_eq!(screen_of(&[help, j, Key::Char('1')]), scrolled);
     assert_eq!(screen_of(&[help, j, Key::Char('h')]), scrolled);
     assert_eq!(screen_of(&[help, j, Key::Left]), scrolled);
@@ -3171,16 +2983,12 @@ fn help_keys() {
         screen_of(&[help, j, Key::Char('q'), help]),
         screen_of(&[help])
     );
-    // The window opens again on the tab it was closed on.
     assert_eq!(
         screen_of(&[&tab('2')[..], &[Key::Char('q'), help]].concat()),
         screen_of(&tab('2'))
     );
-    // `?` in the info window replaces it with the help window, and closing that one shows the
-    // listing.
     assert_eq!(screen_of(&[i, help]), screen_of(&[help]));
     assert_eq!(screen_of(&[i, help, Key::Char('q')]), screen_of(&[]));
-    // The info window keeps the cursor of the links tab while the help window is open.
     let link = [j, j, j, j, i, Key::Char('2'), j];
     assert_eq!(
         screen_of(&[&link[..], &[help, Key::Char('q'), i, Key::Char('2')]].concat()),
@@ -3188,7 +2996,6 @@ fn help_keys() {
     );
 }
 
-/// The options of the color tests: every column of the listing, in `color`.
 fn colored(color: ColorScheme) -> BrowserOptions {
     BrowserOptions {
         show_percent: true,
@@ -3199,7 +3006,6 @@ fn colored(color: ColorScheme) -> BrowserOptions {
     }
 }
 
-/// `--color off` draws the listing with attributes only, and no colors.
 #[test]
 fn color_off() {
     let tree = tree_of(SOURCE, false);
@@ -3224,9 +3030,6 @@ fn color_off() {
     "#);
 }
 
-/// `--color dark` colors the header, the footer, and each column of the listing, on green in the
-/// cursor row. Without an mtime, the row of a directory with fewer than 1000 items draws "no mtime"
-/// in the style of its item count, which ncdu leaves set.
 #[test]
 fn color_dark() {
     let tree = tree_of(SOURCE, false);
@@ -3267,8 +3070,6 @@ fn color_dark() {
     "#);
 }
 
-/// `--color dark-bg` draws the cells that have no color in `--color dark` white on black,
-/// including the empty ones.
 #[test]
 fn color_dark_background() {
     let tree = tree_of(SOURCE, false);
@@ -3309,8 +3110,6 @@ fn color_dark_background() {
     "#);
 }
 
-/// The info window of a hard link in `--color dark`: a blue title, the selected tab on cyan, and
-/// the numbers in yellow.
 #[test]
 fn color_dark_info() {
     let tree = tree_of(SOURCE, true);
@@ -3389,7 +3188,6 @@ fn color_dark_info() {
     "#);
 }
 
-/// The info window of a hard link in `--color dark-bg`.
 #[test]
 fn color_dark_background_info() {
     let tree = tree_of(SOURCE, true);
@@ -3468,7 +3266,6 @@ fn color_dark_background_info() {
     "#);
 }
 
-/// The links tab in `--color dark` draws the selected link on green.
 #[test]
 fn color_dark_info_links() {
     let tree = tree_of(SOURCE, false);
@@ -3553,7 +3350,6 @@ fn color_dark_info_links() {
     "#);
 }
 
-/// The keys tab of the help window in `--color dark` draws the keys in yellow.
 #[test]
 fn color_dark_help() {
     let tree = tree_of(SOURCE, false);
@@ -3637,7 +3433,6 @@ fn color_dark_help() {
     "#);
 }
 
-/// The keys tab of the help window in `--color dark-bg`.
 #[test]
 fn color_dark_background_help() {
     let tree = tree_of(SOURCE, false);
@@ -3721,7 +3516,6 @@ fn color_dark_background_help() {
     "#);
 }
 
-/// The format tab of the help window in `--color dark` draws the flags in red.
 #[test]
 fn color_dark_help_format() {
     let tree = tree_of(SOURCE, false);
@@ -3806,8 +3600,6 @@ fn color_dark_help_format() {
     "#);
 }
 
-/// The about tab of the help window in `--color dark` draws the logo on green and the version in
-/// yellow.
 #[test]
 fn color_dark_help_about() {
     let tree = tree_of(SOURCE, false);
@@ -3892,8 +3684,6 @@ fn color_dark_help_about() {
     "#);
 }
 
-/// A binary export is read from the file, and the header marks it instead of the import. The
-/// listing is that of the same tree imported from JSON, in [`default_columns`].
 #[test]
 fn from_file() {
     assert_snapshot!(file_screen("tree.ncdu", &imported(), &[], (80, 18)), @r#"
@@ -3936,8 +3726,6 @@ fn from_file() {
     "#);
 }
 
-/// A subdirectory is read from the file when it is opened, with the totals that the export
-/// stores for it, and the row of the parent directory.
 #[test]
 fn from_file_subdirectory() {
     assert_snapshot!(file_screen("tree.ncdu", &imported(), &[Key::Enter], (80, 6)), @r#"
@@ -3956,7 +3744,6 @@ fn from_file_subdirectory() {
     "#);
 }
 
-/// The parent directory is read from the file again, with the cursor where it was left.
 #[test]
 fn from_file_enter_parent() {
     let keys = [Key::Down, Key::Enter, Key::Left];
@@ -3976,9 +3763,6 @@ fn from_file_enter_parent() {
     "#);
 }
 
-/// While a directory is read from the file, the screen has the header, the path of the directory,
-/// no listing, and the number of entries read so far in the footer, also for the parent
-/// directory.
 #[test]
 fn from_file_loading() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../duit/tests/fixtures/tree.ncdu");
@@ -4010,7 +3794,6 @@ fn from_file_loading() {
     ................................................................................
     RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
     "#);
-    // Going back reads the parent directory, under its path.
     browser
         .key_input(&mut tree, &mut options, Key::Left, 6, &mut |loading| {
             terminal
@@ -4027,8 +3810,6 @@ fn from_file_loading() {
     );
 }
 
-/// The footer counts the entries that the browser has listed, and it is drawn at each count
-/// without the bits of 1 and 64, as `loadDir` calls `handleEvent`.
 #[test]
 fn loading_counts() {
     let tree = tree_of(item_counts(&[("many", 140)]).as_bytes(), false);
@@ -4094,9 +3875,6 @@ fn loading_counts() {
     "#);
 }
 
-/// The mtime of a directory is the one that the export stores, its own, which sorts `/src` below
-/// `also-linked`, while a tree in memory has the latest mtime below the directory. The entries
-/// without an mtime keep the order of the export.
 #[test]
 fn from_file_mtime() {
     let options = BrowserOptions {
@@ -4145,7 +3923,6 @@ fn from_file_mtime() {
     "#);
 }
 
-/// A directory of an export of several blocks lists entries that are read from each of them.
 #[test]
 fn from_file_blocks() {
     let keys = [Key::Char('n'), Key::Enter];
@@ -4173,8 +3950,6 @@ fn from_file_blocks() {
     "#);
 }
 
-/// The links tab of a hard link has the height of the info tab, and says that the links are not
-/// available.
 #[test]
 fn from_file_links() {
     let keys = [
@@ -4225,8 +4000,6 @@ fn from_file_links() {
     "#);
 }
 
-/// A selection key on the links tab moves the cursor of the listing and shows the info tab of the
-/// entry under it, as on the info tab.
 #[test]
 fn from_file_links_down() {
     let keys = [
@@ -4278,7 +4051,6 @@ fn from_file_links_down() {
     "#);
 }
 
-/// Refreshing is not available, which a message says.
 #[test]
 fn from_file_refresh() {
     assert_snapshot!(file_screen("tree.ncdu", &imported(), &[Key::Char('r')], (80, 12)), @r#"
@@ -4309,7 +4081,6 @@ fn from_file_refresh() {
     "#);
 }
 
-/// Deleting is not available either.
 #[test]
 fn from_file_delete() {
     assert_snapshot!(file_screen("tree.ncdu", &imported(), &[Key::Char('d')], (80, 12)), @r#"
@@ -4340,7 +4111,6 @@ fn from_file_delete() {
     "#);
 }
 
-/// The key after a message only closes it.
 #[test]
 fn from_file_message_closes() {
     let keys = [Key::Char('d'), Key::Down];

@@ -5,7 +5,6 @@ use std::io::{self, BufWriter, IntoInnerError, Write};
 use duit_model::{EntryType, Sink, Special, Stat};
 use zstd::stream::write::Encoder;
 
-/// The name written as `progname` in the metadata block.
 const PROGRAM_NAME: &str = "duit";
 
 /// The longest name that the export writes. ncdu reserves 6 bytes per byte of a name, plus 1000,
@@ -50,10 +49,8 @@ pub struct JsonExport<W: Write> {
     directory_open: bool,
 }
 
-/// The writer under the buffer of a [`JsonExport`].
 enum Output<W: Write> {
     Plain(W),
-    /// One zstd frame, which [`Output::finish`] ends.
     Zstd(Encoder<'static, W>),
 }
 
@@ -123,8 +120,6 @@ impl<W: Write> JsonExport<W> {
             .into_inner()
             .map_err(IntoInnerError::into_error)?
             .finish()?;
-        // A writer such as standard output buffers too, and the end of a compressed export need not
-        // hold the newline that flushes it. Flushed later, at exit, a write error would be lost.
         out.flush()?;
         Ok(out)
     }
@@ -146,8 +141,6 @@ impl<W: Write> JsonExport<W> {
         Ok(())
     }
 
-    /// Start the object of an entry and write its name. A directory is wrapped in an array that
-    /// holds the object followed by its entries.
     fn write_entry_name(&mut self, is_directory: bool, name: &[u8]) -> io::Result<()> {
         if name.len() > MAX_NAME_LENGTH {
             return Err(JsonExportError::PathTooLong.into());
@@ -161,7 +154,6 @@ impl<W: Write> JsonExport<W> {
         self.out.write_all(b"\"")
     }
 
-    /// Write the bytes of `name`, escaped as a JSON string without the quotes.
     fn write_name(&mut self, name: &[u8]) -> io::Result<()> {
         const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
         let mut start = 0;
@@ -189,26 +181,17 @@ impl<W: Write> JsonExport<W> {
         self.out.write_all(&name[start..])
     }
 
-    /// Write `name` and the fields of `stat`, without the closing `}`. `parent_device` is `Some`
-    /// for a directory, whose device is written when it differs from its parent's.
-    fn write_stat(
-        &mut self,
-        name: &[u8],
-        stat: &Stat,
-        parent_device: Option<u64>,
-    ) -> io::Result<()> {
-        self.write_entry_name(parent_device.is_some(), name)?;
+    fn write_sizes(&mut self, stat: &Stat) -> io::Result<()> {
         if stat.size > 0 {
             write!(self.out, ",\"asize\":{}", stat.size)?;
         }
         if stat.blocks > 0 {
             write!(self.out, ",\"dsize\":{}", stat.blocks.saturating_mul(512))?;
         }
-        if let Some(parent_device) = parent_device
-            && stat.device != parent_device
-        {
-            write!(self.out, ",\"dev\":{}", stat.device)?;
-        }
+        Ok(())
+    }
+
+    fn write_type_and_extended(&mut self, stat: &Stat) -> io::Result<()> {
         match stat.entry_type {
             EntryType::HardLink => write!(
                 self.out,
@@ -272,7 +255,9 @@ impl<W: Write> Sink for JsonExport<W> {
         stat: &Stat,
     ) -> io::Result<()> {
         self.close_directory_entry(false)?;
-        self.write_stat(name, stat, None)?;
+        self.write_entry_name(false, name)?;
+        self.write_sizes(stat)?;
+        self.write_type_and_extended(stat)?;
         self.out.write_all(b"}")
     }
 
@@ -283,7 +268,12 @@ impl<W: Write> Sink for JsonExport<W> {
         stat: &Stat,
     ) -> io::Result<JsonDirectory> {
         self.close_directory_entry(false)?;
-        self.write_stat(name, stat, Some(parent.device))?;
+        self.write_entry_name(true, name)?;
+        self.write_sizes(stat)?;
+        if stat.device != parent.device {
+            write!(self.out, ",\"dev\":{}", stat.device)?;
+        }
+        self.write_type_and_extended(stat)?;
         self.directory_open = true;
         Ok(JsonDirectory {
             device: stat.device,

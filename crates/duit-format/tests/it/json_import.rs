@@ -9,8 +9,6 @@ use crate::json_export::{directory, file, many_files};
 #[cfg(feature = "test-ncdu")]
 use crate::ncdu_import;
 
-/// Import `input` into a [`JsonExport`] with timestamp 0 and return the export. As in ncdu, the
-/// first 8 bytes are read before the import starts.
 fn reexport(input: impl Read, extended: bool) -> Result<Vec<u8>, ImportError> {
     let mut input = input;
     let mut head = [0; 8];
@@ -20,7 +18,6 @@ fn reexport(input: impl Read, extended: bool) -> Result<Vec<u8>, ImportError> {
     Ok(export.finish().expect("export is flushed"))
 }
 
-/// The export that `build` writes, with timestamp 0, compressed if `compress_level` is given.
 fn export(
     extended: bool,
     compress_level: Option<u8>,
@@ -32,7 +29,6 @@ fn export(
     export.finish().expect("export is flushed")
 }
 
-/// Every kind of entry that the export writes, in nested directories on two devices.
 fn tree(export: &mut JsonExport<Vec<u8>>) -> io::Result<()> {
     let mut root = export.create_root(b"/root", &directory(1))?;
     export.add_stat(&mut root, b"file", &file(100, 8))?;
@@ -82,7 +78,6 @@ fn tree(export: &mut JsonExport<Vec<u8>>) -> io::Result<()> {
     export.finish_directory(root, None)
 }
 
-/// An import of an export writes the same export again.
 #[test]
 fn round_trip() {
     for extended in [false, true] {
@@ -92,7 +87,6 @@ fn round_trip() {
             tree
         );
     }
-    // Larger than the read buffer, so a byte is read back right after a refill.
     let many_files = export(false, None, many_files);
     assert_eq!(
         reexport(many_files.as_slice(), false).expect("files are imported"),
@@ -100,8 +94,6 @@ fn round_trip() {
     );
 }
 
-/// A compressed export imports like the export without compression, also when it is split into
-/// several zstd frames.
 #[test]
 fn round_trip_compressed() {
     for build in [tree, many_files] {
@@ -122,8 +114,6 @@ fn round_trip_compressed() {
     }
 }
 
-/// The fields of an item, in the order in which they appear, decide its type. Unknown keys and
-/// trailing array elements are skipped, and a fractional mtime is truncated.
 #[test]
 fn items() {
     let input: &[u8] =
@@ -154,7 +144,6 @@ fn items() {
 {"name":"escapes \" \\ \/ \b \f \n \r \t \u00e9 \ud83d\ude00 \u0000 \u001F end"},
 {"name":"zero","asize":0,"dsize":0},
 "#;
-    // Raw bytes that are not UTF-8 in a name, as ncdu writes them.
     let input = [
         input,
         b"{\"name\":\"raw \xff\xfe bytes\"}\n],\n\"trailing\",{\"elements\":[1]}]\n",
@@ -209,8 +198,6 @@ fn items() {
     "#);
 }
 
-/// The result of an import of `input` as ncdu reports it: `ok`, or the position and message of
-/// the error.
 fn result(input: impl Read) -> String {
     match reexport(input, false) {
         Ok(_) => "ok".to_string(),
@@ -223,7 +210,6 @@ fn result(input: impl Read) -> String {
     }
 }
 
-/// The result of an import of `input` by ncdu, as [`result`] renders it.
 #[cfg(feature = "test-ncdu")]
 fn ncdu_result(input: &[u8]) -> String {
     let output = ncdu_import(input, &["-o-"]);
@@ -238,7 +224,6 @@ fn ncdu_result(input: &[u8]) -> String {
         .to_string()
 }
 
-/// The input of a test case, shortened if it is long.
 fn label(input: &[u8]) -> String {
     let input = String::from_utf8_lossy(input).escape_debug().to_string();
     if input.len() > 80 {
@@ -248,7 +233,6 @@ fn label(input: &[u8]) -> String {
     }
 }
 
-/// Malformed input ends the import with ncdu's message and position.
 #[test]
 fn malformed() {
     let long_name = [
@@ -409,8 +393,6 @@ fn malformed() {
     "#);
 }
 
-/// Inputs that ncdu does not import. ncdu crashes on a root that its fields turn into something
-/// other than a directory. duit stops with the error of a root that is not an array.
 #[test]
 fn unlike_ncdu() {
     let cases: &[&[u8]] = &[
@@ -432,7 +414,6 @@ fn unlike_ncdu() {
     "#);
 }
 
-/// Every prefix of an export, plain or compressed, is either the whole export or an error.
 #[test]
 fn truncated() {
     for compress_level in [None, Some(3)] {
@@ -449,8 +430,6 @@ fn truncated() {
     }
 }
 
-/// Directories nested deeper than the stack could hold in recursion are imported, and so are
-/// nested values of unknown keys.
 #[test]
 fn deep_nesting() {
     const DEPTH: usize = 1_000_000;
@@ -474,7 +453,6 @@ fn deep_nesting() {
     assert!(reexport(values.as_slice(), false).is_ok());
 }
 
-/// A reader that returns `input` and then fails with `error`.
 struct FailingReader {
     input: &'static [u8],
     error: io::ErrorKind,
@@ -490,7 +468,6 @@ impl Read for FailingReader {
     }
 }
 
-/// A read that fails after the first 8 bytes ends the import with ncdu's message for the error.
 #[test]
 fn read_error() {
     let mut rendered = String::new();
@@ -512,7 +489,6 @@ fn read_error() {
     ");
 }
 
-/// A writer whose every write fails.
 struct BrokenPipe;
 
 impl io::Write for BrokenPipe {
@@ -525,7 +501,6 @@ impl io::Write for BrokenPipe {
     }
 }
 
-/// An error of the sink ends the import with that error.
 #[test]
 fn sink_error() {
     let input = export(false, None, many_files);

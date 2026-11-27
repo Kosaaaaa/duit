@@ -7,11 +7,10 @@ use std::sync::Arc;
 use duit_model::{
     BLOCKS_MAX, DirectoryPath, EntryType, Extended, Sink, Special, Stat, ThreadDirectories,
 };
-use rustix::fs::{AtFlags, CWD, Dir, FileType, Mode, OFlags, openat, statat};
+use rustix::fs::{AtFlags, CWD, Dir, DirEntry, FileType, Mode, OFlags, openat, statat};
 
 use crate::{DirectoryPatterns, ExcludePatterns, Excluded, threads};
 
-/// The options of a scan.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ScanOptions {
     /// `-x`: Report directories on another filesystem than their parent as excluded.
@@ -43,7 +42,6 @@ pub enum ScanError {
     Sink(io::Error),
 }
 
-/// A directory whose entries are being read.
 pub(crate) struct Frame<'a, D> {
     pub(crate) entries: Dir,
     pub(crate) device: u64,
@@ -98,25 +96,13 @@ pub fn scan<S: Sink>(
     walk(sink, vec![frame], options).map_err(ScanError::Sink)
 }
 
-/// Read the directories on `stack` depth-first until it is empty.
 fn walk<S: Sink>(
     sink: &mut S,
     mut stack: Vec<Frame<'_, S::Directory>>,
     options: ScanOptions,
 ) -> io::Result<()> {
     while let Some(frame) = stack.last_mut() {
-        let entry = match frame.entries.read() {
-            Some(Ok(entry)) => Some(entry),
-            Some(Err(_)) => {
-                // Like ncdu, a directory that fails to read ends at the error. Unlike ncdu, the
-                // error marks that directory: ncdu marks the directory taken from the scan queue,
-                // which with one thread is always the root.
-                sink.set_read_error(&mut frame.sink)?;
-                None
-            }
-            None => None,
-        };
-        if let Some(entry) = entry {
+        if let Some(entry) = next_entry_or_mark_directory(sink, frame)? {
             let name = entry.file_name();
             if name != c"."
                 && name != c".."
@@ -131,7 +117,20 @@ fn walk<S: Sink>(
     Ok(())
 }
 
-/// Report the entry `name` of `parent`, and return the frame of a directory to read next.
+fn next_entry_or_mark_directory<S: Sink>(
+    sink: &mut S,
+    directory: &mut Frame<'_, S::Directory>,
+) -> io::Result<Option<DirEntry>> {
+    match directory.entries.read() {
+        Some(Ok(entry)) => Ok(Some(entry)),
+        Some(Err(_)) => {
+            sink.set_read_error(&mut directory.sink)?;
+            Ok(None)
+        }
+        None => Ok(None),
+    }
+}
+
 fn scan_entry<'a, S: Sink>(
     sink: &mut S,
     parent: &mut Frame<'a, S::Directory>,
@@ -164,15 +163,10 @@ fn scan_entry<'a, S: Sink>(
     Ok(None)
 }
 
-/// What an entry of a directory is reported as, by [`classify`].
 pub(crate) enum Entry<'a> {
     Special(Special),
-    /// An entry that is not a directory.
     Stat(Stat),
-    /// A directory that cannot be opened.
     Unreadable(Stat),
-    /// A directory to read, with the patterns for its entries, and the directory itself if it was
-    /// opened to check whether it is excluded.
     Directory {
         stat: Stat,
         patterns: DirectoryPatterns<'a>,
@@ -180,9 +174,6 @@ pub(crate) enum Entry<'a> {
     },
 }
 
-/// What the entry `name` of the directory `parent` on `device`, whose entries `patterns` exclude,
-/// is reported as, `scanOne` in `scan.zig`. A directory is opened only if an option needs to look
-/// inside it, so that a scan with threads does not keep one open for each directory that waits.
 pub(crate) fn classify<'a>(
     parent: BorrowedFd<'_>,
     device: u64,
@@ -191,7 +182,6 @@ pub(crate) fn classify<'a>(
     options: ScanOptions,
 ) -> io::Result<Entry<'a>> {
     let excluded = patterns.matches(name);
-    // A pattern that matches any entry excludes it before `stat`.
     if excluded == Excluded::Always {
         return Ok(Entry::Special(Special::Pattern));
     }
@@ -204,13 +194,7 @@ pub(crate) fn classify<'a>(
         && let Ok((target, _)) = stat_at(parent, name, true)
         && target.entry_type != EntryType::Directory
     {
-        stat = target;
-        // Hard links are counted by device and inode, which a target on another filesystem
-        // breaks.
-        if stat.entry_type == EntryType::HardLink && stat.device != device {
-            stat.entry_type = EntryType::Regular;
-            stat.link_count = 1;
-        }
+        stat = without_hard_link_across_devices(target, device);
     }
 
     if options.same_filesystem && stat.device != device {
@@ -246,7 +230,14 @@ pub(crate) fn classify<'a>(
     })
 }
 
-/// Open the subdirectory `name` of `parent` to read its entries, without following a symlink.
+fn without_hard_link_across_devices(mut target: Stat, parent_device: u64) -> Stat {
+    if target.entry_type == EntryType::HardLink && target.device != parent_device {
+        target.entry_type = EntryType::Regular;
+        target.link_count = 1;
+    }
+    target
+}
+
 pub(crate) fn open_directory(parent: BorrowedFd<'_>, name: &CStr) -> rustix::io::Result<Dir> {
     openat(
         parent,
@@ -257,8 +248,6 @@ pub(crate) fn open_directory(parent: BorrowedFd<'_>, name: &CStr) -> rustix::io:
     .and_then(Dir::new)
 }
 
-/// Report the directory `name` of `parent`, which cannot be opened, as a directory with a read
-/// error and no entries.
 pub(crate) fn add_unreadable<S: Sink>(
     sink: &mut S,
     parent: &mut S::Directory,
@@ -329,28 +318,40 @@ fn device(stat: &rustix::fs::Stat) -> u64 {
 /// documents.
 #[cfg(target_os = "linux")]
 fn is_kernel_filesystem(directory: BorrowedFd<'_>) -> bool {
+    const BINFMTFS_MAGIC: u32 = 0x4249_4e4d;
+    const BPF_FS_MAGIC: u32 = 0xcafe_4a11;
+    const CGROUP_SUPER_MAGIC: u32 = 0x0027_e0eb;
+    const CGROUP2_SUPER_MAGIC: u32 = 0x6367_7270;
+    const DEBUGFS_MAGIC: u32 = 0x6462_6720;
+    const DEVPTS_SUPER_MAGIC: u32 = 0x1cd1;
+    const PROC_SUPER_MAGIC: u32 = 0x9fa0;
+    const PSTOREFS_MAGIC: u32 = 0x6165_676c;
+    const SECURITYFS_MAGIC: u32 = 0x7363_6673;
+    const SELINUX_MAGIC: u32 = 0xf97c_ff8c;
+    const SYSFS_MAGIC: u32 = 0x6265_6572;
+    const TRACEFS_MAGIC: u32 = 0x7472_6163;
+
     let Ok(statfs) = rustix::fs::fstatfs(directory) else {
         return false;
     };
     let [byte0, byte1, byte2, byte3, ..] = statfs.f_type.to_le_bytes();
     matches!(
         u32::from_le_bytes([byte0, byte1, byte2, byte3]),
-        0x4249_4e4d // BINFMTFS_MAGIC
-            | 0xcafe_4a11 // BPF_FS_MAGIC
-            | 0x0027_e0eb // CGROUP_SUPER_MAGIC
-            | 0x6367_7270 // CGROUP2_SUPER_MAGIC
-            | 0x6462_6720 // DEBUGFS_MAGIC
-            | 0x1cd1 // DEVPTS_SUPER_MAGIC
-            | 0x9fa0 // PROC_SUPER_MAGIC
-            | 0x6165_676c // PSTOREFS_MAGIC
-            | 0x7363_6673 // SECURITYFS_MAGIC
-            | 0xf97c_ff8c // SELINUX_MAGIC
-            | 0x6265_6572 // SYSFS_MAGIC
-            | 0x7472_6163 // TRACEFS_MAGIC
+        BINFMTFS_MAGIC
+            | BPF_FS_MAGIC
+            | CGROUP_SUPER_MAGIC
+            | CGROUP2_SUPER_MAGIC
+            | DEBUGFS_MAGIC
+            | DEVPTS_SUPER_MAGIC
+            | PROC_SUPER_MAGIC
+            | PSTOREFS_MAGIC
+            | SECURITYFS_MAGIC
+            | SELINUX_MAGIC
+            | SYSFS_MAGIC
+            | TRACEFS_MAGIC
     )
 }
 
-/// Pseudo filesystems are only detected on Linux, as in ncdu.
 #[cfg(not(target_os = "linux"))]
 fn is_kernel_filesystem(_directory: BorrowedFd<'_>) -> bool {
     false
@@ -359,7 +360,6 @@ fn is_kernel_filesystem(_directory: BorrowedFd<'_>) -> bool {
 /// The start of a `CACHEDIR.TAG`, from <https://bford.info/cachedir/>.
 const CACHEDIR_SIGNATURE: &[u8; 43] = b"Signature: 8a477f597d28d172789f06886806bc55";
 
-/// Whether `directory` holds a `CACHEDIR.TAG` that starts with the signature.
 fn is_cache_directory(directory: BorrowedFd<'_>) -> bool {
     let Ok(tag) = openat(
         directory,
