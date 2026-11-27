@@ -174,6 +174,9 @@ pub(crate) enum Entry<'a> {
     },
 }
 
+/// What the entry `name` of the directory `parent` is reported as. A directory is opened only if
+/// an option needs to look inside it, so that a scan with threads does not keep one open for each
+/// directory that waits.
 pub(crate) fn classify<'a>(
     parent: BorrowedFd<'_>,
     device: u64,

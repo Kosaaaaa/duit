@@ -172,7 +172,7 @@ impl ExcludePatterns {
             return patterns;
         }
         for component in path.split(|&byte| byte == b'/') {
-            patterns = patterns.enter(&until_first_nul(component));
+            patterns = patterns.enter(&until_nul(component));
         }
         patterns
     }
@@ -183,13 +183,13 @@ fn parse_component(component: &[u8]) -> Component {
         .iter()
         .any(|byte| matches!(byte, b'[' | b'*' | b'?' | b'\\'))
     {
-        Component::Wildcard(until_first_nul(component))
+        Component::Wildcard(until_nul(component))
     } else {
         Component::Literal(component.into())
     }
 }
 
-fn until_first_nul(bytes: &[u8]) -> CString {
+fn until_nul(bytes: &[u8]) -> CString {
     let bytes: Vec<NonZeroU8> = bytes.iter().copied().map_while(NonZeroU8::new).collect();
     CString::from(bytes)
 }

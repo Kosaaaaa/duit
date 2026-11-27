@@ -64,6 +64,7 @@ fn block_size(configured: Option<usize>, number: u32) -> usize {
     })
 }
 
+/// ncdu has no message for a block too long for its header, so the export reports it as too large.
 const OVERSIZE_BLOCK_ERROR: BinaryExportError = BinaryExportError::FileTooLarge;
 
 fn block_length(length: usize) -> Result<u32, BinaryExportError> {

@@ -16,6 +16,7 @@ pub(crate) fn add_blocks(blocks: u64, more: u64) -> u64 {
     blocks.saturating_add(more).min(BLOCKS_MAX)
 }
 
+/// The number of device identifiers that ncdu can store, in 30 bits, `DevId` in `model.zig`.
 const DEVICES_MAX: usize = (1 << 30) - 1;
 
 /// Why a [`Tree`] could not take an entry. It reaches the caller of a [`crate::Sink`] method as

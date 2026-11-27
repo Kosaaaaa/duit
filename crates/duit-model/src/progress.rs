@@ -5,6 +5,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::{Sink, Special, Stat};
 
+/// Whether ncdu handles an event at `count`: bits 0 and 6 are clear, as the test `& 65` decides in
+/// `model.zig`, `browser.zig`, `mem_src.zig`, and the importers.
 pub fn is_event_count<T>(count: T) -> bool
 where
     T: BitAnd<Output = T> + From<u8> + PartialEq,

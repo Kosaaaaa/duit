@@ -167,7 +167,7 @@ impl ScanScreen {
         let width = buffer.area.width.saturating_sub(5);
         let rows = buffer.area.height.saturating_sub(10).max(1);
         let directories = directories.get(..usize::from(rows)).unwrap_or(directories);
-        let threads = (0..rows).zip(directories).fold(0, |count, _| count + 1);
+        let threads = u16::try_from(directories.len()).unwrap_or(rows);
         let window = Window::new(buffer, options.color, 8 + threads, width, "Scanning...");
         let x = window.text(buffer, 2, 2, "Total items: ", Style::Default);
         window.number(buffer, 2, x, files, &options.thousands_separator);

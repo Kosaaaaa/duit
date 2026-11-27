@@ -18,7 +18,7 @@ use crate::ui::{ColorScheme, Style, Window, shorten, to_utf8};
 
 const DELETE_PATH_VARIABLE: &str = "NCDU_DELETE_PATH";
 
-fn until_first_nul(bytes: &[u8]) -> CString {
+fn until_nul(bytes: &[u8]) -> CString {
     let bytes: Vec<NonZeroU8> = bytes.iter().copied().map_while(NonZeroU8::new).collect();
     CString::from(bytes)
 }
@@ -226,7 +226,7 @@ impl Deletion {
             return Ok((Some(entry), None));
         }
         let previous = tree.entries(parent).take_while(|&id| id != entry).last();
-        let path = until_first_nul(&entry_path(tree, parent, entry));
+        let path = until_nul(&entry_path(tree, parent, entry));
         let mut script = delete_command.to_vec();
         script.extend_from_slice(b" \"$");
         script.extend_from_slice(DELETE_PATH_VARIABLE.as_bytes());

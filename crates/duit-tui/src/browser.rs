@@ -1677,6 +1677,7 @@ struct Row<'a> {
     width: u16,
     item: Option<EntryId>,
     bg: Bg,
+    /// ncdu leaves [`Style::Num`] set after an item count below 1000, and `no mtime` inherits it.
     item_count_left_num_style: bool,
 }
 

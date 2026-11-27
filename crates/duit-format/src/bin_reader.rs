@@ -15,7 +15,11 @@ use crate::item::{ItemType, add_entry};
 
 const CACHED_BLOCKS: usize = 8;
 
+/// The most entries that ncdu accepts in an array or a map, `skip` in `bin_reader.zig`. It also
+/// keeps the item count of a map, twice its length, from overflowing before the buffer check, and
+/// below the sentinel [`Remaining::UNTIL_BREAK`].
 const MAX_CONTAINER_LENGTH: u64 = 1 << 24;
+const _: () = assert!(2 * MAX_CONTAINER_LENGTH < u32::MAX as u64);
 
 /// Why [`BinaryReader::open`] failed.
 #[derive(Debug)]
@@ -55,7 +59,9 @@ pub enum BinaryImportError {
 /// number of its block shifted left by 24 bits, plus its offset in the decompressed block.
 pub struct BinaryReader<R> {
     input: R,
-    block_positions: Vec<BlockPosition>,
+    /// The index block without its header and footer: the position of each data block as
+    /// [`INDEX_ENTRY_LENGTH`] big-endian bytes, then the root reference.
+    index: Vec<u8>,
     root: u64,
     blocks: Vec<Block>,
     lookups: u64,
@@ -145,15 +151,14 @@ impl<R: Read + Seek> BinaryReader<R> {
             .ok_or_else(negative_offset_error)?;
         let mut index = vec![0; length];
         read_at(&mut input, &mut index, start).map_err(BinaryOpenError::Read)?;
-        let (entries, _) = index.as_chunks::<INDEX_ENTRY_LENGTH>();
-        let (root, positions) = entries.split_last().ok_or(BinaryOpenError::Corrupt)?;
+        let root = index
+            .last_chunk::<ROOT_REFERENCE_LENGTH>()
+            .map(|root| u64::from_be_bytes(*root))
+            .ok_or(BinaryOpenError::Corrupt)?;
         Ok(Self {
             input,
-            block_positions: positions
-                .iter()
-                .map(|position| BlockPosition(u64::from_be_bytes(*position)))
-                .collect(),
-            root: u64::from_be_bytes(*root),
+            index,
+            root,
             blocks: Vec::with_capacity(CACHED_BLOCKS),
             lookups: 0,
         })
@@ -299,13 +304,16 @@ impl<R: Read + Seek> BinaryReader<R> {
     }
 
     fn block_position(&self, number: u32) -> Option<BlockPosition> {
-        let number = usize::try_from(number).ok()?;
+        let start = usize::try_from(number)
+            .ok()?
+            .checked_mul(INDEX_ENTRY_LENGTH)?;
         // As in ncdu, the root reference at the end of the index reads as the position of the
         // block after the last.
-        self.block_positions
-            .get(number)
-            .copied()
-            .or_else(|| (number == self.block_positions.len()).then_some(BlockPosition(self.root)))
+        let position = self
+            .index
+            .get(start..)?
+            .first_chunk::<INDEX_ENTRY_LENGTH>()?;
+        Some(BlockPosition(u64::from_be_bytes(*position)))
     }
 
     fn read_item(
@@ -690,10 +698,17 @@ impl Value {
     }
 }
 
-enum Remaining {
-    Items(u32),
-    UntilBreak,
+/// The number of items left in a container that [`Cbor::skip`] skips, or
+/// [`Remaining::UNTIL_BREAK`] for a container of indefinite length. A sentinel keeps the stack at
+/// 4 bytes per level, where an enum would take 8 because `u32` has no niche.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Remaining(u32);
+
+impl Remaining {
+    const UNTIL_BREAK: Self = Self(u32::MAX);
 }
+
+const _: () = assert!(size_of::<Remaining>() == 4);
 
 struct Cbor<'a> {
     buffer: &'a [u8],
@@ -773,7 +788,7 @@ impl<'a> Cbor<'a> {
                 Major::Bytes | Major::Text | Major::Array | Major::Map
                     if value.argument == Argument::Indefinite =>
                 {
-                    containers.push(Remaining::UntilBreak);
+                    containers.push(Remaining::UNTIL_BREAK);
                 }
                 Major::Bytes | Major::Text => {
                     self.take(value.definite()?)?;
@@ -789,34 +804,37 @@ impl<'a> Cbor<'a> {
                         length
                     };
                     let enclosing = match containers.last() {
-                        Some(&Remaining::Items(left)) => {
+                        Some(&Remaining::UNTIL_BREAK) | None => 0,
+                        Some(&Remaining(left)) => {
                             containers.pop();
                             u64::from(left)
                         }
-                        Some(Remaining::UntilBreak) | None => 0,
                     };
                     let left = enclosing + count;
                     if left > u64::try_from(self.buffer.len()).ok()? {
                         return None;
                     }
-                    containers.push(Remaining::Items(u32::try_from(left).ok()?));
+                    let left = u32::try_from(left)
+                        .ok()
+                        .filter(|&left| Remaining(left) != Remaining::UNTIL_BREAK)?;
+                    containers.push(Remaining(left));
                 }
                 Major::Positive | Major::Negative | Major::Tag | Major::Simple => {}
             }
             value = loop {
                 match containers.last_mut() {
                     None => return Some(()),
-                    Some(Remaining::UntilBreak) => {
+                    Some(&mut Remaining::UNTIL_BREAK) => {
                         let next = self.next()?;
                         if !next.is_break() {
                             break next;
                         }
                         containers.pop();
                     }
-                    Some(Remaining::Items(0)) => {
+                    Some(Remaining(0)) => {
                         containers.pop();
                     }
-                    Some(Remaining::Items(left)) => {
+                    Some(Remaining(left)) => {
                         *left -= 1;
                         break self.next()?;
                     }

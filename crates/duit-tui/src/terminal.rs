@@ -60,6 +60,8 @@ pub enum Key {
     Other,
 }
 
+/// The escape sequence that clears from the cursor to the end of the screen, which `clearScr` in
+/// `ui.zig` writes to stderr to clear a line that the progress of `-1` left behind.
 pub const CLEAR_TO_END: &[u8] = b"\x1b[J";
 
 pub struct Ui {

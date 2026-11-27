@@ -1013,6 +1013,8 @@ impl Drop for ScanProgress {
     }
 }
 
+/// Open the import file at `path`, or standard input for `-`. A binary export is read with random
+/// access, from its index block at the end, so it must be a file that can seek.
 fn open_import(path: &[u8]) -> Result<ImportInput, Vec<u8>> {
     let reading = |description: &str| {
         [
