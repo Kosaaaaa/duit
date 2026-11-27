@@ -58,7 +58,7 @@ impl Listing {
     fn new(index: usize) -> Self {
         Self {
             index,
-            items: Vec::with_capacity(PART_ENTRIES),
+            items: Vec::new(),
             names: Vec::new(),
             last: false,
             read_error: false,
