@@ -6,12 +6,11 @@ pub(crate) const CHUNK_BITS: u32 = 14;
 /// A list for a [`crate::Tree`] that grows like a `Vec`, or, made with [`Chunked::in_chunks`], in
 /// chunks that it never moves.
 ///
-/// A `Vec` that doubles frees its old buffer at each step, and the system allocator keeps most of
-/// that memory resident, about as much again as the list. On macOS, the pages that a large
-/// `realloc` moves only count again once they are touched, so a list that is not read again soon,
-/// as after a scan into memory, costs less than its data. A tree that a JSON export replays right
-/// away touches all of them, so for it the chunks cost less. The first chunk grows like a `Vec`,
-/// so a small list stays small.
+/// A `Vec` that doubles frees its old buffer at each step. Measured on macOS, a tree whose lists
+/// double peaks below the size of its data while it is not read again, as after a scan into
+/// memory, but above it, by the freed buffers, once all of it is read, as when a JSON export
+/// replays it. The tree of such an export grows in chunks. The first chunk grows like a `Vec`, so
+/// a small list stays small.
 #[derive(Debug, Clone)]
 pub(crate) struct Chunked<T> {
     chunks: Vec<Vec<T>>,
