@@ -10,6 +10,7 @@ use std::num::NonZeroU32;
 
 use hashbrown::HashTable;
 
+use crate::chunked::Chunked;
 use crate::{EntryType, Extended, Special, Stat, is_event_count};
 
 /// The largest block count that ncdu stores, in 60 bits. Sums of block counts saturate here.
@@ -238,23 +239,78 @@ impl Node {
     }
 }
 
+/// The bytes of a chunk of [`Names::in_chunks`], after which a name starts the next chunk.
+const NAME_CHUNK: usize = 1 << 18;
+
 /// The names of the entries, one after the other, so that a name ends where the name of the next
-/// entry starts. An entry keeps the low 32 bits of the offset of its name, and `high` the first
+/// entry starts, or where its chunk ends. The offset of a name is its chunk times `chunk` plus its
+/// place in the chunk, and a name longer than a chunk takes the offsets of as many chunks as it
+/// needs. The names grow like a `Vec` in one chunk, or in chunks that never move, as in
+/// [`Chunked`]. An entry keeps the low 32 bits of the offset of its name, and `high` the first
 /// entry of each 4 GiB after the first, as the names grow in the order of the entries.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 struct Names {
-    bytes: Vec<u8>,
+    chunks: Vec<Vec<u8>>,
+    chunk: usize,
     high: Vec<EntryId>,
 }
 
+impl Default for Names {
+    fn default() -> Self {
+        Self {
+            chunks: Vec::new(),
+            chunk: usize::MAX,
+            high: Vec::new(),
+        }
+    }
+}
+
 impl Names {
+    fn in_chunks() -> Self {
+        Self {
+            chunk: NAME_CHUNK,
+            ..Self::default()
+        }
+    }
+
     /// Add the name of the new entry `id`, and return the low bits of its offset.
     fn push(&mut self, id: EntryId, name: &[u8]) -> u32 {
-        let start = u64::try_from(self.bytes.len()).unwrap_or(u64::MAX);
+        let fits = self
+            .chunks
+            .last()
+            .is_some_and(|chunk| chunk.len() + name.len() <= self.chunk);
+        if !fits {
+            if let Some(last) = self.chunks.last() {
+                let taken = last.len().div_ceil(self.chunk).max(1);
+                self.chunks
+                    .extend(iter::repeat_with(Vec::new).take(taken - 1));
+            }
+            // The first chunk grows like a `Vec`, so that a small tree stays small.
+            let capacity = if self.chunks.is_empty() {
+                name.len().max(256)
+            } else {
+                name.len().max(self.chunk)
+            };
+            self.chunks.push(Vec::with_capacity(capacity));
+        }
+        let index = self.chunks.len().saturating_sub(1);
+        let Some(chunk) = self.chunks.last_mut() else {
+            return 0;
+        };
+        let needed = chunk.len() + name.len();
+        if needed > chunk.capacity() {
+            let capacity = chunk
+                .capacity()
+                .saturating_mul(2)
+                .clamp(needed, self.chunk.max(needed));
+            chunk.reserve_exact(capacity - chunk.len());
+        }
+        let start = index.saturating_mul(self.chunk) + chunk.len();
+        chunk.extend_from_slice(name);
+        let start = u64::try_from(start).unwrap_or(u64::MAX);
         while u64::try_from(self.high.len()).unwrap_or(u64::MAX) < start >> u32::BITS {
             self.high.push(id);
         }
-        self.bytes.extend_from_slice(name);
         u32::try_from(start & u64::from(u32::MAX)).unwrap_or(u32::MAX)
     }
 
@@ -263,6 +319,19 @@ impl Names {
         let high = self.high.partition_point(|&first| first <= id);
         let high = u64::try_from(high).unwrap_or(u64::MAX);
         usize::try_from(high << u32::BITS | u64::from(low)).unwrap_or(usize::MAX)
+    }
+
+    /// The name at `start`, which ends at `next`, the offset of the next name, unless that is in
+    /// another chunk.
+    fn get(&self, start: usize, next: Option<usize>) -> &[u8] {
+        let chunk = start / self.chunk;
+        let Some(bytes) = self.chunks.get(chunk) else {
+            return &[];
+        };
+        let end = next
+            .filter(|&next| next / self.chunk == chunk)
+            .map_or(bytes.len(), |next| next % self.chunk);
+        bytes.get(start % self.chunk..end).unwrap_or_default()
     }
 }
 
@@ -401,7 +470,7 @@ impl Link {
 
 type Inode = (DeviceId, u64);
 
-fn link_inode(links: &[Link], directories: &[DirectoryNode], link: LinkId) -> Inode {
+fn link_inode(links: &Chunked<Link>, directories: &Chunked<DirectoryNode>, link: LinkId) -> Inode {
     let link = &links[link.index()];
     (directories[link.parent.index()].device(), link.inode())
 }
@@ -442,11 +511,11 @@ impl EntryExtended {
 /// export stores, through [`Tree::prepend_directory`] and [`Tree::prepend_file`].
 #[derive(Debug, Default, Clone)]
 pub struct Tree {
-    entries: Vec<Node>,
-    directories: Vec<DirectoryNode>,
+    entries: Chunked<Node>,
+    directories: Chunked<DirectoryNode>,
     /// The shared sizes of the directories that have any, in blocks and bytes.
     shared: HashMap<DirectoryId, (u64, u64), BuildHasherDefault<IdentifierHasher>>,
-    links: Vec<Link>,
+    links: Chunked<Link>,
     /// The first link to each inode, found by the inode of the link.
     inodes: HashTable<LinkId>,
     inode_hasher: RandomState,
@@ -462,6 +531,19 @@ pub struct Tree {
 }
 
 impl Tree {
+    /// A tree whose lists grow in chunks that never move, for a tree that is read whole right
+    /// after it is built, as the JSON export of a scan with several threads reads it. See
+    /// [`Chunked`].
+    pub(crate) fn in_chunks() -> Self {
+        Self {
+            entries: Chunked::in_chunks(),
+            directories: Chunked::in_chunks(),
+            links: Chunked::in_chunks(),
+            names: Names::in_chunks(),
+            ..Self::default()
+        }
+    }
+
     /// The root directory, once a [`crate::MemorySink`] created it.
     pub fn root(&self) -> Option<DirectoryId> {
         self.root
@@ -499,13 +581,11 @@ impl Tree {
     pub fn name(&self, id: EntryId) -> &[u8] {
         let index = id.index();
         let start = self.names.start(id, self.entries[index].name_start);
-        let end = match self.entries.get(index + 1) {
-            Some(next) => self
-                .names
-                .start(EntryId(index_identifier(index + 1)), next.name_start),
-            None => self.names.bytes.len(),
-        };
-        &self.names.bytes[start..end]
+        let next = self.entries.get(index + 1).map(|next| {
+            self.names
+                .start(EntryId(index_identifier(index + 1)), next.name_start)
+        });
+        self.names.get(start, next)
     }
 
     /// The extended information of `id`, which an entry only has with `-e`, and only when it
@@ -1290,8 +1370,8 @@ mod tests {
     use std::num::NonZeroU32;
 
     use super::{
-        Directory, DirectoryId, EntryId, EntryKind, FileKind, Link, Node, Tree, TreeError,
-        identifier,
+        Directory, DirectoryId, EntryId, EntryKind, FileKind, Link, NAME_CHUNK, Node, Tree,
+        TreeError, identifier,
     };
     use crate::Stat;
 
@@ -1362,6 +1442,32 @@ mod tests {
         assert_eq!(link_path(deep, true), "/a/b/y");
         assert_eq!(tree.links(top).collect::<Vec<_>>(), [top, deep]);
         assert_eq!(tree.links(deep).collect::<Vec<_>>(), [deep, top]);
+    }
+
+    #[test]
+    fn names_in_chunks() {
+        let mut tree = Tree::in_chunks();
+        let device = tree.device_id(0).expect("device fits");
+        let stat = Stat::default();
+        let root = tree
+            .prepend_directory(None, device, &stat, None, b"/")
+            .expect("entry fits");
+        let names: Vec<Vec<u8>> = [1000, NAME_CHUNK - 10, 20, 3 * NAME_CHUNK + 1, 5, 7]
+            .iter()
+            .zip(b'a'..)
+            .map(|(&length, byte)| vec![byte; length])
+            .collect();
+        let ids: Vec<EntryId> = names
+            .iter()
+            .map(|name| {
+                tree.prepend_file(root, FileKind::Regular, &stat, None, name)
+                    .expect("entry fits")
+            })
+            .collect();
+        assert_eq!(tree.name(tree.directory(root).entry), b"/");
+        for (id, name) in ids.iter().zip(&names) {
+            assert_eq!(tree.name(*id), name.as_slice());
+        }
     }
 
     #[test]

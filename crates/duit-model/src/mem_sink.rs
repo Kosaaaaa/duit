@@ -69,6 +69,7 @@ impl MemorySink {
     /// data they were added with.
     pub fn without_stats(extended: bool) -> Self {
         Self {
+            tree: Tree::in_chunks(),
             stats: false,
             ..Self::new(extended)
         }

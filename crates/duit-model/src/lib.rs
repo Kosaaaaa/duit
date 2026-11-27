@@ -10,6 +10,7 @@ pub use tree::{
     FileKind, Link, LinkId, Tree, TreeError,
 };
 
+mod chunked;
 mod mem_sink;
 mod mem_src;
 mod progress;
