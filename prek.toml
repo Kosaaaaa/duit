@@ -8,14 +8,14 @@ repo = "local"
 id = "typos"
 name = "typos"
 language = "system"
-entry = "typos"
+entry = "typos --write-changes"
 pass_filenames = false
 
 [[repos.hooks]]
 id = "taplo"
 name = "taplo fmt"
 language = "system"
-entry = "taplo fmt --check"
+entry = "taplo fmt"
 pass_filenames = false
 types = ["toml"]
 
@@ -23,7 +23,7 @@ types = ["toml"]
 id = "rustfmt"
 name = "cargo fmt"
 language = "system"
-entry = "cargo fmt --all --check"
+entry = "cargo fmt --all"
 pass_filenames = false
 types = ["rust"]
 
@@ -31,7 +31,7 @@ types = ["rust"]
 id = "prettier"
 name = "prettier"
 language = "system"
-entry = "npx prettier@3.9.0 --check ."
+entry = "npx prettier@3.9.0 --write ."
 pass_filenames = false
 files = "\\.(md|ya?ml|json5?)$"
 

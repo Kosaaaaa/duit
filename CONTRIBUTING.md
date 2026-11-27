@@ -138,9 +138,10 @@ depend on the manuals of the machine.
 
 ## 🪝 Git hooks
 
-Hooks are optional. [prek](https://prek.j178.dev/) runs the formatting and spelling checks before a
-commit and clippy before a push. The hooks call the tools above, so install those first.
-`make tools` installs the versions that CI uses:
+Hooks are optional. [prek](https://prek.j178.dev/) formats files and fixes unambiguous typos in
+place before a commit, and runs clippy before a push. A hook that changes a file fails the commit,
+so review and stage the changes, then commit again. The hooks call the tools above, so install those
+first. `make tools` installs the versions that CI uses:
 
 ```shell
 make tools
