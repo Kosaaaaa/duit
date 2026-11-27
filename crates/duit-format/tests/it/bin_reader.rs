@@ -101,8 +101,8 @@ fn root_listing(input: &[u8]) -> String {
                     String::from_utf8_lossy(tree.name(id)),
                     entry.blocks,
                     entry.size,
-                    link.inode,
-                    link.link_count
+                    link.inode(),
+                    link.link_count()
                 );
             }
             EntryKind::Regular | EntryKind::NonRegular | EntryKind::Special(_) => {

@@ -105,7 +105,7 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
   `Entry.Packed` in `model.zig`, the apparent size, the next entry, and the low 32 bits of the
   offset of its name. A name ends where the name of the next entry starts, so an entry stores no
   name length and the names no NUL byte, and the tree keeps the first entry of each 4 GiB of names,
-  so the names have no limit of their own. The data of a directory (40 bytes) and of a hard link (32
+  so the names have no limit of their own. The data of a directory (40 bytes) and of a hard link (28
   bytes) are in lists of their own, in the order of their entries, so an entry finds its data by a
   binary search instead of storing its id, and the extended information of `-e` is in another such
   list. The first link to each inode is in a `hashbrown` table of link ids (4 bytes each), hashed by

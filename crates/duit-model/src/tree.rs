@@ -291,20 +291,65 @@ pub struct Directory {
 #[derive(Debug, Clone)]
 pub struct Link {
     pub parent: DirectoryId,
-    pub inode: u64,
-    /// The number of links to the inode, or 0 when it is unknown, as in old JSON exports.
-    pub link_count: u32,
     pub entry: EntryId,
+    /// The inode in two halves, so that a link takes 28 bytes rather than 32.
+    inode: [u32; 2],
+    /// The link count in the low 31 bits, as `Link.Pack` in `model.zig`, then whether the inode is
+    /// counted in the totals of the directories above its links.
+    pack: u32,
     next: LinkId,
     previous: LinkId,
-    counted: bool,
+}
+
+const COUNTED_BIT: u32 = 1 << 31;
+
+impl Link {
+    fn new(parent: DirectoryId, entry: EntryId, stat: &Stat, link: LinkId) -> Self {
+        let mut data = Self {
+            parent,
+            entry,
+            inode: [0; 2],
+            pack: 0,
+            next: link,
+            previous: link,
+        };
+        data.set_stat(stat);
+        data
+    }
+
+    fn set_stat(&mut self, stat: &Stat) {
+        let half = |bits: u64| u32::try_from(bits & u64::from(u32::MAX)).unwrap_or(u32::MAX);
+        self.inode = [half(stat.inode >> u32::BITS), half(stat.inode)];
+        self.pack = stat.link_count.min(COUNTED_BIT - 1);
+    }
+
+    pub fn inode(&self) -> u64 {
+        u64::from(self.inode[0]) << u32::BITS | u64::from(self.inode[1])
+    }
+
+    /// The number of links to the inode, or 0 when it is unknown, as in old JSON exports.
+    pub fn link_count(&self) -> u32 {
+        self.pack & !COUNTED_BIT
+    }
+
+    fn counted(&self) -> bool {
+        self.pack & COUNTED_BIT != 0
+    }
+
+    fn set_counted(&mut self, counted: bool) {
+        if counted {
+            self.pack |= COUNTED_BIT;
+        } else {
+            self.pack &= !COUNTED_BIT;
+        }
+    }
 }
 
 type Inode = (DeviceId, u64);
 
 fn link_inode(links: &[Link], directories: &[Directory], link: LinkId) -> Inode {
     let link = &links[link.index()];
-    (directories[link.parent.index()].device, link.inode)
+    (directories[link.parent.index()].device, link.inode())
 }
 
 #[derive(Debug, Default, Clone)]
@@ -549,15 +594,7 @@ impl Tree {
         let entry = self.push(kind, stat, extended, name)?;
         self.link_first(parent, entry);
         if let EntryKind::HardLink(link) = kind {
-            self.links.push(Link {
-                parent,
-                inode: stat.inode,
-                link_count: stat.link_count,
-                entry,
-                next: link,
-                previous: link,
-                counted: false,
-            });
+            self.links.push(Link::new(parent, entry, stat, link));
             self.add_link(link);
         }
         Ok(entry)
@@ -845,12 +882,7 @@ impl Tree {
         self.entries[id.index()].set_tag(Tag::of(kind));
         if let EntryKind::HardLink(link) = kind {
             let data = &mut self.links[link.index()];
-            data.parent = parent;
-            data.inode = stat.inode;
-            data.link_count = stat.link_count;
-            data.next = link;
-            data.previous = link;
-            data.counted = false;
+            *data = Link::new(parent, data.entry, stat, link);
             self.add_link(link);
         }
         true
@@ -1004,10 +1036,10 @@ impl Tree {
     /// with the directories above them and the number of links below each. `None`, and nothing
     /// changes, if the links are marked so already.
     fn inode_totals(&mut self, link: LinkId, counted: bool) -> Option<InodeTotals> {
-        if self.links[link.index()].counted == counted {
+        if self.links[link.index()].counted() == counted {
             return None;
         }
-        let link_count = self.links[link.index()].link_count;
+        let link_count = self.links[link.index()].link_count();
         let mut found: u32 = 0;
         let mut inconsistent = false;
         let InodeScratch {
@@ -1021,9 +1053,9 @@ impl Tree {
         let mut current = link;
         loop {
             let data = &mut self.links[current.index()];
-            data.counted = counted;
+            data.set_counted(counted);
             found = found.saturating_add(1);
-            if data.link_count != link_count {
+            if data.link_count() != link_count {
                 inconsistent = true;
             }
             current = data.next;
@@ -1264,6 +1296,6 @@ mod tests {
         assert_eq!(size_of::<EntryKind>(), 8);
         assert_eq!(size_of::<Node>(), 24);
         assert_eq!(size_of::<Directory>(), 40);
-        assert_eq!(size_of::<Link>(), 32);
+        assert_eq!(size_of::<Link>(), 28);
     }
 }
