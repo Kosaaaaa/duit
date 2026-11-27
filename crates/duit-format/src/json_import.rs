@@ -69,7 +69,8 @@ struct Parser<R> {
     buffer: Vec<u8>,
     offset: usize,
     length: usize,
-    pending: Option<u8>,
+    /// The end of the input was read and undone, so the next byte is the end again.
+    end_undone: bool,
     line: u64,
     byte: u64,
 }
@@ -82,7 +83,7 @@ impl<R: Read> Parser<R> {
             buffer: vec![0; BUFFER_SIZE],
             offset: 0,
             length: 0,
-            pending: None,
+            end_undone: false,
             line: 1,
             byte: 1,
         }
@@ -124,25 +125,29 @@ impl<R: Read> Parser<R> {
         }
     }
 
+    #[inline]
     fn next_byte(&mut self) -> Result<u8, ImportError> {
-        if let Some(byte) = self.pending.take() {
+        if self.offset < self.length
+            && let Some(&byte) = self.buffer.get(self.offset)
+        {
+            self.offset += 1;
             self.advance_byte();
             return Ok(byte);
         }
-        if self.offset == self.length {
-            self.fill()?;
-            if self.length == 0 {
-                return Ok(END_OF_INPUT);
-            }
+        self.next_byte_refill()
+    }
+
+    #[cold]
+    fn next_byte_refill(&mut self) -> Result<u8, ImportError> {
+        if mem::take(&mut self.end_undone) {
+            self.advance_byte();
+            return Ok(END_OF_INPUT);
         }
-        let byte = self
-            .buffer
-            .get(self.offset)
-            .copied()
-            .unwrap_or(END_OF_INPUT);
-        self.offset += 1;
-        self.advance_byte();
-        Ok(byte)
+        self.fill()?;
+        if self.length == 0 {
+            return Ok(END_OF_INPUT);
+        }
+        self.next_byte()
     }
 
     fn advance_byte(&mut self) {
@@ -154,9 +159,15 @@ impl<R: Read> Parser<R> {
         self.byte = self.byte.saturating_sub(1);
     }
 
-    fn undo(&mut self, byte: u8) {
+    /// Undo [`Parser::next_byte`], so that the next call returns the same byte again.
+    fn undo(&mut self) {
         self.retreat_byte();
-        self.pending = Some(byte);
+        // The buffer is empty only after the end of the input, and holds the byte otherwise.
+        if self.length == 0 {
+            self.end_undone = true;
+        } else {
+            self.offset = self.offset.saturating_sub(1);
+        }
     }
 
     fn next_char(&mut self) -> Result<u8, ImportError> {
@@ -225,6 +236,19 @@ impl<R: Read> Parser<R> {
     fn string_content(&mut self, buffer: &mut Vec<u8>, capacity: usize) -> Result<(), ImportError> {
         buffer.clear();
         loop {
+            // Copy the bytes up to the next one that needs a check, then check that one.
+            let available = self
+                .buffer
+                .get(self.offset..self.length)
+                .unwrap_or_default();
+            let plain = available
+                .iter()
+                .position(|&byte| byte == b'"' || byte == b'\\' || byte < 0x20)
+                .unwrap_or(available.len());
+            let room = capacity.saturating_sub(buffer.len());
+            buffer.extend_from_slice(available.get(..plain.min(room)).unwrap_or_default());
+            self.offset += plain;
+            self.byte += plain as u64;
             let byte = match self.next_byte()? {
                 b'"' => return Ok(()),
                 b'\\' => match self.next_byte()? {
@@ -267,7 +291,7 @@ impl<R: Read> Parser<R> {
             loop {
                 let byte = self.next_byte()?;
                 if !byte.is_ascii_digit() {
-                    self.undo(byte);
+                    self.undo();
                     break;
                 }
                 let next = value.wrapping_mul(10).wrapping_add(u64::from(byte - b'0')) & mask;
@@ -334,8 +358,8 @@ impl<R: Read> Parser<R> {
         match self.next_char()? {
             b',' if !first => Ok(true),
             b']' => Ok(false),
-            byte if first => {
-                self.undo(byte);
+            _ if first => {
+                self.undo();
                 Ok(true)
             }
             _ => self.fail("invalid JSON"),
@@ -353,7 +377,7 @@ impl<R: Read> Parser<R> {
                 b'-' | b'0'..=b'9' => loop {
                     let byte = self.next_byte()?;
                     if !matches!(byte, b'-' | b'+' | b'e' | b'E' | b'.' | b'0'..=b'9') {
-                        self.undo(byte);
+                        self.undo();
                         break;
                     }
                 },
@@ -429,7 +453,7 @@ fn item_key<R: Read>(
                     byte = parser.next_byte()?;
                 }
             }
-            parser.undo(byte);
+            parser.undo();
         }
         b"name" => {
             if !item.name.is_empty() {
@@ -469,6 +493,7 @@ fn item_key<R: Read>(
 fn read_item<R: Read>(
     parser: &mut Parser<R>,
     item: &mut Item,
+    key: &mut Vec<u8>,
     device: u64,
     is_root: bool,
 ) -> Result<bool, ImportError> {
@@ -494,11 +519,10 @@ fn read_item<R: Read>(
     };
     item.read_error = false;
     item.name.clear();
-    let mut key = Vec::new();
     let mut first = true;
-    while parser.key(first, &mut key, KEY_CAPACITY)? {
+    while parser.key(first, key, KEY_CAPACITY)? {
         first = false;
-        item_key(parser, item, &key)?;
+        item_key(parser, item, key)?;
     }
     if item.name.is_empty() {
         return parser.fail("missing \"name\" field");
@@ -540,7 +564,8 @@ fn items<R: Read, S: Sink>(parser: &mut Parser<R>, sink: &mut S) -> Result<(), I
         read_error: false,
         name: Vec::new(),
     };
-    read_item(parser, &mut item, 0, true)?;
+    let mut key = Vec::with_capacity(KEY_CAPACITY);
+    read_item(parser, &mut item, &mut key, 0, true)?;
     if item.kind != ItemType::Stat(EntryType::Directory) {
         return parser.fail("parent item must be a directory");
     }
@@ -561,7 +586,7 @@ fn items<R: Read, S: Sink>(parser: &mut Parser<R>, sink: &mut S) -> Result<(), I
             }
             continue;
         }
-        let is_array = read_item(parser, &mut item, *device, false)?;
+        let is_array = read_item(parser, &mut item, &mut key, *device, false)?;
         let child = add_entry(
             sink,
             directory,

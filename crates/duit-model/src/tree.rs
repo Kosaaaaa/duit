@@ -2,6 +2,7 @@ use std::collections::hash_map::Entry as MapEntry;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::io;
 use std::iter;
 use std::mem;
@@ -232,6 +233,7 @@ pub struct Tree {
     inodes: HashMap<Inode, LinkId>,
     uncounted: UncountedInodes,
     counted_inodes: usize,
+    scratch: InodeScratch,
     extended: Vec<EntryExtended>,
     names: Names,
     devices: Vec<u64>,
@@ -793,7 +795,8 @@ impl Tree {
         let Some(totals) = self.inode_totals(link, true) else {
             return;
         };
-        for (directory, count) in totals.directories {
+        let scratch = mem::take(&mut self.scratch);
+        for (&directory, &count) in &scratch.directories {
             let data = &mut self.directories[directory.index()];
             if count < totals.link_count {
                 data.shared_blocks = data.shared_blocks.saturating_add(totals.blocks);
@@ -803,13 +806,15 @@ impl Tree {
             entry.blocks = add_blocks(entry.blocks, totals.blocks);
             entry.size = entry.size.saturating_add(totals.size);
         }
+        self.scratch = scratch;
     }
 
     fn remove_stats(&mut self, link: LinkId) {
         let Some(totals) = self.inode_totals(link, false) else {
             return;
         };
-        for (directory, count) in totals.directories {
+        let scratch = mem::take(&mut self.scratch);
+        for (&directory, &count) in &scratch.directories {
             let data = &mut self.directories[directory.index()];
             if count < totals.link_count {
                 data.shared_blocks = data.shared_blocks.saturating_sub(totals.blocks);
@@ -819,8 +824,12 @@ impl Tree {
             entry.blocks = entry.blocks.saturating_sub(totals.blocks);
             entry.size = entry.size.saturating_sub(totals.size);
         }
+        self.scratch = scratch;
     }
 
+    /// Mark the links to the inode of `link` as `counted`, and fill `self.scratch.directories`
+    /// with the directories above them and the number of links below each. `None`, and nothing
+    /// changes, if the links are marked so already.
     fn inode_totals(&mut self, link: LinkId, counted: bool) -> Option<InodeTotals> {
         if self.links[link.index()].counted == counted {
             return None;
@@ -828,7 +837,14 @@ impl Tree {
         let link_count = self.links[link.index()].link_count;
         let mut found: u32 = 0;
         let mut inconsistent = false;
-        let mut parents: HashMap<DirectoryId, u32> = HashMap::new();
+        let InodeScratch {
+            parents,
+            directories,
+            order,
+        } = &mut self.scratch;
+        parents.clear();
+        directories.clear();
+        order.clear();
         let mut current = link;
         loop {
             let data = &mut self.links[current.index()];
@@ -844,8 +860,21 @@ impl Tree {
                 break;
             }
         }
-        let (mut directories, bottom_up) = self.ancestors_bottom_up(&parents);
-        for directory in bottom_up {
+        // Each directory above a link, and the number of links right in it, with every directory
+        // after the directories below it.
+        for &start in parents.keys() {
+            let walk_start = order.len();
+            let mut parent = Some(start);
+            while let Some(directory) = parent
+                && !directories.contains_key(&directory)
+            {
+                directories.insert(directory, parents.get(&directory).copied().unwrap_or(0));
+                order.push(directory);
+                parent = self.directories[directory.index()].parent;
+            }
+            order[walk_start..].reverse();
+        }
+        for &directory in order.iter().rev() {
             if let Some(parent) = self.directories[directory.index()].parent
                 && let Some(&count) = directories.get(&directory)
                 && let Some(total) = directories.get_mut(&parent)
@@ -860,33 +889,10 @@ impl Tree {
         };
         let Entry { blocks, size, .. } = self.entries[self.links[link.index()].entry.index()];
         Some(InodeTotals {
-            directories,
             link_count,
             blocks,
             size,
         })
-    }
-
-    fn ancestors_bottom_up(
-        &self,
-        parents: &HashMap<DirectoryId, u32>,
-    ) -> (HashMap<DirectoryId, u32>, Vec<DirectoryId>) {
-        let mut directories: HashMap<DirectoryId, u32> = HashMap::new();
-        let mut order: Vec<DirectoryId> = Vec::new();
-        for &start in parents.keys() {
-            let walk_start = order.len();
-            let mut parent = Some(start);
-            while let Some(directory) = parent
-                && !directories.contains_key(&directory)
-            {
-                directories.insert(directory, parents.get(&directory).copied().unwrap_or(0));
-                order.push(directory);
-                parent = self.directories[directory.index()].parent;
-            }
-            order[walk_start..].reverse();
-        }
-        order.reverse();
-        (directories, order)
     }
 
     /// Add the sizes of the inodes that are left out of the totals, as after adding or removing
@@ -930,10 +936,48 @@ impl Tree {
 }
 
 struct InodeTotals {
-    directories: HashMap<DirectoryId, u32>,
     link_count: u32,
     blocks: u64,
     size: u64,
+}
+
+/// The memory of [`Tree::inode_totals`], kept from one inode to the next.
+#[derive(Debug, Default, Clone)]
+struct InodeScratch {
+    parents: DirectoryMap,
+    directories: DirectoryMap,
+    order: Vec<DirectoryId>,
+}
+
+/// A count for each of a set of directories. The tree numbers its directories itself, so a
+/// multiplication spreads their identifiers well enough, where the default hasher would cost
+/// more than the rest of the hard link accounting.
+type DirectoryMap = HashMap<DirectoryId, u32, BuildHasherDefault<IdentifierHasher>>;
+
+#[derive(Default)]
+struct IdentifierHasher(u64);
+
+/// 2^64 divided by the golden ratio, an odd number whose multiples spread over all bits.
+const MULTIPLIER: u64 = 0x9e37_79b9_7f4a_7c15;
+
+impl Hasher for IdentifierHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = (self.0.rotate_left(8) ^ u64::from(byte)).wrapping_mul(MULTIPLIER);
+        }
+    }
+
+    fn write_u32(&mut self, value: u32) {
+        self.write_u64(u64::from(value));
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.0 = value.wrapping_mul(MULTIPLIER);
+    }
 }
 
 /// What [`Tree::prepend_file`] adds: any entry that is not a directory.
