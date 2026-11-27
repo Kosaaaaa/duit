@@ -99,13 +99,13 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
   subset of CBOR. `zstd` binds libzstd, which is what ncdu links.
 - **Tree memory: index-based arenas in safe Rust, with at most 2^32 - 1 entries, unlike ncdu.**
   Entries and names live in `Vec`-backed arenas and refer to each other by id. Budget: peak memory
-  at most 1.25 times ncdu's. Each id is a `u32` with a `NonZero` niche, so an `Option` of an id
-  takes 4 bytes too, and a name ends where the name of the next entry starts, so an entry stores no
-  name length. An entry takes 40 bytes, a directory 40 more, and a hard link 32 more. That meets the
-  budget without `unsafe`, as measured in [BENCHMARKS.md](BENCHMARKS.md), so there is no packed
-  layout. ncdu has no limit on the number of entries. A scan or an import that would add more stops
-  with `Maximum number of entries exceeded.` The offset of a name is a `usize`, so the names have no
-  limit of their own.
+  below ncdu's, the done criterion of M8. Each id is a `u32` with a `NonZero` niche, so an `Option`
+  of an id takes 4 bytes too, and a name ends where the name of the next entry starts, so an entry
+  stores no name length. An entry takes 40 bytes, a directory 40 more, and a hard link 32 more. That
+  is 1.19 times ncdu's peak for a scan with one thread, as measured in
+  [BENCHMARKS.md](BENCHMARKS.md), so it is over the budget. ncdu has no limit on the number of
+  entries. A scan or an import that would add more stops with `Maximum number of entries exceeded.`
+  The offset of a name is a `usize`, so the names have no limit of their own.
 - **Threads: `std::thread` with one writer, unlike ncdu.** At `scan.zig:271-293`, each ncdu thread
   reads its directory entry by entry and reports every entry to the sink itself, so the sinks lock
   what threads share. With `-t` above 1, duit threads take directories from a mutex and condvar
@@ -309,6 +309,17 @@ Trusted Publishing needs a crate that exists already, so `0.1.0` is published by
 token. Each crate then gets a trusted publisher for `release.yml` and the `release` environment.
 
 Done when a release after `0.1.0` publishes all five crates from the workflow.
+
+### M8: Faster and smaller than ncdu
+
+Every case in [BENCHMARKS.md](BENCHMARKS.md) takes less time and less peak memory than in ncdu
+2.9.2. This is stricter than goal 3 and than M5, whose budget allowed 1.25 times ncdu's peak memory
+for the tree. No flag, option, or key is added for it, and the `-o` and `-O` output and the error
+messages stay as they are. Neither the tree nor the scan uses `unsafe` code for it.
+
+Done when `make bench` shows a time ratio and a peak memory ratio below 1.00 in every row. A gap
+that cannot close without `unsafe` code or without a change to the output is documented in
+BENCHMARKS.md, with the profile that shows its cause, and leaves M8 open.
 
 M1 comes first because it has no UI: its output can be compared with ncdu's by a machine from the
 first day.
