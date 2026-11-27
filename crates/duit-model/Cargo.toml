@@ -16,3 +16,4 @@ doctest = false
 workspace = true
 
 [dependencies]
+hashbrown = { workspace = true }

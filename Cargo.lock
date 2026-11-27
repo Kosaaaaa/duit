@@ -222,6 +222,9 @@ dependencies = [
 [[package]]
 name = "duit-model"
 version = "0.1.0"
+dependencies = [
+ "hashbrown",
+]
 
 [[package]]
 name = "duit-scan"

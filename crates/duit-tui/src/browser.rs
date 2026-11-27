@@ -216,7 +216,7 @@ fn is_directory(kind: EntryKind) -> bool {
     }
 }
 
-fn directory_of(entry: &Entry) -> Option<DirectoryId> {
+fn directory_of(entry: Entry) -> Option<DirectoryId> {
     match entry.kind {
         EntryKind::Directory(directory) => Some(directory),
         EntryKind::HardLink(_)
@@ -259,7 +259,7 @@ fn sort_less(tree: &Tree, options: &BrowserOptions, a: EntryId, b: EntryId) -> b
     }
 
     let order = options.sort_order;
-    let items = |entry: &Entry| directory_of(entry).map_or(0, |id| tree.directory(id).items);
+    let items = |entry: Entry| directory_of(entry).map_or(0, |id| tree.directory(id).items);
     let numbers: &[(u64, u64)] = match options.sort_column {
         SortColumn::Name => &[],
         SortColumn::Blocks => &[
