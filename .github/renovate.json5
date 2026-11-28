@@ -64,5 +64,13 @@
       packageNameTemplate: "rust-lang/rust",
       datasourceTemplate: "github-releases",
     },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^scripts/prek\\.toml$/"],
+      matchStrings: [
+        'repo\\s*=\\s*"https://github\\.com/(?<depName>[^"]+)"\\s*\\nrev\\s*=\\s*"(?<currentDigest>[0-9a-f]{40})"\\s*#\\s*frozen:\\s*(?<currentValue>\\S+)',
+      ],
+      datasourceTemplate: "github-tags",
+    },
   ],
 }
