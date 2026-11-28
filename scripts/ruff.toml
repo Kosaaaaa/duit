@@ -35,6 +35,7 @@ select = [
   "TC",
   "SLOT",
   "TID",
+  "FA",
 ]
 ignore = [
   "E731",
