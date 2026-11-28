@@ -95,7 +95,21 @@ memory with `-t 4`.
   the scans with several threads, which take 0.97 to 1.00 in the other rows and moved by 0.02 to
   0.03 between the last two runs. Reruns of 15 runs each gave 2.102 s ± 0.054 for duit and 2.132 s ±
   0.029 for ncdu in the scan into memory with `-t 4`, and 2.285 s ± 0.070 against 2.301 s ± 0.072 in
-  the scan to JSON with `-t 8`.
+  the scan to JSON with `-t 8`. A `sample` of a `profiling` build of both rows, next to one of ncdu,
+  shows no time that duit spends and ncdu does not. Each scan thread of both programs is in
+  `fstatat` or `__getdirentries64` for 98% of its samples or more, `fstatat` alone for 75% to 95%,
+  and duit's own code, with the parts that it sends, their allocation, and the queue, takes under
+  1%. duit's calling thread is parked in `recv_timeout` for 98% of its samples, and the threads have
+  4 samples or fewer each in `send`, so they never wait for it. The system time of both programs is
+  the number of threads times the wall time, 8.0 to 8.5 s with `-t 4` and 16 to 17.5 s with `-t 8`
+  for wall times of 2.1 to 2.4 s, so each `fstatat` costs more in the kernel the more threads call
+  it, and the wall time is the same in both. duit takes about 0.1 s more user time than ncdu (0.31 s
+  against 0.21 s with `-t 4`), split between the calling thread, which builds the tree while the
+  threads read, and under 1% of each scan thread. The JSON export after the scan does not show
+  either: with 20 runs each and `-t 8`, `-o /dev/null` took 0.05 s less than `--quit-after-scan` in
+  duit and 0.02 s more in ncdu, both within the ± of 0.06 to 0.09 s. As for `/System/Library`, these
+  rows would take less time only with fewer system calls for each entry, such as reading the
+  attributes of a directory in bulk, which needs `unsafe` code.
 
 ## Changes for M8, and what did not help
 
@@ -130,11 +144,14 @@ memory with `-t 4`.
 - The binary export compresses each block into the buffer that it writes, as ncdu does, instead of
   into a buffer of its own that it then copies. The scan to binary with `-t 1` peaked at 3.74 MiB
   instead of 3.81 MiB, and with `-t 4` it went from 1.00 to 0.93 with the order file.
-- Measured, and left out: a pool of the parts that the scan threads send (no change in time or peak
-  memory, measured three times), mimalloc as the global allocator (102 MiB for the scan into memory
-  with `-t 1`, against 53.7 MiB at the time), reserving the whole tree up front (63 MiB against 53.7
-  MiB with the entries of 40 bytes), and `opt-level = "s"`, which kept 64 KiB less code resident
-  before the order file and imported JSON 15% slower.
+- Measured, and left out: `fstatat` in the order of the inode numbers of a directory instead of the
+  order of `readdir`, with each directory read whole first (slower with 4 threads in a separate
+  program: 2.729 s ± 0.024 against 2.477 s ± 0.394, and 2.697 s against 2.101 s for the fastest
+  runs), a pool of the parts that the scan threads send (no change in time or peak memory, measured
+  three times), mimalloc as the global allocator (102 MiB for the scan into memory with `-t 1`,
+  against 53.7 MiB at the time), reserving the whole tree up front (63 MiB against 53.7 MiB with the
+  entries of 40 bytes), and `opt-level = "s"`, which kept 64 KiB less code resident before the order
+  file and imported JSON 15% slower.
 
 ## Performance bugs for later
 
