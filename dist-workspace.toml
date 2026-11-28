@@ -5,7 +5,8 @@ members = ["cargo:."]
 allow-dirty = ["ci"]
 cargo-dist-version = "0.34.0"
 ci = "github"
-installers = ["shell"]
+installers = ["shell", "homebrew"]
+tap = "Kosaaaaa/homebrew-tap"
 unix-archive = ".tar.gz"
 targets = [
   "aarch64-apple-darwin",

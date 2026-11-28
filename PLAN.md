@@ -355,9 +355,9 @@ is written by hand with pinned actions, like the rest of `release.yml`. The job 
 writes runs before `announce`, but the archives are uploaded only when `announce` creates the GitHub
 Release, so a formula pushed earlier points at missing files, and stays broken if `announce` fails.
 
-`publish-crates` and `publish-homebrew` both need `announce` and nothing else, and run side by side
-in the protected `release` environment, so one approval starts both. Neither the GitHub Release nor
-the other job waits for one of them. A failed `publish-homebrew` runs again alone with
+`publish-crates` and `publish-homebrew` both wait for `announce` and nothing else, and run side by
+side in the protected `release` environment, so one approval starts both. Neither the GitHub Release
+nor the other job waits for one of them. A failed `publish-homebrew` runs again alone with
 `gh run rerun --failed`, and a rerun after the formula was pushed commits nothing and succeeds. The
 job pushes with a deploy key of the tap, stored as a secret of the `release` environment.
 

@@ -202,8 +202,9 @@ Releases are built by [dist](https://axodotdev.github.io/cargo-dist/), configure
 `dist-workspace.toml`. The `Release` workflow builds static Linux binaries (musl) and macOS
 binaries, packs each with `LICENSE`, `README.md`, and `duit.1`, and attaches them to a GitHub
 Release together with a shell installer. Its release notes are the entry for the version in
-[CHANGELOG.md](CHANGELOG.md). After the GitHub Release is created, a job of the same workflow
-publishes the five crates to crates.io.
+[CHANGELOG.md](CHANGELOG.md). After the GitHub Release is created, two jobs of the same workflow
+publish the five crates to crates.io and the Homebrew formula to the tap
+[`Kosaaaaa/homebrew-tap`](https://github.com/Kosaaaaa/homebrew-tap).
 
 dist finds that entry by the version in its heading, such as `## 0.1.0`. Keep each paragraph and
 list item of an entry on one line, because GitHub renders every line break in the release notes.
@@ -214,6 +215,14 @@ before the first release. Each crate on crates.io has a trusted publisher for th
 workflow `release.yml`, and the environment `release`. Trusted Publishing works only for a crate
 that exists already, so a new crate is published once by hand with an API token, and then gets its
 trusted publisher.
+
+The `publish-homebrew` job runs in the same environment, so one approval starts both jobs. It takes
+the `duit.rb` formula that dist builds, adds a line that installs `duit.1` as a man page, and checks
+that the formula has a SHA-256 for each archive. It commits the formula to `Formula/duit.rb` in its
+checkout of the tap, installs duit from that checkout, checks `duit --version` and `man -w duit`,
+and then pushes. It pushes with a deploy key of the tap, which has write access and is stored as the
+`HOMEBREW_TAP_DEPLOY_KEY` secret of the `release` environment. The job skips prereleases, so the
+formula always installs a stable version.
 
 To release a version, for example `0.1.0`:
 
@@ -227,9 +236,12 @@ To release a version, for example `0.1.0`:
    on the commit it ran on and the GitHub Release, and fails on any other branch or when the tag
    exists already. Then it publishes the crates. crates.io rejects a version it has already, so when
    the job fails after some crates are published, a rerun fails too: publish the remaining crates by
-   hand from the tag with `cargo publish -p <crate>`.
+   hand from the tag with `cargo publish -p <crate>`. When `publish-homebrew` fails, run it again
+   with `gh run rerun <run-id> --failed`. A rerun after the formula was pushed commits nothing.
 
 `.github/workflows/release.yml` is maintained by hand, so that it passes zizmor. A dist upgrade
 changes `cargo-dist-version` in `dist-workspace.toml` together with `DIST_INSTALLER_URL` and
 `DIST_INSTALLER_SHA256` in the workflow, which fails when the versions differ. After the upgrade,
-compare the workflow with the output of `dist generate`.
+compare the workflow with the output of `dist generate`, and check that the formula of the new
+version still has the `install_binary_aliases!` line that `publish-homebrew` puts the man page
+before.
