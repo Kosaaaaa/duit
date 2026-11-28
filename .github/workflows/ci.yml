@@ -60,6 +60,25 @@ jobs:
             echo "::error::the prettier pins differ: $versions"
             exit 1
           fi
+      - name: "Check that every Python pin names the same version"
+        run: |
+          uvx_files="Makefile scripts/benchmark.py scripts/order_file.py BENCHMARKS.md CONTRIBUTING.md"
+          for file in $uvx_files; do
+            grep -q -- "--python '\?~=3\.[0-9]" "$file" || { echo "::error file=$file::no Python pin"; exit 1; }
+          done
+          grep -q 'target-version = "py3[0-9]*"' scripts/ruff.toml || { echo "::error file=scripts/ruff.toml::no Python pin"; exit 1; }
+          grep -q 'python-version = "3\.[0-9]*"' scripts/ty.toml || { echo "::error file=scripts/ty.toml::no Python pin"; exit 1; }
+          versions="$(
+            {
+              grep -ho -- "--python '\?~=3\.[0-9]*" $uvx_files | sed 's/.*~=//'
+              grep -o 'target-version = "py3[0-9]*"' scripts/ruff.toml | sed 's/.*"py3\([0-9]*\)"/3.\1/'
+              grep -o 'python-version = "3\.[0-9]*"' scripts/ty.toml | sed 's/.*"\(.*\)"/\1/'
+            } | sort -u
+          )"
+          if [ "$(echo "$versions" | wc -l)" -ne 1 ]; then
+            echo "::error::the Python pins differ: $versions"
+            exit 1
+          fi
 
   clippy:
     name: "check | clippy"
