@@ -150,8 +150,9 @@ depend on the manuals of the machine.
 
 Hooks are optional. [prek](https://prek.j178.dev/) formats files and fixes unambiguous typos in
 place before a commit, and runs clippy before a push. A hook that changes a file fails the commit,
-so review and stage the changes, then commit again. The hooks call the tools above, so install those
-first. `make tools` installs the versions that CI uses:
+so review and stage the changes, then commit again. The hooks in `scripts/prek.toml` lint, format,
+and type-check the Python scripts with ruff and ty, which prek installs on its own. The other hooks
+call the tools above, so install those first. `make tools` installs the versions that CI uses:
 
 ```shell
 make tools

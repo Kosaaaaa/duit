@@ -1,0 +1,20 @@
+[[repos]]
+repo = "https://github.com/astral-sh/ruff-pre-commit"
+rev = "v0.17.6"
+
+[[repos.hooks]]
+id = "ruff-check"
+types_or = ["python"]
+
+[[repos.hooks]]
+id = "ruff-format"
+types_or = ["python"]
+
+[[repos]]
+repo = "https://github.com/astral-sh/ty-pre-commit"
+rev = "v0.0.112"
+
+[[repos.hooks]]
+id = "ty"
+types_or = ["python"]
+always_run = false

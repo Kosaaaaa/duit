@@ -40,6 +40,7 @@ HEADER = """\
 # The disambiguator of a crate in a v0 symbol name, such as `Csjnpgb3NJ0MC_` in `Csjnpgb3NJ0MC_4duit`.
 CRATE_HASH = re.compile(r"Cs[0-9A-Za-z]+_(?=\d)")
 
+
 def build(profile, map_path):
     command = ["cargo", "rustc", "--locked", "-p", "duit", "--bin", "duit", *profile]
     command += ["--", "-C", f"link-arg=-Wl,-map,{map_path}"]
@@ -56,7 +57,7 @@ def text_functions_by_address(map_path):
         if section == "# Sections:" and fields[3:4] == ["__text"]:
             start = int(fields[0], 16)
             text = range(start, start + int(fields[1], 16))
-        elif section == "# Symbols:" and len(fields) == 3 and int(fields[0], 16) in text:
+        elif section == "# Symbols:" and len(fields) == 3 and text and int(fields[0], 16) in text:
             functions[int(fields[0], 16)] = fields[2].split("] ", 1)[1]
     return functions
 
@@ -64,7 +65,9 @@ def text_functions_by_address(map_path):
 def trace(binary, arguments, output):
     environment = dict(os.environ)
     environment["ORDER_FILE_BINARY"] = str(binary)
-    environment["ORDER_FILE_ARGUMENTS"] = json.dumps(["--ignore-config", "-0", *map(str, arguments)])
+    environment["ORDER_FILE_ARGUMENTS"] = json.dumps(
+        ["--ignore-config", "-0", *map(str, arguments)]
+    )
     environment["ORDER_FILE_OUTPUT"] = str(output)
     hook = Path(__file__).with_name("order_file_lldb.py")
     command = ["lldb", "--batch", "--no-lldbinit", "-o", f"command script import {hook}"]
@@ -82,9 +85,14 @@ def unique_names_by_key(functions):
 def main():
     if sys.platform != "darwin":
         sys.exit("The order file is for the Apple linker, run this on macOS")
-    host = re.search(r"^host: (\S+)$", benchmark.run(
-        ["rustc", "-vV"], cwd=ROOT, capture_output=True, text=True
-    ).stdout, re.MULTILINE).group(1)
+    host_line = re.search(
+        r"^host: (\S+)$",
+        benchmark.run(["rustc", "-vV"], cwd=ROOT, capture_output=True, text=True).stdout,
+        re.MULTILINE,
+    )
+    if host_line is None:
+        sys.exit("rustc -vV printed no host line")
+    host = host_line.group(1)
     build(["--release"], TARGET / "release.map")
     build(["--profile", "dist", "--target", host], TARGET / "dist.map")
     release = text_functions_by_address(TARGET / "release.map")

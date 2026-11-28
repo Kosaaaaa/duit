@@ -89,7 +89,8 @@ def generate():
     fd = make_directory(root_fd, "nested")
     counter = [0, None]
     generate_nested(fd, 0, counter)
-    os.close(counter[1])
+    if counter[1] is not None:
+        os.close(counter[1])
     os.close(fd)
 
     fd = make_directory(root_fd, "long")
@@ -116,9 +117,19 @@ def stamp():
         for function in (create_file, make_directory, generate_nested, generate)
     )
     return json.dumps(
-        [hashlib.sha256(generator.encode()).hexdigest(), WIDE_FILES, FANOUT, NESTED_LEVELS,
-         LEAF_FILES, LONG_NAMES, DEEP_LEVELS, DEEP_FILES, NON_EMPTY_FILE_PERIOD,
-         SHORTEST_LONG_NAME, LONGEST_NAME]
+        [
+            hashlib.sha256(generator.encode()).hexdigest(),
+            WIDE_FILES,
+            FANOUT,
+            NESTED_LEVELS,
+            LEAF_FILES,
+            LONG_NAMES,
+            DEEP_LEVELS,
+            DEEP_FILES,
+            NON_EMPTY_FILE_PERIOD,
+            SHORTEST_LONG_NAME,
+            LONGEST_NAME,
+        ]
     )
 
 
@@ -184,7 +195,6 @@ def count_entries(item):
     if isinstance(item, list):
         return 1 + sum(count_entries(child) for child in item[1:])
     return 1
-
 
 
 def mebibytes(size):
@@ -258,6 +268,7 @@ def main():
         else ["sh", "-c", "grep -m1 'model name' /proc/cpuinfo | cut -d: -f2"],
         capture_output=True,
         text=True,
+        check=False,
     ).stdout.strip()
     duit_version = run([DUIT, "--version"], capture_output=True, text=True).stdout.strip()
     hyperfine_version = run(["hyperfine", "--version"], capture_output=True, text=True).stdout
@@ -266,8 +277,10 @@ def main():
         f"- OS: {platform.system()} {platform.release()} ({platform.platform()})",
         f"- Versions: {version}, {duit_version}, {hyperfine_version.strip()}",
         f"- Tree: {count_entries(entries[0])} entries",
-        f"- Runs: {arguments.warmup} warmup and {arguments.runs} timed runs per command, peak"
-        f" memory is the median of {arguments.memory_runs} runs",
+        (
+            f"- Runs: {arguments.warmup} warmup and {arguments.runs} timed runs per command, peak"
+            f" memory is the median of {arguments.memory_runs} runs"
+        ),
         "",
         "| Case | ncdu time | duit time | Time ratio | ncdu peak RSS | duit peak RSS | RSS ratio |",
         "| --- | --: | --: | --: | --: | --: | --: |",
@@ -282,6 +295,7 @@ def main():
         )
     (WORK / "results.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
+
 
 if __name__ == "__main__":
     main()
