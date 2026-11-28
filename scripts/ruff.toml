@@ -1,0 +1,57 @@
+line-length = 100
+target-version = "py314"
+# lldb loads this script into the Python that it embeds: 3.9 in the lldb of the Command Line Tools.
+per-file-target-version = { "order_file_lldb.py" = "py39" }
+
+[lint]
+select = [
+  "F",
+  "E",
+  "W",
+  "C90",
+  "I",
+  "N",
+  "UP",
+  "S",
+  "FBT",
+  "B",
+  "A",
+  "C4",
+  "T10",
+  "ISC",
+  "PIE",
+  "SIM",
+  "PTH",
+  "PL",
+  "FURB",
+  "PERF",
+  "DTZ",
+  "RUF",
+  "ANN",
+  "PGH",
+  "RSE",
+  "FLY",
+  "COM",
+  "TC",
+  "SLOT",
+  "TID",
+  "FA",
+]
+ignore = [
+  "ANN401",
+  "S603",
+  # https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules
+  "COM812",
+  "COM819",
+  "E111",
+  "E114",
+  "E117",
+  "E501",
+  "ISC001",
+  "ISC002",
+  "W191",
+]
+
+[lint.per-file-ignores]
+# lldb's SB API takes booleans as positional arguments.
+"order_file_lldb.py" = ["FBT003"]

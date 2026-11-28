@@ -1,0 +1,11 @@
+[environment]
+python-version = "3.14"
+
+[analysis]
+# `lldb` exists only inside the Python interpreter that lldb embeds.
+allowed-unresolved-imports = ["lldb"]
+strict-equality-semantics = true
+strict-generic-narrowing = true
+
+[rules]
+all = "error"

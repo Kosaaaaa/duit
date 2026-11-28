@@ -33,15 +33,16 @@ Every command starts with `--ignore-config -0`, and both programs get the same f
 
 ## Rerun
 
-With Python 3, [hyperfine](https://github.com/sharkdp/hyperfine), and ncdu 2.9.2 on `PATH`:
+With [uv](https://docs.astral.sh/uv/), [hyperfine](https://github.com/sharkdp/hyperfine), ncdu 2.9.2
+on `PATH`, and `/usr/bin/time` (GNU time on Linux):
 
 ```shell
 make bench
 ```
 
-`python3 scripts/benchmark.py --help` lists the options: another ncdu binary, the number of runs,
-the values of `-t`, and the real tree. The first run generates the tree in `target/benchmark/`, in
-about 40 seconds. A run takes about 20 minutes and writes the table to
+`uvx --python '~=3.14.0' python scripts/benchmark.py --help` lists the options: another ncdu binary,
+the number of runs, the values of `-t`, and the real tree. The first run generates the tree in
+`target/benchmark/`, in about 40 seconds. A run takes about 20 minutes and writes the table to
 `target/benchmark/results.md`.
 
 ## Results

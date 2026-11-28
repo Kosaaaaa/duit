@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uvx --python ~=3.14.0 python
 """Compare the scan time and the peak memory of duit with those of ncdu 2.9.2.
 
 Builds duit with the release profile, generates a deterministic tree of about one million entries
@@ -6,8 +6,8 @@ in `target/benchmark/`, and runs each case with both programs and the same flags
 the time, and `/usr/bin/time` for the peak resident set size. Writes the results to
 `target/benchmark/results.md` as a Markdown table, the one in `BENCHMARKS.md`.
 
-Usage: `make bench` or `python3 scripts/benchmark.py --help`. Needs only the Python standard
-library, `hyperfine`, ncdu 2.9.2, and `/usr/bin/time`.
+Usage: `make bench` or `uvx --python '~=3.14.0' python scripts/benchmark.py --help`. Needs uv,
+`hyperfine`, ncdu 2.9.2, and `/usr/bin/time`, and only the standard library of Python 3.14.
 """
 
 import argparse
@@ -22,7 +22,12 @@ import shutil
 import statistics
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "target" / "benchmark"
@@ -35,6 +40,7 @@ WIDE_FILES = 100_000
 FANOUT = 10
 NESTED_LEVELS = 3
 LEAF_FILES = 880
+HARD_LINK_PERIOD = 10
 LONG_NAMES = 10_000
 DEEP_LEVELS = 64
 DEEP_FILES = 10
@@ -43,39 +49,50 @@ SHORTEST_LONG_NAME = 100
 LONGEST_NAME = 255
 
 
-def create_file(directory_fd, name, index):
+def create_file(directory_fd: int, name: str, index: int) -> None:
     fd = os.open(name, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o644, dir_fd=directory_fd)
     if index % NON_EMPTY_FILE_PERIOD == 0:
         os.write(fd, b"x" * (index % 1000 + 1))
     os.close(fd)
 
 
-def make_directory(parent_fd, name):
+def make_directory(parent_fd: int, name: str) -> int:
     os.mkdir(name, 0o755, dir_fd=parent_fd)
     return os.open(name, os.O_RDONLY | os.O_DIRECTORY, dir_fd=parent_fd)
 
 
-def generate_nested(parent_fd, level, counter):
+@dataclass
+class Leaves:
+    file_count: int = 0
+    previous_fd: int | None = None
+
+
+def generate_nested(parent_fd: int, level: int, leaves: Leaves) -> None:
     for child in range(FANOUT):
         fd = make_directory(parent_fd, f"directory-{child}")
         if level + 1 < NESTED_LEVELS:
-            generate_nested(fd, level + 1, counter)
+            generate_nested(fd, level + 1, leaves)
         else:
             for index in range(LEAF_FILES):
                 name = f"file-{index:04d}"
-                if index % 10 == 9:
+                if index % HARD_LINK_PERIOD == HARD_LINK_PERIOD - 1:
                     os.link(f"file-{index - 1:04d}", name, src_dir_fd=fd, dst_dir_fd=fd)
                 else:
-                    create_file(fd, name, counter[0] + index)
-            if counter[1] is not None:
-                os.link("file-0000", "link-to-previous-leaf", src_dir_fd=counter[1], dst_dir_fd=fd)
-                os.close(counter[1])
-            counter[1] = os.dup(fd)
-            counter[0] += LEAF_FILES
+                    create_file(fd, name, leaves.file_count + index)
+            if leaves.previous_fd is not None:
+                os.link(
+                    "file-0000",
+                    "link-to-previous-leaf",
+                    src_dir_fd=leaves.previous_fd,
+                    dst_dir_fd=fd,
+                )
+                os.close(leaves.previous_fd)
+            leaves.previous_fd = os.dup(fd)
+            leaves.file_count += LEAF_FILES
         os.close(fd)
 
 
-def generate():
+def generate() -> None:
     if TREE.exists():
         shutil.rmtree(TREE)
     TREE.mkdir(parents=True)
@@ -87,9 +104,10 @@ def generate():
     os.close(fd)
 
     fd = make_directory(root_fd, "nested")
-    counter = [0, None]
-    generate_nested(fd, 0, counter)
-    os.close(counter[1])
+    leaves = Leaves()
+    generate_nested(fd, 0, leaves)
+    if leaves.previous_fd is not None:
+        os.close(leaves.previous_fd)
     os.close(fd)
 
     fd = make_directory(root_fd, "long")
@@ -110,19 +128,30 @@ def generate():
     os.close(root_fd)
 
 
-def stamp():
+def stamp() -> str:
     generator = "".join(
         inspect.getsource(function)
-        for function in (create_file, make_directory, generate_nested, generate)
+        for function in (create_file, make_directory, Leaves, generate_nested, generate)
     )
     return json.dumps(
-        [hashlib.sha256(generator.encode()).hexdigest(), WIDE_FILES, FANOUT, NESTED_LEVELS,
-         LEAF_FILES, LONG_NAMES, DEEP_LEVELS, DEEP_FILES, NON_EMPTY_FILE_PERIOD,
-         SHORTEST_LONG_NAME, LONGEST_NAME]
+        [
+            hashlib.sha256(generator.encode()).hexdigest(),
+            WIDE_FILES,
+            FANOUT,
+            NESTED_LEVELS,
+            LEAF_FILES,
+            HARD_LINK_PERIOD,
+            LONG_NAMES,
+            DEEP_LEVELS,
+            DEEP_FILES,
+            NON_EMPTY_FILE_PERIOD,
+            SHORTEST_LONG_NAME,
+            LONGEST_NAME,
+        ]
     )
 
 
-def prepare_tree():
+def prepare_tree() -> None:
     WORK.mkdir(parents=True, exist_ok=True)
     if not STAMP.exists() or STAMP.read_text() != stamp():
         print(f"Generating {TREE}", file=sys.stderr)
@@ -131,12 +160,12 @@ def prepare_tree():
         STAMP.write_text(stamp())
 
 
-def run(command, **kwargs):
+def run(command: Sequence[object], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
     print("+ " + shlex.join(str(part) for part in command), file=sys.stderr)
     return subprocess.run([str(part) for part in command], check=True, **kwargs)
 
 
-def peak_memory(command, runs):
+def peak_memory(command: list[str], runs: int) -> float:
     if sys.platform == "darwin":
         time_command, pattern, unit = ["-l"], r"(\d+)\s+maximum resident set size", 1
     else:
@@ -157,12 +186,12 @@ def peak_memory(command, runs):
     return statistics.median(samples)
 
 
-def export_entries(path):
-    with open(path) as file:
+def export_entries(path: Path) -> list[Any]:
+    with path.open() as file:
         return json.load(file)[3:]
 
 
-def cases(threads, real_tree):
+def cases(threads: list[int], real_tree: str) -> Iterator[tuple[str, list[str]]]:
     tree = str(TREE)
     for count in threads:
         yield f"Scan into memory, `-t {count}`", ["-t", str(count), "--quit-after-scan", tree]
@@ -180,18 +209,17 @@ def cases(threads, real_tree):
         )
 
 
-def count_entries(item):
+def count_entries(item: object) -> int:
     if isinstance(item, list):
         return 1 + sum(count_entries(child) for child in item[1:])
     return 1
 
 
-
-def mebibytes(size):
+def mebibytes(size: float) -> str:
     return f"{size / 2**20:.1f} MiB"
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--ncdu", default=shutil.which("ncdu") or "ncdu", help="the ncdu binary")
     parser.add_argument("--runs", type=int, default=10, help="timed runs of each command")
@@ -258,6 +286,7 @@ def main():
         else ["sh", "-c", "grep -m1 'model name' /proc/cpuinfo | cut -d: -f2"],
         capture_output=True,
         text=True,
+        check=False,
     ).stdout.strip()
     duit_version = run([DUIT, "--version"], capture_output=True, text=True).stdout.strip()
     hyperfine_version = run(["hyperfine", "--version"], capture_output=True, text=True).stdout
@@ -266,8 +295,10 @@ def main():
         f"- OS: {platform.system()} {platform.release()} ({platform.platform()})",
         f"- Versions: {version}, {duit_version}, {hyperfine_version.strip()}",
         f"- Tree: {count_entries(entries[0])} entries",
-        f"- Runs: {arguments.warmup} warmup and {arguments.runs} timed runs per command, peak"
-        f" memory is the median of {arguments.memory_runs} runs",
+        (
+            f"- Runs: {arguments.warmup} warmup and {arguments.runs} timed runs per command, peak"
+            f" memory is the median of {arguments.memory_runs} runs"
+        ),
         "",
         "| Case | ncdu time | duit time | Time ratio | ncdu peak RSS | duit peak RSS | RSS ratio |",
         "| --- | --: | --: | --: | --: | --: | --: |",
@@ -282,6 +313,7 @@ def main():
         )
     (WORK / "results.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
+
 
 if __name__ == "__main__":
     main()
