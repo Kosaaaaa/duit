@@ -232,9 +232,11 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
   `crates/duit/duit.order` to the Apple linker, so the functions of the streaming paths lie on a few
   pages and their peak memory stays below ncdu's (M8). `scripts/order_file.py` writes the file from
   the functions that lldb sees each path enter. Its names hold the hash of each crate, so the file
-  goes stale silently with a change to the code, the crate versions, or the toolchain, and
-  `make order` rewrites it. The linker skips the names that it does not find, so a stale file never
-  fails a build. Other linkers get no order.
+  goes stale with a change to the code, the crate versions, or the toolchain, and `make order`
+  rewrites it. The linker skips the names that it does not find, so a stale file never fails a
+  build. A version bump changes the hash of every duit crate, so the header of the file names the
+  version that it was written for, and the test `order_file_is_of_this_version` fails on another
+  one. A file that is stale for another reason still goes unnoticed. Other linkers get no order.
 - **`unsafe`: `#[expect(unsafe_code)]` plus a `SAFETY` comment.** The workspace lint warns on
   `unsafe`, and CI denies warnings.
 

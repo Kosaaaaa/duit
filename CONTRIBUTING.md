@@ -72,12 +72,18 @@ run.
 On macOS, `crates/duit/build.rs` links the `duit` binary with `crates/duit/duit.order`, which puts
 the functions of the streaming paths next to each other, so these paths keep fewer pages of code
 resident. The file lists symbol names, which change with the code, the versions of the crates, and
-the toolchain, and the linker skips the names that it does not find. Regenerate it with lldb and
-[uv](https://docs.astral.sh/uv/) on `PATH` before a benchmark run or a release, and commit it:
+the toolchain, and the linker skips the names that it does not find. Regenerate it on macOS with
+lldb and [uv](https://docs.astral.sh/uv/) on `PATH` before a benchmark run or a release, and commit
+it:
 
 ```shell
 make order
 ```
+
+The header of the file names the version of duit that it was written for, and the test
+`order_file_is_of_this_version` fails when that is not the version of the crate. So a version bump
+needs `make order` in the same change. No check catches a file that is stale for another reason,
+such as a change to the code or the toolchain.
 
 ### Fuzzing
 
@@ -228,6 +234,7 @@ To release a version, for example `0.1.0`:
 
 1. Set the version in `[workspace.package]` and in the internal crates in `[workspace.dependencies]`
    of the root `Cargo.toml`, and in the dependencies of `fuzz/Cargo.toml`, which CI does not build.
+   Then run `make order` on macOS, because the linker order file is written for one version.
 2. Replace `Not released yet.` in the CHANGELOG.md entry with `Released on YYYY-MM-DD.`, update the
    status in `README.md`, which the archives include, and merge the change into `master`.
 3. Run the workflow with the default tag, `dry-run`, to build every artifact without publishing:
