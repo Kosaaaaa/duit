@@ -22,5 +22,4 @@ rev = "d417594e79e318c91a554e907f6dafdbea7e3268"    # frozen: v0.0.112
 [[repos.hooks]]
 id = "ty"
 types_or = ["python"]
-always_run = false
 priority = 2
