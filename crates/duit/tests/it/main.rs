@@ -9,6 +9,7 @@ mod convert;
 mod export;
 mod import;
 mod options;
+mod order;
 mod progress;
 
 const BINARY_SIGNATURE: &[u8] = b"\xbfncduEX1";
