@@ -72,8 +72,8 @@ run.
 On macOS, `crates/duit/build.rs` links the `duit` binary with `crates/duit/duit.order`, which puts
 the functions of the streaming paths next to each other, so these paths keep fewer pages of code
 resident. The file lists symbol names, which change with the code, the versions of the crates, and
-the toolchain, and the linker skips the names that it does not find. Regenerate it with lldb before
-a benchmark run or a release, and commit it:
+the toolchain, and the linker skips the names that it does not find. Regenerate it with lldb and
+[uv](https://docs.astral.sh/uv/) on `PATH` before a benchmark run or a release, and commit it:
 
 ```shell
 make order
