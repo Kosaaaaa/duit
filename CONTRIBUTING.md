@@ -9,8 +9,8 @@ of the milestones.
 pinned in `rust-toolchain.toml`, and rustup installs it on first use.
 
 Run `make help` to list the shortcuts for the commands in this guide. `make check` runs the CI
-checks except zizmor and the cargo publish dry run, fixing TOML, Markdown, YAML, and JSON formatting
-in place, then the tests the way CI does.
+checks except zizmor, the cargo publish dry run, and the Python hooks of `scripts/prek.toml`, fixing
+TOML, Markdown, YAML, and JSON formatting in place, then the tests the way CI does.
 
 ## 🧪 Testing
 
@@ -148,7 +148,8 @@ depend on the manuals of the machine.
 
 ## 🪝 Git hooks
 
-Hooks are optional. [prek](https://prek.j178.dev/) formats files and fixes unambiguous typos in
+Hooks are optional locally, but CI runs them on all files, with both `prek.toml` and
+`scripts/prek.toml`. [prek](https://prek.j178.dev/) formats files and fixes unambiguous typos in
 place before a commit, and runs clippy before a push. A hook that changes a file fails the commit,
 so review and stage the changes, then commit again. The hooks in `scripts/prek.toml` lint, format,
 and type-check the Python scripts with ruff and ty, which prek installs on its own. The other hooks

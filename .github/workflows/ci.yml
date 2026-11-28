@@ -30,9 +30,9 @@ env:
   TYPOS_VERSION: 1.49.0
 
 jobs:
-  fmt:
-    name: "check | fmt"
-    timeout-minutes: 10
+  prek:
+    name: "check | prek"
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -40,14 +40,22 @@ jobs:
           persist-credentials: false
       - name: "Install Rustfmt"
         run: rustup component add rustfmt
-      - run: cargo fmt --all --check
-      - run: npx prettier@3.9.0 --check .
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: "Install taplo"
+        run: cargo install --locked "taplo-cli@${TAPLO_VERSION}"
+      - name: "Install typos"
+        run: cargo install --locked "typos-cli@${TYPOS_VERSION}"
+      - uses: j178/prek-action@7b101f8338a08d2bd6fdb3625e4e7692428763a3 # v3.1.1
+        with:
+          prek-version: latest-known
       - name: "Check that every prettier pin names the same version"
         run: |
-          for file in Makefile prek.toml .github/workflows/ci.yml; do
+          for file in Makefile prek.toml; do
             grep -q 'prettier@[0-9]' "$file" || { echo "::error file=$file::no prettier pin"; exit 1; }
           done
-          versions="$(grep -ho 'prettier@[0-9][0-9.]*' Makefile prek.toml .github/workflows/ci.yml | sort -u)"
+          versions="$(grep -ho 'prettier@[0-9][0-9.]*' Makefile prek.toml | sort -u)"
           if [ "$(echo "$versions" | wc -l)" -ne 1 ]; then
             echo "::error::the prettier pins differ: $versions"
             exit 1
@@ -66,8 +74,11 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
-      - name: "Clippy"
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - uses: j178/prek-action@7b101f8338a08d2bd6fdb3625e4e7692428763a3 # v3.1.1
+        with:
+          prek-version: latest-known
+          extra-args: --all-files --stage pre-push clippy
+          cache: false
 
   cargo-deny:
     name: "check | cargo deny"
@@ -109,40 +120,6 @@ jobs:
       - name: "Install cargo-shear"
         run: cargo install --locked "cargo-shear@${CARGO_SHEAR_VERSION}"
       - run: cargo shear --deny-warnings
-
-  taplo:
-    name: "check | taplo"
-    timeout-minutes: 15
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: "Install Rust toolchain"
-        run: rustup toolchain install --profile minimal
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-      - name: "Install taplo"
-        run: cargo install --locked "taplo-cli@${TAPLO_VERSION}"
-      - run: taplo fmt --check
-
-  typos:
-    name: "check | typos"
-    timeout-minutes: 15
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: "Install Rust toolchain"
-        run: rustup toolchain install --profile minimal
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-      - name: "Install typos"
-        run: cargo install --locked "typos-cli@${TYPOS_VERSION}"
-      - run: typos
 
   mandoc:
     name: "check | mandoc"
@@ -211,12 +188,10 @@ jobs:
     name: "all required jobs passed"
     if: ${{ always() }}
     needs:
-      - fmt
+      - prek
       - clippy
       - cargo-deny
       - shear
-      - taplo
-      - typos
       - mandoc
       - zizmor
       - cargo-publish-dry-run
