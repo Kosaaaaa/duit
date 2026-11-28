@@ -372,6 +372,7 @@ published by hand for M7.
 
 Done when one run of the Release workflow for a release after `0.1.1` publishes all five crates and
 the formula, and `brew install kosaaaaa/tap/duit` then installs that version with its man page.
+Done.
 
 M1 comes first because it has no UI: its output can be compared with ncdu's by a machine from the
 first day.

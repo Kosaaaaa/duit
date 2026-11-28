@@ -11,8 +11,8 @@ cargo-fuzz = true
 [workspace]
 
 [dependencies]
-duit-format = { version = "0.1.1", path = "../crates/duit-format" }
-duit-model = { version = "0.1.1", path = "../crates/duit-model" }
+duit-format = { version = "0.1.2", path = "../crates/duit-format" }
+duit-model = { version = "0.1.2", path = "../crates/duit-model" }
 libfuzzer-sys = { version = "0.4.13" }
 
 [[bin]]
