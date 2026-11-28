@@ -181,39 +181,58 @@ impl<W: Write> JsonExport<W> {
         self.out.write_all(&name[start..])
     }
 
+    /// Write `key` and the decimal digits of `value`, without the formatting machinery of
+    /// `write!`, which costs time and code for each number of the export.
+    fn field(&mut self, key: &[u8], value: u64) -> io::Result<()> {
+        let mut digits = [0; 20];
+        let mut start = digits.len();
+        let mut rest = value;
+        loop {
+            start -= 1;
+            if let Some(digit) = digits.get_mut(start) {
+                *digit = b'0' + (rest % 10) as u8;
+            }
+            rest /= 10;
+            if rest == 0 {
+                break;
+            }
+        }
+        self.out.write_all(key)?;
+        self.out.write_all(digits.get(start..).unwrap_or_default())
+    }
+
     fn write_sizes(&mut self, stat: &Stat) -> io::Result<()> {
         if stat.size > 0 {
-            write!(self.out, ",\"asize\":{}", stat.size)?;
+            self.field(b",\"asize\":", stat.size)?;
         }
         if stat.blocks > 0 {
-            write!(self.out, ",\"dsize\":{}", stat.blocks.saturating_mul(512))?;
+            self.field(b",\"dsize\":", stat.blocks.saturating_mul(512))?;
         }
         Ok(())
     }
 
     fn write_type_and_extended(&mut self, stat: &Stat) -> io::Result<()> {
         match stat.entry_type {
-            EntryType::HardLink => write!(
-                self.out,
-                ",\"ino\":{},\"hlnkc\":true,\"nlink\":{}",
-                stat.inode, stat.link_count
-            )?,
+            EntryType::HardLink => {
+                self.field(b",\"ino\":", stat.inode)?;
+                self.field(b",\"hlnkc\":true,\"nlink\":", stat.link_count.into())?;
+            }
             EntryType::NonRegular => self.out.write_all(b",\"notreg\":true")?,
             EntryType::Directory | EntryType::Regular => {}
         }
         if self.extended {
             let extended = &stat.extended;
             if let Some(uid) = extended.uid {
-                write!(self.out, ",\"uid\":{uid}")?;
+                self.field(b",\"uid\":", uid.into())?;
             }
             if let Some(gid) = extended.gid {
-                write!(self.out, ",\"gid\":{gid}")?;
+                self.field(b",\"gid\":", gid.into())?;
             }
             if let Some(mode) = extended.mode {
-                write!(self.out, ",\"mode\":{mode}")?;
+                self.field(b",\"mode\":", mode.into())?;
             }
             if let Some(mtime) = extended.mtime {
-                write!(self.out, ",\"mtime\":{mtime}")?;
+                self.field(b",\"mtime\":", mtime)?;
             }
         }
         Ok(())
@@ -271,7 +290,7 @@ impl<W: Write> Sink for JsonExport<W> {
         self.write_entry_name(true, name)?;
         self.write_sizes(stat)?;
         if stat.device != parent.device {
-            write!(self.out, ",\"dev\":{}", stat.device)?;
+            self.field(b",\"dev\":", stat.device)?;
         }
         self.write_type_and_extended(stat)?;
         self.directory_open = true;
