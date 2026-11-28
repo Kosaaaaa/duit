@@ -5,54 +5,54 @@ per-file-target-version = { "order_file_lldb.py" = "py39" }
 
 [lint]
 select = [
-  "F",    # Pyflakes
-  "E",    # pycodestyle errors
-  "W",    # pycodestyle warnings
-  "C90",  # mccabe complexity
-  "I",    # isort
-  "N",    # pep8-naming
-  "UP",   # pyupgrade
-  "S",    # flake8-bandit
-  "FBT",  # flake8-boolean-trap
-  "B",    # flake8-bugbear
-  "A",    # flake8-builtins
-  "C4",   # flake8-comprehensions
-  "T10",  # flake8-debugger
-  "ISC",  # flake8-implicit-str-concat
-  "PIE",  # flake8-pie
-  "SIM",  # flake8-simplify
-  "PTH",  # flake8-use-pathlib
-  "PL",   # Pylint
-  "FURB", # refurb
-  "PERF", # Perflint
-  "DTZ",  # flake8-datetimez
-  "RUF",  # Ruff-specific rules
-  "ANN",  # flake8-annotations
-  "PGH",  # pygrep-hooks
-  "RSE",  # flake8-raise
-  "FLY",  # flynt
-  "COM",  # flake8-commas
-  "TC",   # flake8-type-checking
-  "SLOT", # flake8-slots
-  "TID",  # flake8-tidy-imports
+  "F",
+  "E",
+  "W",
+  "C90",
+  "I",
+  "N",
+  "UP",
+  "S",
+  "FBT",
+  "B",
+  "A",
+  "C4",
+  "T10",
+  "ISC",
+  "PIE",
+  "SIM",
+  "PTH",
+  "PL",
+  "FURB",
+  "PERF",
+  "DTZ",
+  "RUF",
+  "ANN",
+  "PGH",
+  "RSE",
+  "FLY",
+  "COM",
+  "TC",
+  "SLOT",
+  "TID",
 ]
 ignore = [
+  "E731",
+  "S101",
+  "B008",
+  "ANN401",
+  "A005",
+  "S603",
   # https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules
-  "COM812", # missing-trailing-comma
-  "COM819", # prohibited-trailing-comma
-  "E111",   # indentation-with-invalid-multiple
-  "E114",   # indentation-with-invalid-multiple-comment
-  "E117",   # over-indented
-  "E501",   # line-too-long
-  "ISC001", # single-line-implicit-string-concatenation
-  "ISC002", # multi-line-implicit-string-concatenation
-  "W191",   # tab-indentation
-  "E731",   # lambda-assignment
-  "S101",   # assert
-  "B008",   # function-call-in-default-argument
-  "ANN401", # any-type
-  "A005",   # stdlib-module-shadowing
-  "S603",   # subprocess-without-shell-equals-true: the scripts run fixed argument lists
+  "COM812",
+  "COM819",
+  "E111",
+  "E114",
+  "E117",
+  "E501",
+  "ISC001",
+  "ISC002",
+  "W191",
 ]
 
 [lint.per-file-ignores]

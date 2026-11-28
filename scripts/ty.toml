@@ -8,5 +8,4 @@ strict-equality-semantics = true
 strict-generic-narrowing = true
 
 [rules]
-# Enables the rules that are off by default, and makes every diagnostic an error.
 all = "error"

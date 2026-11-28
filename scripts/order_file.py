@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uvx --python ~=3.14.0 python
+#!/usr/bin/env -S uvx --python ~=3.14.0 python -B
 
 import json
 import os
@@ -7,9 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-sys.dont_write_bytecode = True
-# After the line above, so that importing it writes no `__pycache__/` into `scripts/`.
-import benchmark  # noqa: E402
+import benchmark
 
 ROOT = Path(__file__).resolve().parent.parent
 TARGET = ROOT / "target" / "order-file"

@@ -2,7 +2,6 @@
 repo = "https://github.com/astral-sh/ruff-pre-commit"
 rev = "v0.17.6"
 
-# Lint fixes can leave code that needs formatting, so ruff check runs before ruff format.
 [[repos.hooks]]
 id = "ruff-check"
 args = ["--fix"]
@@ -18,7 +17,6 @@ priority = 1
 repo = "https://github.com/astral-sh/ty-pre-commit"
 rev = "v0.0.112"
 
-# ty checks the code after both fixers have rewritten it.
 [[repos.hooks]]
 id = "ty"
 types_or = ["python"]

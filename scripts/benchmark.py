@@ -40,7 +40,6 @@ WIDE_FILES = 100_000
 FANOUT = 10
 NESTED_LEVELS = 3
 LEAF_FILES = 880
-# Every tenth file of a leaf directory is a hard link to the file before it.
 HARD_LINK_PERIOD = 10
 LONG_NAMES = 10_000
 DEEP_LEVELS = 64
@@ -64,8 +63,6 @@ def make_directory(parent_fd: int, name: str) -> int:
 
 @dataclass
 class Leaves:
-    """The files that the leaf directories hold so far, and a descriptor of the last one."""
-
     file_count: int = 0
     previous_fd: int | None = None
 

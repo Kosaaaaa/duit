@@ -6,7 +6,7 @@ ARGS ?=
 T ?=
 
 prettier := npx prettier@3.9.0
-python := uvx --python '~=3.14.0' python
+python := uvx --python '~=3.14.0' python -B
 
 ci_version = $(call ci_version_once,$(1),$(shell sed -n 's/^  $(1): \([0-9][0-9A-Za-z.+-]*\)$$/\1/p' .github/workflows/ci.yml))
 ci_version_once = $(if $(filter 1,$(words $(2))),$(2),$(error $(1) not found exactly once in .github/workflows/ci.yml))
