@@ -3,23 +3,28 @@ import os
 import sys
 from pathlib import Path
 
-entered = []
+import lldb
+
+entered: list[int] = []
 
 
-def record_entry(frame, location, extra_args, internal_dict):
+def record_entry(
+    frame: lldb.SBFrame,
+    location: lldb.SBBreakpointLocation,
+    extra_args: lldb.SBStructuredData,
+    internal_dict: dict,
+) -> bool:
     entered.append(frame.GetSymbol().GetStartAddress().GetFileAddress())
     location.SetEnabled(False)
     return False
 
 
-def __lldb_init_module(debugger, internal_dict):
-    import lldb
-
+def __lldb_init_module(debugger: lldb.SBDebugger, internal_dict: dict) -> None:
     target = debugger.CreateTarget(os.environ["ORDER_FILE_BINARY"])
     for symbol in target.GetModuleAtIndex(0):
         if symbol.GetType() == lldb.eSymbolTypeCode and symbol.GetStartAddress().IsValid():
-            breakpoint = target.BreakpointCreateBySBAddress(symbol.GetStartAddress())
-            breakpoint.SetScriptCallbackFunction(f"{__name__}.record_entry")
+            entry_breakpoint = target.BreakpointCreateBySBAddress(symbol.GetStartAddress())
+            entry_breakpoint.SetScriptCallbackFunction(f"{__name__}.record_entry")
     launch = target.GetLaunchInfo()
     launch.SetArguments(json.loads(os.environ["ORDER_FILE_ARGUMENTS"]), False)
     debugger.SetAsync(False)

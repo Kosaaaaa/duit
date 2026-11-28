@@ -1,3 +1,6 @@
+[environment]
+python-version = "3.14"
+
 [analysis]
 # `lldb` exists only inside the Python interpreter that lldb embeds.
 allowed-unresolved-imports = ["lldb"]
