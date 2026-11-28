@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.2
+
+Released on 2026-11-28.
+
+The Release workflow publishes a Homebrew formula to the tap `Kosaaaaa/homebrew-tap`, so `brew install kosaaaaa/tap/duit` installs the prebuilt binary with its man page on macOS and Linux. The `duit` binary behaves as in 0.1.1.
+
 ## 0.1.1
 
 Released on 2026-11-28.
