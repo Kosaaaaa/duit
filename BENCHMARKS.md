@@ -7,9 +7,10 @@ time and less peak memory than ncdu in every case.
 
 - Machine: Apple M5 Max, 18 logical CPUs, 36 GiB of memory, internal SSD with APFS
 - OS: macOS 27.2.1 (Darwin 27.2.0, arm64)
-- Versions: ncdu 2.9.2 (Homebrew), duit 0.1.0 at the commit of this file (release profile),
+- Versions: ncdu 2.9.2 (Homebrew), duit 0.1.2 at the commit of this file (release profile),
   hyperfine 2.0.0
-- Load: a load average of 5.2 shortly after the run.
+- Load: a load average of 0.8 before the run and of 7.4 right after it, which still counts the 8
+  threads of the last case.
 - Runs: 3 warmup and 10 timed runs per command with `hyperfine -N`, so the caches are warm. Peak
   memory is the median of 5 runs of `/usr/bin/time -l` (`-v` on Linux), as the maximum resident set
   size.
@@ -29,7 +30,7 @@ Every command starts with `--ignore-config -0`, and both programs get the same f
 - Import binary to JSON: `-f tree.ncdu -o /dev/null`, an export of the tree by ncdu. With
   `--quit-after-scan`, both programs return before they read a binary export, because the browser
   reads it on demand, so this case converts it instead.
-- A real tree, `/System/Library` (468,611 entries): `-x -t N --quit-after-scan /System/Library`
+- A real tree, `/System/Library` (469,671 entries): `-x -t N --quit-after-scan /System/Library`
 
 ## Rerun
 
@@ -51,66 +52,77 @@ The ratios are duit divided by ncdu, so below 1 is better for duit.
 
 | Case                                       |       ncdu time |       duit time | Time ratio | ncdu peak RSS | duit peak RSS | RSS ratio |
 | ------------------------------------------ | --------------: | --------------: | ---------: | ------------: | ------------: | --------: |
-| Scan into memory, `-t 1`                   | 5.019 s ± 0.049 | 4.929 s ± 0.012 |       0.98 |      45.3 MiB |      34.0 MiB |      0.75 |
-| Scan into memory, `-t 4`                   | 2.132 s ± 0.034 | 2.126 s ± 0.046 |       1.00 |      45.3 MiB |      38.5 MiB |      0.85 |
-| Scan into memory, `-t 8`                   | 2.273 s ± 0.068 | 2.248 s ± 0.062 |       0.99 |      45.4 MiB |      39.6 MiB |      0.87 |
-| Scan to JSON, `-t 1`                       | 4.958 s ± 0.034 | 4.870 s ± 0.015 |       0.98 |       2.7 MiB |       2.7 MiB |      0.99 |
-| Scan to JSON, `-t 4`                       | 2.154 s ± 0.015 | 2.143 s ± 0.041 |       0.99 |      45.4 MiB |      43.1 MiB |      0.95 |
-| Scan to JSON, `-t 8`                       | 2.270 s ± 0.069 | 2.303 s ± 0.034 |       1.01 |      45.3 MiB |      43.5 MiB |      0.96 |
-| Scan to binary, `-t 1`                     | 5.008 s ± 0.023 | 4.947 s ± 0.040 |       0.99 |       3.9 MiB |       3.9 MiB |      0.98 |
-| Scan to binary, `-t 4`                     | 2.108 s ± 0.029 | 2.064 s ± 0.024 |       0.98 |       5.1 MiB |       4.7 MiB |      0.93 |
-| Scan to binary, `-t 8`                     | 2.268 s ± 0.061 | 2.209 s ± 0.082 |       0.97 |       6.5 MiB |       5.1 MiB |      0.79 |
-| Import JSON into memory                    | 0.086 s ± 0.001 | 0.079 s ± 0.001 |       0.92 |      45.3 MiB |      33.7 MiB |      0.75 |
-| Import binary to JSON                      | 0.082 s ± 0.000 | 0.068 s ± 0.001 |       0.83 |       3.4 MiB |       3.1 MiB |      0.92 |
-| Scan `/System/Library` into memory, `-t 1` | 4.592 s ± 0.018 | 4.649 s ± 0.011 |       1.01 |      28.9 MiB |      22.2 MiB |      0.77 |
-| Scan `/System/Library` into memory, `-t 8` | 1.692 s ± 0.016 | 1.769 s ± 0.013 |       1.05 |      29.3 MiB |      27.6 MiB |      0.94 |
+| Scan into memory, `-t 1`                   | 5.054 s ± 0.082 | 4.983 s ± 0.028 |       0.99 |      45.3 MiB |      34.0 MiB |      0.75 |
+| Scan into memory, `-t 4`                   | 2.142 s ± 0.035 | 2.130 s ± 0.064 |       0.99 |      45.3 MiB |      38.6 MiB |      0.85 |
+| Scan into memory, `-t 8`                   | 2.340 s ± 0.067 | 2.295 s ± 0.044 |       0.98 |      45.4 MiB |      39.9 MiB |      0.88 |
+| Scan to JSON, `-t 1`                       | 5.015 s ± 0.021 | 4.930 s ± 0.032 |       0.98 |       2.7 MiB |       2.6 MiB |      0.98 |
+| Scan to JSON, `-t 4`                       | 2.161 s ± 0.024 | 2.146 s ± 0.022 |       0.99 |      45.4 MiB |      43.2 MiB |      0.95 |
+| Scan to JSON, `-t 8`                       | 2.315 s ± 0.072 | 2.330 s ± 0.053 |       1.01 |      45.5 MiB |      43.7 MiB |      0.96 |
+| Scan to binary, `-t 1`                     | 4.844 s ± 0.299 | 4.936 s ± 0.074 |       1.02 |       4.0 MiB |       3.8 MiB |      0.96 |
+| Scan to binary, `-t 4`                     | 2.143 s ± 0.027 | 2.122 s ± 0.034 |       0.99 |       6.0 MiB |       4.8 MiB |      0.81 |
+| Scan to binary, `-t 8`                     | 2.353 s ± 0.098 | 2.227 s ± 0.080 |       0.95 |       7.5 MiB |       6.9 MiB |      0.91 |
+| Import JSON into memory                    | 0.101 s ± 0.007 | 0.081 s ± 0.003 |       0.80 |      45.3 MiB |      33.8 MiB |      0.75 |
+| Import binary to JSON                      | 0.080 s ± 0.002 | 0.067 s ± 0.001 |       0.84 |       3.4 MiB |       3.1 MiB |      0.91 |
+| Scan `/System/Library` into memory, `-t 1` | 4.680 s ± 0.022 | 4.657 s ± 0.010 |       1.00 |      29.0 MiB |      22.3 MiB |      0.77 |
+| Scan `/System/Library` into memory, `-t 8` | 1.706 s ± 0.011 | 1.794 s ± 0.012 |       1.05 |      29.3 MiB |      29.1 MiB |      0.99 |
 
 ## Gaps
 
-M8 is not done: one row takes as much peak memory as ncdu, or more, in some runs, and four take as
-much time or more: both scans of `/System/Library`, the scan to JSON with `-t 8`, and the scan into
-memory with `-t 4`.
+M8 is not done. No row takes as much peak memory as ncdu in this table, but one is at 0.99 and has
+taken more in other runs. Four rows take as much time or more: the scan of `/System/Library` with
+`-t 8` (1.05) and with `-t 1` (1.00), the scan to binary with `-t 1` (1.02), and the scan to JSON
+with `-t 8` (1.01). duit 0.1.2 has the Rust code of 0.1.0 with another version number and an order
+file for it, so the profiles below, which are of 0.1.0, hold for it.
 
 ### More memory than ncdu
 
-- Scan of `/System/Library` with `-t 8`: 0.94 here, but its peak moves between runs, from 26.6 to
-  31.1 MiB over the runs of three builds before this one, where ncdu's stays at 29.2 MiB. The heap
-  at the end of the scan is the same as with `-t 1`, and the small regions of the system allocator
-  hold memory that the threads allocated and the calling thread freed. A pool of the parts that the
-  threads send did not change it.
+- Scan of `/System/Library` with `-t 8`: 0.99 here, 29.1 MiB against 29.3 MiB, and 0.94 in the table
+  of 0.1.0. Its peak moves between runs, from 26.6 to 31.1 MiB over the runs of three builds before
+  0.1.0, where ncdu's stays at 29.2 to 29.3 MiB. The heap at the end of the scan is the same as with
+  `-t 1`, and the small regions of the system allocator hold memory that the threads allocated and
+  the calling thread freed. A pool of the parts that the threads send did not change it.
 
 ### Slower than ncdu
 
-- Scan of `/System/Library` with `-t 1` (1.01): it waits on `fstatat`, once for each entry in both
-  programs, and to take less time it would need fewer system calls, which on macOS means reading a
-  directory with its attributes by `getattrlistbulk`, or with `getdirentries` instead of `readdir`.
-  rustix 1.1.6 wraps neither on Apple platforms (its `RawDir` is for Linux only), so either needs
-  `unsafe` code, which M8 rules out.
-- Scan of `/System/Library` with `-t 8` (1.05). A sample of the threads with `-t 8` shows them in
-  system calls, with the calling thread waiting for parts, and about 4% of the samples in `fstat`,
-  `fstatfs`, and `fcntl` calls that ncdu does not make: rustix opens each directory for reading with
-  libc's `fdopendir`, which makes them, where ncdu calls `__getdirentries64`, a private symbol of
-  libSystem, directly. The tree has 163,817 directories, so this shows here and not on the generated
-  tree, which has 1,179. As above, reading without `fdopendir` needs `unsafe` code.
-- Scan to JSON with `-t 8` (1.01) and scan into memory with `-t 4` (1.00) are within the noise of
-  the scans with several threads, which take 0.97 to 1.00 in the other rows and moved by 0.02 to
-  0.03 between the last two runs. Reruns of 15 runs each gave 2.102 s ± 0.054 for duit and 2.132 s ±
-  0.029 for ncdu in the scan into memory with `-t 4`, and 2.285 s ± 0.070 against 2.301 s ± 0.072 in
-  the scan to JSON with `-t 8`. A `sample` of a `profiling` build of both rows, next to one of ncdu,
-  shows no time that duit spends and ncdu does not. Each scan thread of both programs is in
-  `fstatat` or `__getdirentries64` for 98% of its samples or more, `fstatat` alone for 75% to 95%,
-  and duit's own code, with the parts that it sends, their allocation, and the queue, takes under
-  1%. duit's calling thread is parked in `recv_timeout` for 98% of its samples, and the threads have
-  4 samples or fewer each in `send`, so they never wait for it. The system time of both programs is
-  the number of threads times the wall time, 8.0 to 8.5 s with `-t 4` and 16 to 17.5 s with `-t 8`
-  for wall times of 2.1 to 2.4 s, so each `fstatat` costs more in the kernel the more threads call
-  it, and the wall time is the same in both. duit takes about 0.1 s more user time than ncdu (0.31 s
-  against 0.21 s with `-t 4`), split between the calling thread, which builds the tree while the
-  threads read, and under 1% of each scan thread. The JSON export after the scan does not show
-  either: with 20 runs each and `-t 8`, `-o /dev/null` took 0.05 s less than `--quit-after-scan` in
-  duit and 0.02 s more in ncdu, both within the ± of 0.06 to 0.09 s. As for `/System/Library`, these
-  rows would take less time only with fewer system calls for each entry, such as reading the
-  attributes of a directory in bulk, which needs `unsafe` code.
+- Scan of `/System/Library` with `-t 1` (1.00): duit took 0.023 s less than ncdu here, which rounds
+  to 1.00, and 0.057 s more in the table of 0.1.0 (1.01). It waits on `fstatat`, once for each entry
+  in both programs, and to take less time it would need fewer system calls, which on macOS means
+  reading a directory with its attributes by `getattrlistbulk`, or with `getdirentries` instead of
+  `readdir`. rustix 1.1.6 wraps neither on Apple platforms (its `RawDir` is for Linux only), so
+  either needs `unsafe` code, which M8 rules out.
+- Scan of `/System/Library` with `-t 8` (1.05, as in the table of 0.1.0). A sample of the threads
+  with `-t 8` shows them in system calls, with the calling thread waiting for parts, and about 4% of
+  the samples in `fstat`, `fstatfs`, and `fcntl` calls that ncdu does not make: rustix opens each
+  directory for reading with libc's `fdopendir`, which makes them, where ncdu calls
+  `__getdirentries64`, a private symbol of libSystem, directly. The tree has 163,817 directories, so
+  this shows here and not on the generated tree, which has 1,179. As above, reading without
+  `fdopendir` needs `unsafe` code.
+- Scan to binary with `-t 1` (1.02) is 0.99 in a rerun, as in the table of 0.1.0. The runs of ncdu
+  in the table took from 4.325 s to 5.145 s, where no other run of either program with `-t 1` on
+  this tree took less than 4.885 s, so its mean of 4.844 s ± 0.299 is below what it takes otherwise.
+  A rerun of 15 runs each right after the table gave 5.019 s ± 0.020 for ncdu and 4.947 s ± 0.008
+  for duit.
+- Scan to JSON with `-t 8` (1.01, as in the table of 0.1.0) is within the noise of the scans with
+  several threads, which take 0.95 to 0.99 in the other rows of the generated tree and moved by up
+  to 0.02 between the table of 0.1.0 and this one. A rerun of 15 runs each right after the table
+  gave 2.344 s ± 0.042 for duit and 2.325 s ± 0.079 for ncdu, 1.01 again, with a difference of 0.019
+  s that is below the ± of both. The same rerun at 0.1.0 gave 2.285 s ± 0.070 against 2.301 s ±
+  0.072, so the row is at the time of ncdu and not shown below it. A `sample` of a `profiling` build
+  of this row and of the scan into memory with `-t 4`, next to one of ncdu, shows no time that duit
+  spends and ncdu does not. Each scan thread of both programs is in `fstatat` or `__getdirentries64`
+  for 98% of its samples or more, `fstatat` alone for 75% to 95%, and duit's own code, with the
+  parts that it sends, their allocation, and the queue, takes under 1%. duit's calling thread is
+  parked in `recv_timeout` for 98% of its samples, and the threads have 4 samples or fewer each in
+  `send`, so they never wait for it. The system time of both programs is the number of threads times
+  the wall time, 8.0 to 8.5 s with `-t 4` and 16 to 17.5 s with `-t 8` for wall times of 2.1 to 2.4
+  s, so each `fstatat` costs more in the kernel the more threads call it, and the wall time is the
+  same in both. duit takes about 0.1 s more user time than ncdu (0.31 s against 0.21 s with `-t 4`),
+  split between the calling thread, which builds the tree while the threads read, and under 1% of
+  each scan thread. The JSON export after the scan does not show either: with 20 runs each and
+  `-t 8`, `-o /dev/null` took 0.05 s less than `--quit-after-scan` in duit and 0.02 s more in ncdu,
+  both within the ± of 0.06 to 0.09 s. As for `/System/Library`, this row would take less time only
+  with fewer system calls for each entry, such as reading the attributes of a directory in bulk,
+  which needs `unsafe` code.
 
 ## Changes for M8, and what did not help
 
