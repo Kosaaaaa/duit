@@ -1,6 +1,6 @@
 line-length = 100
 target-version = "py314"
-# lldb loads this script into the Python that it embeds, 3.9 in Xcode.
+# lldb loads this script into the Python that it embeds: 3.9 in the lldb of the Command Line Tools.
 per-file-target-version = { "order_file_lldb.py" = "py39" }
 
 [lint]
