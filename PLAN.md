@@ -117,31 +117,31 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
   `Maximum number of entries exceeded.`
 - **Threads: `std::thread` with one writer, unlike ncdu.** At `scan.zig:271-293`, each ncdu thread
   reads its directory entry by entry and reports every entry to the sink itself, so the sinks lock
-  what threads share. With `-t` above 1, duit threads take directories from a mutex and condvar
-  queue, last in first out as in ncdu, read and `stat` each one, and send its entries in parts of at
-  most 64 over a channel of 16 parts to the calling thread, so that a large directory does not wait
-  whole in memory. That thread alone owns the sink, reports the entries of each directory in the
-  order of `readdir`, and finishes a directory once its entries and its subdirectories are. A
-  directory with subdirectories in a part before its last keeps a copy of its descriptor for them to
-  be opened in, as its thread reads on. The sinks stay single-threaded, and the tree is ncdu's, so
-  `-o` writes the same export. No `rayon`, no async. The default stays one thread, as in ncdu, which
-  scans depth-first without the queue. While no directory arrives, the calling thread lets the
-  progress handle an event every 100 ms, where ncdu's first thread handles one for each entry it
-  reads. The progress shows a line for each thread, as ncdu does: the directory from when the thread
-  takes it until the calling thread takes its entries, which stands for ncdu reporting them, and
-  `(waiting)` while it waits for one. No thread reads yet when the root is created, where ncdu's
-  first thread shows the root at its first event. A `-o` export with more than one thread is written
-  from the tree after the scan, as in ncdu, and a root that cannot be read ends it as with one
-  thread, where ncdu 2.9.2 crashes: `done` replays a tree whose root was never created at
-  `sink.zig:265-268`. A `-O` export with more than one thread is written as the calling thread
-  reports the scan, into one buffer as with one thread, where each ncdu thread fills a buffer of its
-  own (`bin_export.zig:88-149`). The bytes of the file differ from ncdu's, and it holds the items of
-  a scan with one thread. A scan into memory with more than one thread still peaks above one with
-  one thread, by about 7 MiB on the benchmark tree and 9 to 12 MiB on `/System/Library` (see
-  [BENCHMARKS.md](BENCHMARKS.md)), though the heap holds the same at the end of the scan: the system
-  allocator keeps more pages resident when the tree grows while other threads allocate and free.
-  Closing that gap needs control over where the tree is allocated, such as an arena or another
-  global allocator, which is a larger change than the scan.
+  what threads share. With `-t` above 1, duit threads read and `stat` directories as ncdu's do: each
+  takes a directory from a mutex and condvar queue of at most 16, last in first out, and opens each
+  subdirectory that it finds. It puts the subdirectory in the queue while the queue has room, and
+  reads it next, depth-first on a stack of its own, when the queue is full (`tryPush` and
+  `Thread.run` in `scan.zig`), so the directories that wait are few and each thread keeps one open
+  for each level of its stack. A thread sends the entries of a directory in parts of at most 64 over
+  a channel of 16 parts to the calling thread, so that a large directory does not wait whole in
+  memory, and sends the part so far before it reads a subdirectory itself. The thread that finds a
+  directory numbers it, and the calling thread keeps the parts of a directory that come before the
+  part that holds it, from a thread that took it from the queue. The calling thread alone owns the
+  sink, reports the entries of each directory in the order of `readdir`, and finishes a directory
+  once its entries and its subdirectories are. The sinks stay single-threaded, and the tree is
+  ncdu's, so `-o` writes the same export. No `rayon`, no async. The default stays one thread, as in
+  ncdu, which scans depth-first without the queue. While no part arrives, the calling thread lets
+  the progress handle an event every 100 ms, where ncdu's first thread handles one for each entry it
+  reads. The progress shows a line for each thread, as ncdu does: the directory whose entries the
+  thread reads, until it sends the last of them, and `(waiting)` while it reads none, which stands
+  for ncdu reporting them. No thread reads yet when the root is created, where ncdu's first thread
+  shows the root at its first event. A `-o` export with more than one thread is written from the
+  tree after the scan, as in ncdu, and a root that cannot be read ends it as with one thread, where
+  ncdu 2.9.2 crashes: `done` replays a tree whose root was never created at `sink.zig:265-268`. A
+  `-O` export with more than one thread is written as the calling thread reports the scan, into one
+  buffer as with one thread, where each ncdu thread fills a buffer of its own
+  (`bin_export.zig:88-149`). The bytes of the file differ from ncdu's, and it holds the items of a
+  scan with one thread.
 - **Errors: plain enums, and no error crate.** Every message is ncdu's, as bytes that need not be
   UTF-8, so an error carries what the caller needs to build that message, as `ScanError` does.
 - **Read errors: the directory whose `readdir` failed is marked, unlike ncdu.** At `scan.zig:283`,

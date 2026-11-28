@@ -1,15 +1,14 @@
-use std::ffi::CString;
+use std::collections::HashMap;
 use std::io;
 use std::mem;
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::Duration;
 
-use duit_model::{DirectoryPath, Sink, ThreadDirectories};
+use duit_model::{DirectoryPath, Sink, Special, Stat, ThreadDirectories};
 use rustix::fs::Dir;
-use rustix::io::fcntl_dupfd_cloexec;
 
 use crate::scan::{Entry, Frame, add_unreadable, classify, open_directory};
 use crate::{DirectoryPatterns, ScanError, ScanOptions};
@@ -18,47 +17,53 @@ const LISTINGS_MAX: usize = 16;
 
 const PART_ENTRIES: usize = 64;
 
+/// The most directories that wait for a thread, `QUEUE_SIZE` in `scan.zig`. A thread that finds a
+/// subdirectory while the queue is full reads it itself before the rest of its directory.
+const QUEUE_MAX: usize = 16;
+
 const IDLE_INTERVAL: Duration = Duration::from_millis(100);
 
+/// A directory for a thread to read, opened by the thread that found it.
 struct Job<'a> {
-    location: Location,
+    entries: Dir,
     device: u64,
     patterns: DirectoryPatterns<'a>,
     index: usize,
     path: Arc<DirectoryPath>,
 }
 
-enum Location {
-    Open(Dir),
-    At(Arc<Parent>, CString),
+/// An entry as a thread sends it to the calling thread.
+enum Item {
+    Special(Special),
+    Stat(Stat),
+    Unreadable(Stat),
+    /// A subdirectory, whose own parts follow under `index`.
+    Directory {
+        stat: Stat,
+        index: usize,
+    },
 }
 
-enum Parent {
-    Copy(OwnedFd),
-    Read(Dir),
-}
-
-impl Parent {
-    fn fd(&self) -> io::Result<BorrowedFd<'_>> {
-        match self {
-            Self::Copy(fd) => Ok(fd.as_fd()),
-            Self::Read(directory) => Ok(directory.fd()?),
-        }
-    }
-}
-
-enum Subdirectories {
-    Unreadable,
-    At(Arc<Parent>),
-}
-
-struct Listing<'a> {
+/// Entries of the directory `index`, in the order of `readdir`, with their names one after the
+/// other, each followed by its NUL byte.
+struct Listing {
     index: usize,
-    entries: Vec<(CString, Entry<'a>)>,
+    items: Vec<Item>,
+    names: Vec<u8>,
     last: bool,
     read_error: bool,
-    subdirectories: Subdirectories,
-    path: Arc<DirectoryPath>,
+}
+
+impl Listing {
+    fn new(index: usize) -> Self {
+        Self {
+            index,
+            items: Vec::new(),
+            names: Vec::new(),
+            last: false,
+            read_error: false,
+        }
+    }
 }
 
 struct Queue<'a> {
@@ -95,9 +100,17 @@ impl<'a> Queue<'a> {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn push(&self, job: Job<'a>) {
-        self.lock_ignoring_poison().waiting.push(job);
+    /// Queue `job` for another thread, or give it back when the queue is full, `tryPush` in
+    /// `scan.zig`.
+    fn try_push(&self, job: Job<'a>) -> Option<Job<'a>> {
+        let mut jobs = self.lock_ignoring_poison();
+        if jobs.waiting.len() >= QUEUE_MAX {
+            return Some(job);
+        }
+        jobs.waiting.push(job);
+        drop(jobs);
         self.ready.notify_one();
+        None
     }
 
     fn pop(&self) -> Option<Job<'a>> {
@@ -144,47 +157,32 @@ impl<D> Open<D> {
     }
 }
 
+/// The directories that the calling thread reported and did not finish yet, by the index that
+/// the thread that found each one gave it.
 struct Directories<D> {
-    open: Vec<Option<Open<D>>>,
-    free: Vec<usize>,
+    open: HashMap<usize, Open<D>>,
+    /// Parts of directories that are not reported yet: a thread queues a subdirectory before it
+    /// sends the part with it, and another thread can send parts of the subdirectory first.
+    early: HashMap<usize, Vec<Listing>>,
 }
 
 impl<D> Directories<D> {
-    fn insert(&mut self, directory: Open<D>) -> usize {
-        if let Some(index) = self.free.pop()
-            && let Some(slot) = self.open.get_mut(index)
-        {
-            *slot = Some(directory);
-            return index;
-        }
-        self.open.push(Some(directory));
-        self.open.len() - 1
-    }
-
     fn finish<S: Sink<Directory = D>>(
         &mut self,
         sink: &mut S,
         mut index: usize,
     ) -> io::Result<bool> {
         loop {
-            let slot = self.open.get_mut(index).ok_or_else(missing)?;
-            if slot
-                .as_ref()
-                .is_some_and(|directory| !directory.is_finished())
-            {
+            let directory = self.open.get(&index).ok_or_else(missing)?;
+            if !directory.is_finished() {
                 return Ok(false);
             }
-            let directory = slot.take().ok_or_else(missing)?;
-            self.free.push(index);
+            let directory = self.open.remove(&index).ok_or_else(missing)?;
             let Some(parent_index) = directory.parent else {
                 sink.finish_directory(directory.sink, None)?;
                 return Ok(true);
             };
-            let parent = self
-                .open
-                .get_mut(parent_index)
-                .and_then(Option::as_mut)
-                .ok_or_else(missing)?;
+            let parent = self.open.get_mut(&parent_index).ok_or_else(missing)?;
             sink.finish_directory(directory.sink, Some(&mut parent.sink))?;
             parent.unfinished_subdirectories = parent.unfinished_subdirectories.saturating_sub(1);
             index = parent_index;
@@ -204,24 +202,34 @@ pub(crate) fn walk<S: Sink>(
     options: ScanOptions,
 ) -> Result<(), ScanError> {
     let queue = Queue::new();
-    queue.push(Job {
-        location: Location::Open(frame.entries),
+    let indexes = AtomicUsize::new(1);
+    let _ = queue.try_push(Job {
+        entries: frame.entries,
         device: frame.device,
         patterns: frame.patterns,
         index: 0,
         path,
     });
     let mut directories = Directories {
-        open: vec![Some(Open::new(frame.sink, None))],
-        free: Vec::new(),
+        open: HashMap::from([(0, Open::new(frame.sink, None))]),
+        early: HashMap::new(),
     };
     thread::scope(|scope| {
         let (sender, receiver) = mpsc::sync_channel(LISTINGS_MAX);
         for number in 0..options.threads {
             let sender = sender.clone();
             let queue = &queue;
+            let indexes = &indexes;
             let spawned = thread::Builder::new().spawn_scoped(scope, move || {
-                read_directories(number, queue, &sender, threads, options);
+                let reader = Reader {
+                    thread: number,
+                    queue,
+                    indexes,
+                    listings: &sender,
+                    threads,
+                    options,
+                };
+                reader.run();
             });
             if let Err(error) = spawned {
                 shut_down(receiver, queue);
@@ -229,21 +237,20 @@ pub(crate) fn walk<S: Sink>(
             }
         }
         drop(sender);
-        let received = receive(sink, &receiver, &queue, &mut directories);
+        let received = receive(sink, &receiver, &mut directories);
         shut_down(receiver, &queue);
         received.map_err(ScanError::Sink)
     })
 }
 
-fn shut_down<'a>(listings: Receiver<io::Result<Listing<'a>>>, queue: &Queue<'a>) {
+fn shut_down(listings: Receiver<io::Result<Listing>>, queue: &Queue<'_>) {
     drop(listings);
     queue.close();
 }
 
-fn receive<'a, S: Sink>(
+fn receive<S: Sink>(
     sink: &mut S,
-    listings: &Receiver<io::Result<Listing<'a>>>,
-    queue: &Queue<'a>,
+    listings: &Receiver<io::Result<Listing>>,
     directories: &mut Directories<S::Directory>,
 ) -> io::Result<()> {
     loop {
@@ -257,192 +264,201 @@ fn receive<'a, S: Sink>(
                 return Err(io::Error::other("the threads of the scan stopped"));
             }
         };
-        if report(sink, listing, queue, directories)? {
+        if report(sink, listing, directories)? {
             return Ok(());
         }
     }
 }
 
-fn report<'a, S: Sink>(
+fn report<S: Sink>(
     sink: &mut S,
-    listing: Listing<'a>,
-    queue: &Queue<'a>,
+    listing: Listing,
     directories: &mut Directories<S::Directory>,
 ) -> io::Result<bool> {
-    let Listing {
-        index,
-        entries,
-        last,
-        read_error,
-        subdirectories,
-        path,
-    } = listing;
-    let mut directory = directories
-        .open
-        .get_mut(index)
-        .and_then(Option::take)
-        .ok_or_else(missing)?;
-    for (name, entry) in entries {
-        let bytes = name.to_bytes();
-        match entry {
-            Entry::Special(special) => sink.add_special(&mut directory.sink, bytes, special)?,
-            Entry::Stat(stat) => sink.add_stat(&mut directory.sink, bytes, &stat)?,
-            Entry::Unreadable(stat) => add_unreadable(sink, &mut directory.sink, bytes, &stat)?,
-            Entry::Directory { stat, patterns, .. } => {
-                let parent = match &subdirectories {
-                    Subdirectories::At(parent) => parent,
-                    Subdirectories::Unreadable => {
-                        add_unreadable(sink, &mut directory.sink, bytes, &stat)?;
-                        continue;
+    let mut listings = vec![listing];
+    while let Some(listing) = listings.pop() {
+        let Listing {
+            index,
+            items,
+            names,
+            last,
+            read_error,
+        } = listing;
+        let Some(mut directory) = directories.open.remove(&index) else {
+            directories.early.entry(index).or_default().push(Listing {
+                index,
+                items,
+                names,
+                last,
+                read_error,
+            });
+            continue;
+        };
+        for (item, name) in items
+            .into_iter()
+            .zip(names.split_inclusive(|&byte| byte == 0))
+        {
+            let name = name.strip_suffix(b"\0").unwrap_or(name);
+            match item {
+                Item::Special(special) => sink.add_special(&mut directory.sink, name, special)?,
+                Item::Stat(stat) => sink.add_stat(&mut directory.sink, name, &stat)?,
+                Item::Unreadable(stat) => add_unreadable(sink, &mut directory.sink, name, &stat)?,
+                Item::Directory { stat, index: child } => {
+                    let child_sink = sink.add_directory(&mut directory.sink, name, &stat)?;
+                    directories
+                        .open
+                        .insert(child, Open::new(child_sink, Some(index)));
+                    directory.unfinished_subdirectories += 1;
+                    if let Some(early) = directories.early.remove(&child) {
+                        // In the order they came, after the rest of this part.
+                        listings.splice(0..0, early.into_iter().rev());
                     }
-                };
-                let child = sink.add_directory(&mut directory.sink, bytes, &stat)?;
-                let child_index = directories.insert(Open::new(child, Some(index)));
-                directory.unfinished_subdirectories += 1;
-                queue.push(Job {
-                    path: DirectoryPath::child(&path, bytes),
-                    location: Location::At(Arc::clone(parent), name),
-                    device: stat.device,
-                    patterns,
-                    index: child_index,
-                });
+                }
+            }
+        }
+        if read_error {
+            sink.set_read_error(&mut directory.sink)?;
+        }
+        if last {
+            directory.listing_pending = false;
+        }
+        directories.open.insert(index, directory);
+        if directories.finish(sink, index)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// A thread that reads directories: one from the queue, then depth-first each subdirectory that
+/// does not fit in the queue, as each ncdu thread keeps a stack of its own (`Thread.run` in
+/// `scan.zig`).
+struct Reader<'scope, 'a> {
+    thread: usize,
+    queue: &'scope Queue<'a>,
+    indexes: &'scope AtomicUsize,
+    listings: &'scope SyncSender<io::Result<Listing>>,
+    threads: &'scope ThreadDirectories,
+    options: ScanOptions,
+}
+
+/// A directory that a [`Reader`] reads, with its entries that it did not send yet.
+struct Reading<'a> {
+    job: Job<'a>,
+    part: Listing,
+}
+
+impl<'a> Reading<'a> {
+    fn new(job: Job<'a>) -> Self {
+        let part = Listing::new(job.index);
+        Self { job, part }
+    }
+}
+
+impl<'a> Reader<'_, 'a> {
+    fn run(&self) {
+        while let Some(job) = self.queue.pop() {
+            let read = self.read(job);
+            self.threads.set(self.thread, None);
+            if !read {
+                return;
             }
         }
     }
-    if read_error {
-        sink.set_read_error(&mut directory.sink)?;
-    }
-    if last {
-        directory.listing_pending = false;
-    }
-    let slot = directories.open.get_mut(index).ok_or_else(missing)?;
-    *slot = Some(directory);
-    directories.finish(sink, index)
-}
 
-fn read_directories<'a>(
-    thread: usize,
-    queue: &Queue<'a>,
-    listings: &SyncSender<io::Result<Listing<'a>>>,
-    threads: &ThreadDirectories,
-    options: ScanOptions,
-) {
-    while let Some(job) = queue.pop() {
-        threads.set(thread, Some(Arc::clone(&job.path)));
-        let sent = read(job, options, &mut |listing| listings.send(listing).is_ok());
-        threads.set(thread, None);
-        if !sent {
-            return;
-        }
-    }
-}
-
-struct ReadDirectory {
-    entries: Dir,
-    copy: Option<Arc<Parent>>,
-}
-
-impl ReadDirectory {
-    fn subdirectories_of_part(&mut self, has_directories: bool) -> Subdirectories {
-        if has_directories && self.copy.is_none() {
-            self.copy = self
-                .entries
-                .fd()
-                .and_then(|fd| fcntl_dupfd_cloexec(fd, 0))
-                .ok()
-                .map(|fd| Arc::new(Parent::Copy(fd)));
-        }
-        match &self.copy {
-            Some(copy) => Subdirectories::At(Arc::clone(copy)),
-            None => Subdirectories::Unreadable,
-        }
+    fn send(&self, listing: io::Result<Listing>) -> bool {
+        self.listings.send(listing).is_ok()
     }
 
-    fn into_parent(self) -> Arc<Parent> {
-        self.copy
-            .unwrap_or_else(|| Arc::new(Parent::Read(self.entries)))
-    }
-}
-
-fn close_if_directory(entry: &mut Entry<'_>) -> bool {
-    match entry {
-        Entry::Directory { entries, .. } => {
-            *entries = None;
-            true
-        }
-        Entry::Special(_) | Entry::Stat(_) | Entry::Unreadable(_) => false,
-    }
-}
-
-fn read<'a>(
-    job: Job<'a>,
-    options: ScanOptions,
-    send: &mut dyn FnMut(io::Result<Listing<'a>>) -> bool,
-) -> bool {
-    let mut listing = Listing {
-        index: job.index,
-        entries: Vec::new(),
-        last: true,
-        read_error: false,
-        subdirectories: Subdirectories::Unreadable,
-        path: job.path,
-    };
-    let opened = match job.location {
-        Location::Open(entries) => Ok(entries),
-        Location::At(parent, name) => match parent.fd() {
-            Ok(parent) => open_directory(parent, &name),
-            Err(error) => return send(Err(error)),
-        },
-    };
-    let Ok(entries) = opened else {
-        listing.read_error = true;
-        return send(Ok(listing));
-    };
-    let mut directory = ReadDirectory {
-        entries,
-        copy: None,
-    };
-    let mut part_has_directories = false;
-    loop {
-        match directory.entries.read() {
-            Some(Ok(entry)) => {
-                let name = entry.file_name();
-                if name == c"." || name == c".." {
-                    continue;
+    /// Read `job` and the subdirectories that do not fit in the queue, depth-first. `false` once
+    /// the calling thread stopped.
+    fn read(&self, job: Job<'a>) -> bool {
+        self.threads.set(self.thread, Some(Arc::clone(&job.path)));
+        let mut stack = vec![Reading::new(job)];
+        while let Some(reading) = stack.last_mut() {
+            let next = match reading.job.entries.read() {
+                Some(Ok(entry)) => Some(entry),
+                Some(Err(_)) => {
+                    reading.part.read_error = true;
+                    None
                 }
-                let classified = directory
-                    .entries
-                    .fd()
-                    .map_err(io::Error::from)
-                    .and_then(|parent| classify(parent, job.device, &job.patterns, name, options));
-                let mut entry_kind = match classified {
-                    Ok(entry_kind) => entry_kind,
-                    Err(error) => return send(Err(error)),
-                };
-                part_has_directories |= close_if_directory(&mut entry_kind);
-                listing.entries.push((name.to_owned(), entry_kind));
-                if listing.entries.len() == PART_ENTRIES {
-                    let part = Listing {
-                        index: listing.index,
-                        entries: mem::take(&mut listing.entries),
-                        last: false,
-                        read_error: false,
-                        subdirectories: directory.subdirectories_of_part(part_has_directories),
-                        path: Arc::clone(&listing.path),
-                    };
-                    part_has_directories = false;
-                    if !send(Ok(part)) {
+                None => None,
+            };
+            let Some(entry) = next else {
+                if let Some(Reading { mut part, .. }) = stack.pop() {
+                    part.last = true;
+                    if !self.send(Ok(part)) {
                         return false;
                     }
                 }
+                let parent = stack.last().map(|parent| Arc::clone(&parent.job.path));
+                self.threads.set(self.thread, parent);
+                continue;
+            };
+            let name = entry.file_name();
+            if name == c"." || name == c".." {
+                continue;
             }
-            Some(Err(_)) => {
-                listing.read_error = true;
-                break;
+            let job = &reading.job;
+            let parent = match job.entries.fd() {
+                Ok(parent) => parent,
+                Err(error) => {
+                    self.send(Err(error.into()));
+                    return false;
+                }
+            };
+            let classified = match classify(parent, job.device, &job.patterns, name, self.options) {
+                Ok(classified) => classified,
+                Err(error) => {
+                    self.send(Err(error));
+                    return false;
+                }
+            };
+            let mut kept = None;
+            let item = match classified {
+                Entry::Special(special) => Item::Special(special),
+                Entry::Stat(stat) => Item::Stat(stat),
+                Entry::Unreadable(stat) => Item::Unreadable(stat),
+                Entry::Directory {
+                    stat,
+                    patterns,
+                    entries,
+                } => match entries.map_or_else(|| open_directory(parent, name), Ok) {
+                    Ok(entries) => {
+                        let index = self.indexes.fetch_add(1, Ordering::Relaxed);
+                        let subdirectory = Job {
+                            entries,
+                            device: stat.device,
+                            patterns,
+                            index,
+                            path: DirectoryPath::child(&job.path, name.to_bytes()),
+                        };
+                        kept = self.queue.try_push(subdirectory);
+                        Item::Directory { stat, index }
+                    }
+                    Err(_) => Item::Unreadable(stat),
+                },
+            };
+            reading.part.items.push(item);
+            reading
+                .part
+                .names
+                .extend_from_slice(name.to_bytes_with_nul());
+            if kept.is_none() && reading.part.items.len() < PART_ENTRIES {
+                continue;
             }
-            None => break,
+            let part = mem::replace(&mut reading.part, Listing::new(reading.job.index));
+            if !self.send(Ok(part)) {
+                return false;
+            }
+            // A subdirectory that no thread can take now is read next, as in ncdu, once the
+            // calling thread has it.
+            if let Some(subdirectory) = kept {
+                self.threads
+                    .set(self.thread, Some(Arc::clone(&subdirectory.path)));
+                stack.push(Reading::new(subdirectory));
+            }
         }
+        true
     }
-    listing.subdirectories = Subdirectories::At(directory.into_parent());
-    send(Ok(listing))
 }
