@@ -126,8 +126,8 @@ fn render_entry(tree: &Tree, id: EntryId, depth: usize, rendered: &mut String) {
         }
         EntryKind::HardLink(link) => {
             let link = tree.link(link);
-            fields.push(format!("ino: {}", link.inode));
-            fields.push(format!("nlink: {}", link.link_count));
+            fields.push(format!("ino: {}", link.inode()));
+            fields.push(format!("nlink: {}", link.link_count()));
             "hard link".to_string()
         }
         EntryKind::Regular => "regular".to_string(),

@@ -216,7 +216,7 @@ fn is_directory(kind: EntryKind) -> bool {
     }
 }
 
-fn directory_of(entry: &Entry) -> Option<DirectoryId> {
+fn directory_of(entry: Entry) -> Option<DirectoryId> {
     match entry.kind {
         EntryKind::Directory(directory) => Some(directory),
         EntryKind::HardLink(_)
@@ -259,7 +259,7 @@ fn sort_less(tree: &Tree, options: &BrowserOptions, a: EntryId, b: EntryId) -> b
     }
 
     let order = options.sort_order;
-    let items = |entry: &Entry| directory_of(entry).map_or(0, |id| tree.directory(id).items);
+    let items = |entry: Entry| directory_of(entry).map_or(0, |id| tree.directory(id).items);
     let numbers: &[(u64, u64)] = match options.sort_column {
         SortColumn::Name => &[],
         SortColumn::Blocks => &[
@@ -1659,9 +1659,9 @@ fn draw_info_tab(
     if let EntryKind::HardLink(link) = data.kind {
         let link = tree.link(link);
         let x = window.text(buffer, row, 3, "   Link count: ", Style::Bold);
-        window.number(buffer, row, x, link.link_count.into(), separator);
+        window.number(buffer, row, x, link.link_count().into(), separator);
         let x = window.text(buffer, row, 23, "  Inode: ", Style::Bold);
-        window.text(buffer, row, x, &link.inode.to_string(), Style::Default);
+        window.text(buffer, row, x, &link.inode().to_string(), Style::Default);
     }
 }
 

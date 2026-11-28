@@ -2,11 +2,13 @@ use std::collections::hash_map::Entry as MapEntry;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
-use std::hash::{BuildHasherDefault, Hasher};
+use std::hash::{BuildHasher, BuildHasherDefault, Hasher, RandomState};
 use std::io;
 use std::iter;
 use std::mem;
 use std::num::NonZeroU32;
+
+use hashbrown::HashTable;
 
 use crate::{EntryType, Extended, Special, Stat, is_event_count};
 
@@ -48,8 +50,8 @@ impl From<TreeError> for io::Error {
     }
 }
 
-/// The identifier of an [`Entry`] in its [`Tree`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// The identifier of an [`Entry`] in its [`Tree`], in the order the tree creates entries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EntryId(NonZeroU32);
 
 /// The identifier of a [`Directory`] in its [`Tree`], in the order the tree creates directories.
@@ -59,9 +61,6 @@ pub struct DirectoryId(NonZeroU32);
 /// The identifier of a [`Link`] in its [`Tree`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LinkId(NonZeroU32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ExtendedId(NonZeroU32);
 
 /// The identifier of a device in its [`Tree`], which [`Tree::device`] turns back into the
 /// device number.
@@ -73,6 +72,11 @@ fn identifier(index: usize) -> Result<NonZeroU32, TreeError> {
         .ok()
         .and_then(|index| NonZeroU32::MIN.checked_add(index))
         .ok_or(TreeError::TooManyEntries)
+}
+
+/// The identifier at `index` of a list of the tree, which holds fewer items than identifiers.
+fn index_identifier(index: usize) -> NonZeroU32 {
+    identifier(index).unwrap_or(NonZeroU32::MAX)
 }
 
 fn index(identifier: NonZeroU32) -> usize {
@@ -97,12 +101,6 @@ impl LinkId {
     }
 }
 
-impl ExtendedId {
-    fn index(self) -> usize {
-        index(self.0)
-    }
-}
-
 impl DeviceId {
     fn index(self) -> usize {
         index(self.0)
@@ -121,42 +119,155 @@ pub enum EntryKind {
     Special(Special),
 }
 
-/// An entry of a [`Tree`].
-#[derive(Debug, Clone)]
+/// An entry of a [`Tree`], as [`Tree::entry`] reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Entry {
     pub kind: EntryKind,
     /// The disk usage in 512-byte blocks. For a directory, it includes the entries below it.
     pub blocks: u64,
     /// The apparent size in bytes. For a directory, it includes the entries below it.
     pub size: u64,
-    next: Option<EntryId>,
-    name_start: NameStart,
-    extended: Option<ExtendedId>,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct NameStart(usize);
+/// What a [`Node`] is: an [`EntryKind`] without the identifier of the data of a directory or a
+/// hard link, which the tree finds by the identifier of the entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tag {
+    Directory,
+    HardLink,
+    Regular,
+    NonRegular,
+    Special(Special),
+}
 
+impl Tag {
+    fn of(kind: EntryKind) -> Self {
+        match kind {
+            EntryKind::Directory(_) => Self::Directory,
+            EntryKind::HardLink(_) => Self::HardLink,
+            EntryKind::Regular => Self::Regular,
+            EntryKind::NonRegular => Self::NonRegular,
+            EntryKind::Special(special) => Self::Special(special),
+        }
+    }
+
+    fn bits(self) -> u64 {
+        match self {
+            Self::Directory => 0,
+            Self::HardLink => 1,
+            Self::Regular => 2,
+            Self::NonRegular => 3,
+            Self::Special(Special::ReadError) => 4,
+            Self::Special(Special::Pattern) => 5,
+            Self::Special(Special::OtherFilesystem) => 6,
+            Self::Special(Special::KernelFilesystem) => 7,
+        }
+    }
+
+    fn from_bits(bits: u64) -> Self {
+        match bits & 7 {
+            0 => Self::Directory,
+            1 => Self::HardLink,
+            2 => Self::Regular,
+            3 => Self::NonRegular,
+            4 => Self::Special(Special::ReadError),
+            5 => Self::Special(Special::Pattern),
+            6 => Self::Special(Special::OtherFilesystem),
+            _ => Self::Special(Special::KernelFilesystem),
+        }
+    }
+}
+
+const TAG_SHIFT: u32 = 60;
+const EXTENDED_BIT: u64 = 1 << 63;
+
+/// An entry as the tree stores it, in 24 bytes, as ncdu stores a file without its name.
+#[derive(Debug, Clone)]
+pub(crate) struct Node {
+    /// The block count in the low 60 bits, then the [`Tag`] in 3 bits, then whether the entry
+    /// has extended information, as `Entry.Packed` in `model.zig`.
+    packed: u64,
+    pub(crate) size: u64,
+    next: Option<EntryId>,
+    /// The low 32 bits of the offset of the name, whose high bits [`Names`] keeps.
+    name_start: u32,
+}
+
+const _: () = assert!(size_of::<Node>() == 24);
+
+impl Node {
+    fn new(tag: Tag, blocks: u64, size: u64, extended: bool, name_start: u32) -> Self {
+        let mut node = Self {
+            packed: 0,
+            size,
+            next: None,
+            name_start,
+        };
+        node.set_tag(tag);
+        node.set_blocks(blocks);
+        node.set_extended(extended);
+        node
+    }
+
+    pub(crate) fn blocks(&self) -> u64 {
+        self.packed & BLOCKS_MAX
+    }
+
+    pub(crate) fn set_blocks(&mut self, blocks: u64) {
+        self.packed = (self.packed & !BLOCKS_MAX) | blocks.min(BLOCKS_MAX);
+    }
+
+    fn tag(&self) -> Tag {
+        Tag::from_bits(self.packed >> TAG_SHIFT)
+    }
+
+    fn set_tag(&mut self, tag: Tag) {
+        self.packed = (self.packed & !(7 << TAG_SHIFT)) | (tag.bits() << TAG_SHIFT);
+    }
+
+    fn has_extended(&self) -> bool {
+        self.packed & EXTENDED_BIT != 0
+    }
+
+    fn set_extended(&mut self, extended: bool) {
+        if extended {
+            self.packed |= EXTENDED_BIT;
+        } else {
+            self.packed &= !EXTENDED_BIT;
+        }
+    }
+}
+
+/// The names of the entries, one after the other, so that a name ends where the name of the next
+/// entry starts. An entry keeps the low 32 bits of the offset of its name, and `high` the first
+/// entry of each 4 GiB after the first, as the names grow in the order of the entries.
 #[derive(Debug, Default, Clone)]
 struct Names {
     bytes: Vec<u8>,
+    high: Vec<EntryId>,
 }
 
 impl Names {
-    fn push(&mut self, name: &[u8]) -> NameStart {
-        let start = NameStart(self.bytes.len());
+    /// Add the name of the new entry `id`, and return the low bits of its offset.
+    fn push(&mut self, id: EntryId, name: &[u8]) -> u32 {
+        let start = u64::try_from(self.bytes.len()).unwrap_or(u64::MAX);
+        while u64::try_from(self.high.len()).unwrap_or(u64::MAX) < start >> u32::BITS {
+            self.high.push(id);
+        }
         self.bytes.extend_from_slice(name);
-        start
+        u32::try_from(start & u64::from(u32::MAX)).unwrap_or(u32::MAX)
     }
 
-    fn until_next(&self, start: NameStart, next: Option<NameStart>) -> &[u8] {
-        let end = next.map_or(self.bytes.len(), |next| next.0);
-        &self.bytes[start.0..end]
+    /// The offset of the name of `id`, whose low bits are `low`.
+    fn start(&self, id: EntryId, low: u32) -> usize {
+        let high = self.high.partition_point(|&first| first <= id);
+        let high = u64::try_from(high).unwrap_or(u64::MAX);
+        usize::try_from(high << u32::BITS | u64::from(low)).unwrap_or(usize::MAX)
     }
 }
 
-/// The data that a directory has on top of its [`Entry`].
-#[derive(Debug, Clone)]
+/// The data that a directory has on top of its [`Entry`], as [`Tree::directory`] reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Directory {
     pub entry: EntryId,
     /// The directory that holds this one, or `None` for the root.
@@ -173,23 +284,127 @@ pub struct Directory {
     pub read_error: bool,
     /// An entry below this directory, at any depth, could not be read.
     pub sub_error: bool,
+}
+
+const READ_ERROR_BIT: u32 = 1 << 30;
+const SUB_ERROR_BIT: u32 = 1 << 31;
+
+/// A directory as the tree stores it, in 20 bytes. Its shared sizes, which only the directories
+/// above a hard link with links elsewhere have, are in [`Tree::shared`].
+#[derive(Debug, Clone)]
+pub(crate) struct DirectoryNode {
+    pub(crate) entry: EntryId,
+    pub(crate) parent: Option<DirectoryId>,
+    pub(crate) items: u32,
+    /// The device identifier in the low 30 bits, as `DevId` in `model.zig`, then the read error
+    /// and the error below the directory, as `Dir.Packed`.
+    pack: u32,
     sub: Option<EntryId>,
+}
+
+const _: () = assert!(size_of::<DirectoryNode>() == 20);
+
+impl DirectoryNode {
+    pub(crate) fn device(&self) -> DeviceId {
+        DeviceId(
+            NonZeroU32::new(self.pack & !(READ_ERROR_BIT | SUB_ERROR_BIT))
+                .unwrap_or(NonZeroU32::MIN),
+        )
+    }
+
+    pub(crate) fn set_device(&mut self, device: DeviceId) {
+        self.pack = (self.pack & (READ_ERROR_BIT | SUB_ERROR_BIT)) | device.0.get();
+    }
+
+    pub(crate) fn read_error(&self) -> bool {
+        self.pack & READ_ERROR_BIT != 0
+    }
+
+    pub(crate) fn set_read_error(&mut self, read_error: bool) {
+        self.set_bit(READ_ERROR_BIT, read_error);
+    }
+
+    pub(crate) fn sub_error(&self) -> bool {
+        self.pack & SUB_ERROR_BIT != 0
+    }
+
+    pub(crate) fn set_sub_error(&mut self, sub_error: bool) {
+        self.set_bit(SUB_ERROR_BIT, sub_error);
+    }
+
+    fn set_bit(&mut self, bit: u32, value: bool) {
+        if value {
+            self.pack |= bit;
+        } else {
+            self.pack &= !bit;
+        }
+    }
 }
 
 /// The data that a hard link has on top of its [`Entry`]. Its device is that of its parent.
 #[derive(Debug, Clone)]
 pub struct Link {
     pub parent: DirectoryId,
-    pub inode: u64,
-    /// The number of links to the inode, or 0 when it is unknown, as in old JSON exports.
-    pub link_count: u32,
     pub entry: EntryId,
+    /// The inode in two halves, so that a link takes 28 bytes rather than 32.
+    inode: [u32; 2],
+    /// The link count in the low 31 bits, as `Link.Pack` in `model.zig`, then whether the inode is
+    /// counted in the totals of the directories above its links.
+    pack: u32,
     next: LinkId,
     previous: LinkId,
-    counted: bool,
+}
+
+const COUNTED_BIT: u32 = 1 << 31;
+
+impl Link {
+    fn new(parent: DirectoryId, entry: EntryId, stat: &Stat, link: LinkId) -> Self {
+        let mut data = Self {
+            parent,
+            entry,
+            inode: [0; 2],
+            pack: 0,
+            next: link,
+            previous: link,
+        };
+        data.set_stat(stat);
+        data
+    }
+
+    fn set_stat(&mut self, stat: &Stat) {
+        let half = |bits: u64| u32::try_from(bits & u64::from(u32::MAX)).unwrap_or(u32::MAX);
+        self.inode = [half(stat.inode >> u32::BITS), half(stat.inode)];
+        self.pack = stat.link_count.min(COUNTED_BIT - 1);
+    }
+
+    pub fn inode(&self) -> u64 {
+        u64::from(self.inode[0]) << u32::BITS | u64::from(self.inode[1])
+    }
+
+    /// The number of links to the inode, or 0 when it is unknown, as in old JSON exports.
+    pub fn link_count(&self) -> u32 {
+        self.pack & !COUNTED_BIT
+    }
+
+    fn counted(&self) -> bool {
+        self.pack & COUNTED_BIT != 0
+    }
+
+    fn set_counted(&mut self, counted: bool) {
+        if counted {
+            self.pack |= COUNTED_BIT;
+        } else {
+            self.pack &= !COUNTED_BIT;
+        }
+    }
 }
 
 type Inode = (DeviceId, u64);
+
+fn link_inode(links: &[Link], directories: &[DirectoryNode], link: LinkId) -> Inode {
+    let link = &links[link.index()];
+    (directories[link.parent.index()].device(), link.inode())
+}
 
 #[derive(Debug, Default, Clone)]
 enum UncountedInodes {
@@ -227,14 +442,19 @@ impl EntryExtended {
 /// export stores, through [`Tree::prepend_directory`] and [`Tree::prepend_file`].
 #[derive(Debug, Default, Clone)]
 pub struct Tree {
-    entries: Vec<Entry>,
-    directories: Vec<Directory>,
+    entries: Vec<Node>,
+    directories: Vec<DirectoryNode>,
+    /// The shared sizes of the directories that have any, in blocks and bytes.
+    shared: HashMap<DirectoryId, (u64, u64), BuildHasherDefault<IdentifierHasher>>,
     links: Vec<Link>,
-    inodes: HashMap<Inode, LinkId>,
+    /// The first link to each inode, found by the inode of the link.
+    inodes: HashTable<LinkId>,
+    inode_hasher: RandomState,
     uncounted: UncountedInodes,
     counted_inodes: usize,
     scratch: InodeScratch,
-    extended: Vec<EntryExtended>,
+    /// The extended information of the entries that have it, sorted by entry.
+    extended: Vec<(EntryId, EntryExtended)>,
     names: Names,
     devices: Vec<u64>,
     device_ids: HashMap<u64, DeviceId>,
@@ -247,26 +467,70 @@ impl Tree {
         self.root
     }
 
-    pub fn entry(&self, id: EntryId) -> &Entry {
-        &self.entries[id.index()]
+    pub fn entry(&self, id: EntryId) -> Entry {
+        let node = &self.entries[id.index()];
+        Entry {
+            kind: self.kind(id),
+            blocks: node.blocks(),
+            size: node.size,
+        }
+    }
+
+    /// The kind of `id`. A directory or a hard link is found among the others by its entry, as
+    /// the tree adds each of them with an entry after those of the others.
+    fn kind(&self, id: EntryId) -> EntryKind {
+        match self.entries[id.index()].tag() {
+            Tag::Directory => {
+                let index = self
+                    .directories
+                    .partition_point(|directory| directory.entry < id);
+                EntryKind::Directory(DirectoryId(index_identifier(index)))
+            }
+            Tag::HardLink => {
+                let index = self.links.partition_point(|link| link.entry < id);
+                EntryKind::HardLink(LinkId(index_identifier(index)))
+            }
+            Tag::Regular => EntryKind::Regular,
+            Tag::NonRegular => EntryKind::NonRegular,
+            Tag::Special(special) => EntryKind::Special(special),
+        }
     }
 
     pub fn name(&self, id: EntryId) -> &[u8] {
         let index = id.index();
-        let next = self.entries.get(index + 1).map(|next| next.name_start);
-        self.names.until_next(self.entries[index].name_start, next)
+        let start = self.names.start(id, self.entries[index].name_start);
+        let end = match self.entries.get(index + 1) {
+            Some(next) => self
+                .names
+                .start(EntryId(index_identifier(index + 1)), next.name_start),
+            None => self.names.bytes.len(),
+        };
+        &self.names.bytes[start..end]
     }
 
     /// The extended information of `id`, which an entry only has with `-e`, and only when it
     /// has at least one of the extended fields.
     pub fn extended(&self, id: EntryId) -> Option<&EntryExtended> {
-        self.entries[id.index()]
-            .extended
-            .map(|extended| &self.extended[extended.index()])
+        if !self.entries[id.index()].has_extended() {
+            return None;
+        }
+        let index = self.extended.partition_point(|(entry, _)| *entry < id);
+        self.extended.get(index).map(|(_, extended)| extended)
     }
 
-    pub fn directory(&self, id: DirectoryId) -> &Directory {
-        &self.directories[id.index()]
+    pub fn directory(&self, id: DirectoryId) -> Directory {
+        let node = &self.directories[id.index()];
+        let (shared_blocks, shared_size) = self.shared.get(&id).copied().unwrap_or_default();
+        Directory {
+            entry: node.entry,
+            parent: node.parent,
+            items: node.items,
+            device: node.device(),
+            shared_blocks,
+            shared_size,
+            read_error: node.read_error(),
+            sub_error: node.sub_error(),
+        }
     }
 
     pub fn link(&self, id: LinkId) -> &Link {
@@ -359,17 +623,15 @@ impl Tree {
     ) -> Result<DirectoryId, TreeError> {
         let directory = DirectoryId(identifier(self.directories.len())?);
         let entry = self.push(EntryKind::Directory(directory), stat, extended, name)?;
-        self.directories.push(Directory {
+        let mut node = DirectoryNode {
             entry,
             parent,
             items: 0,
-            device,
-            shared_blocks: 0,
-            shared_size: 0,
-            read_error: false,
-            sub_error: false,
+            pack: 0,
             sub: None,
-        });
+        };
+        node.set_device(device);
+        self.directories.push(node);
         if let Some(parent) = parent {
             self.link_first(parent, entry);
         }
@@ -397,15 +659,7 @@ impl Tree {
         let entry = self.push(kind, stat, extended, name)?;
         self.link_first(parent, entry);
         if let EntryKind::HardLink(link) = kind {
-            self.links.push(Link {
-                parent,
-                inode: stat.inode,
-                link_count: stat.link_count,
-                entry,
-                next: link,
-                previous: link,
-                counted: false,
-            });
+            self.links.push(Link::new(parent, entry, stat, link));
             self.add_link(link);
         }
         Ok(entry)
@@ -419,23 +673,18 @@ impl Tree {
         name: &[u8],
     ) -> Result<EntryId, TreeError> {
         let id = EntryId(identifier(self.entries.len())?);
-        let extended = match extended {
-            Some(entry_extended) => {
-                let extended_id = ExtendedId(identifier(self.extended.len())?);
-                self.extended.push(entry_extended);
-                Some(extended_id)
-            }
-            None => None,
-        };
-        let name_start = self.names.push(name);
-        self.entries.push(Entry {
-            kind,
-            blocks: stat.blocks,
-            size: stat.size,
-            next: None,
+        let has_extended = extended.is_some();
+        if let Some(entry_extended) = extended {
+            self.extended.push((id, entry_extended));
+        }
+        let name_start = self.names.push(id, name);
+        self.entries.push(Node::new(
+            Tag::of(kind),
+            stat.blocks,
+            stat.size,
+            has_extended,
             name_start,
-            extended,
-        });
+        ));
         Ok(id)
     }
 
@@ -449,11 +698,11 @@ impl Tree {
         directory.sub = Some(entry);
     }
 
-    pub(crate) fn entry_mut(&mut self, id: EntryId) -> &mut Entry {
+    pub(crate) fn entry_mut(&mut self, id: EntryId) -> &mut Node {
         &mut self.entries[id.index()]
     }
 
-    pub(crate) fn directory_mut(&mut self, id: DirectoryId) -> &mut Directory {
+    pub(crate) fn directory_mut(&mut self, id: DirectoryId) -> &mut DirectoryNode {
         &mut self.directories[id.index()]
     }
 
@@ -471,23 +720,32 @@ impl Tree {
     ) {
         let directory = &mut self.directories[id.index()];
         directory.items = items;
-        directory.shared_blocks = shared_blocks;
-        directory.shared_size = shared_size;
-        directory.read_error = read_error;
-        directory.sub_error = sub_error;
+        directory.set_read_error(read_error);
+        directory.set_sub_error(sub_error);
+        self.set_shared(id, (shared_blocks, shared_size));
+    }
+
+    fn set_shared(&mut self, id: DirectoryId, shared: (u64, u64)) {
+        if shared == (0, 0) {
+            self.shared.remove(&id);
+        } else {
+            self.shared.insert(id, shared);
+        }
     }
 
     pub(crate) fn extended_mut(&mut self, id: EntryId) -> Option<&mut EntryExtended> {
-        self.entries[id.index()]
-            .extended
-            .map(|extended| &mut self.extended[extended.index()])
+        if !self.entries[id.index()].has_extended() {
+            return None;
+        }
+        let index = self.extended.partition_point(|(entry, _)| *entry < id);
+        self.extended.get_mut(index).map(|(_, extended)| extended)
     }
 
     fn has_error(&self, id: EntryId) -> bool {
-        match self.entries[id.index()].kind {
+        match self.kind(id) {
             EntryKind::Directory(directory) => {
                 let directory = &self.directories[directory.index()];
-                directory.read_error || directory.sub_error
+                directory.read_error() || directory.sub_error()
             }
             EntryKind::Special(Special::ReadError) => true,
             EntryKind::HardLink(_)
@@ -509,8 +767,8 @@ impl Tree {
     pub fn zero_stats(&mut self, id: EntryId, parent: Option<DirectoryId>) {
         self.remove_links(id);
         let entry = &self.entries[id.index()];
-        let (blocks, size) = (entry.blocks, entry.size);
-        let items = match entry.kind {
+        let (blocks, size) = (entry.blocks(), entry.size);
+        let items = match self.kind(id) {
             EntryKind::Directory(directory) => self.directories[directory.index()].items,
             EntryKind::HardLink(_)
             | EntryKind::Regular
@@ -524,19 +782,19 @@ impl Tree {
             directory.items = directory.items.saturating_sub(items);
             next = directory.parent;
             let entry = &mut self.entries[directory.entry.index()];
-            entry.blocks = entry.blocks.saturating_sub(blocks);
+            entry.set_blocks(entry.blocks().saturating_sub(blocks));
             entry.size = entry.size.saturating_sub(size);
         }
         let mut stack = vec![id];
         while let Some(id) = stack.pop() {
             let entry = &mut self.entries[id.index()];
-            entry.blocks = 0;
+            entry.set_blocks(0);
             entry.size = 0;
-            if let EntryKind::Directory(directory) = entry.kind {
+            if let EntryKind::Directory(directory) = self.kind(id) {
                 let data = &mut self.directories[directory.index()];
                 data.items = 0;
-                data.read_error = false;
-                data.sub_error = false;
+                data.set_read_error(false);
+                data.set_sub_error(false);
                 stack.extend(self.entries(directory));
             }
         }
@@ -603,7 +861,7 @@ impl Tree {
             data.items = data.items.saturating_add(1);
             next = data.parent;
             let entry = &mut self.entries[data.entry.index()];
-            entry.blocks = add_blocks(entry.blocks, blocks);
+            entry.set_blocks(add_blocks(entry.blocks(), blocks));
             entry.size = entry.size.saturating_add(size);
         }
         Ok(entry)
@@ -638,7 +896,7 @@ impl Tree {
         stat: &Stat,
         extended: Option<EntryExtended>,
     ) -> Option<DirectoryId> {
-        let directory = match self.entries[id.index()].kind {
+        let directory = match self.kind(id) {
             EntryKind::Directory(directory) => directory,
             EntryKind::HardLink(_)
             | EntryKind::Regular
@@ -648,7 +906,7 @@ impl Tree {
         if !self.refill(id, stat, extended) {
             return None;
         }
-        self.directories[directory.index()].device = device;
+        self.directories[directory.index()].set_device(device);
         Some(directory)
     }
 
@@ -660,7 +918,7 @@ impl Tree {
         stat: &Stat,
         extended: Option<EntryExtended>,
     ) -> bool {
-        let kind = match (self.entries[id.index()].kind, kind) {
+        let kind = match (self.kind(id), kind) {
             (EntryKind::HardLink(link), FileKind::HardLink) => EntryKind::HardLink(link),
             (
                 EntryKind::Regular | EntryKind::NonRegular | EntryKind::Special(_),
@@ -693,29 +951,24 @@ impl Tree {
         if !self.refill(id, stat, extended) {
             return false;
         }
-        self.entries[id.index()].kind = kind;
+        self.entries[id.index()].set_tag(Tag::of(kind));
         if let EntryKind::HardLink(link) = kind {
             let data = &mut self.links[link.index()];
-            data.parent = parent;
-            data.inode = stat.inode;
-            data.link_count = stat.link_count;
-            data.next = link;
-            data.previous = link;
-            data.counted = false;
+            *data = Link::new(parent, data.entry, stat, link);
             self.add_link(link);
         }
         true
     }
 
     fn refill(&mut self, id: EntryId, stat: &Stat, extended: Option<EntryExtended>) -> bool {
-        let entry = &mut self.entries[id.index()];
-        match (entry.extended, extended) {
+        match (self.extended_mut(id), extended) {
             (None, Some(_)) => return false,
-            (Some(id), Some(extended)) => self.extended[id.index()] = extended,
-            (Some(_), None) => entry.extended = None,
+            (Some(entry_extended), Some(extended)) => *entry_extended = extended,
+            (Some(_), None) => self.entries[id.index()].set_extended(false),
             (None, None) => {}
         }
-        entry.blocks = stat.blocks;
+        let entry = &mut self.entries[id.index()];
+        entry.set_blocks(stat.blocks);
         entry.size = stat.size;
         true
     }
@@ -723,7 +976,7 @@ impl Tree {
     fn remove_links(&mut self, id: EntryId) {
         let mut stack = vec![id];
         while let Some(id) = stack.pop() {
-            match self.entries[id.index()].kind {
+            match self.kind(id) {
                 EntryKind::Directory(directory) => {
                     let start = stack.len();
                     stack.extend(self.entries(directory));
@@ -736,18 +989,31 @@ impl Tree {
     }
 
     fn inode(&self, link: LinkId) -> Inode {
-        let link = &self.links[link.index()];
-        (self.directories[link.parent.index()].device, link.inode)
+        link_inode(&self.links, &self.directories, link)
     }
 
     fn add_link(&mut self, link: LinkId) {
         let inode = self.inode(link);
-        match self.inodes.entry(inode) {
-            MapEntry::Vacant(vacant) => {
-                vacant.insert(link);
+        let hash = self.inode_hasher.hash_one(inode);
+        let Self {
+            inodes,
+            inode_hasher,
+            links,
+            directories,
+            ..
+        } = self;
+        let first = inodes
+            .find(hash, |&candidate| {
+                link_inode(links, directories, candidate) == inode
+            })
+            .copied();
+        match first {
+            None => {
+                inodes.insert_unique(hash, link, |&stored| {
+                    inode_hasher.hash_one(link_inode(links, directories, stored))
+                });
             }
-            MapEntry::Occupied(occupied) => {
-                let first = *occupied.get();
+            Some(first) => {
                 self.remove_stats(first);
                 let previous = self.links[first.index()].previous;
                 self.links[link.index()].next = first;
@@ -762,18 +1028,29 @@ impl Tree {
     fn remove_link(&mut self, link: LinkId) {
         self.remove_stats(link);
         let inode = self.inode(link);
-        let Some(&first) = self.inodes.get(&inode) else {
+        let hash = self.inode_hasher.hash_one(inode);
+        let Self {
+            inodes,
+            links,
+            directories,
+            ..
+        } = self;
+        let Ok(stored) = inodes.find_entry(hash, |&candidate| {
+            link_inode(links, directories, candidate) == inode
+        }) else {
             return;
         };
-        let Link { next, previous, .. } = self.links[link.index()];
+        let Link { next, previous, .. } = links[link.index()];
         if next == link {
-            self.inodes.remove(&inode);
+            stored.remove();
             if let UncountedInodes::Listed(uncounted) = &mut self.uncounted {
                 uncounted.remove(&inode);
             }
         } else {
-            if first == link {
-                self.inodes.insert(inode, next);
+            let mut stored = stored;
+            let first = stored.get_mut();
+            if *first == link {
+                *first = next;
             }
             self.add_uncounted(inode);
             self.links[next.index()].previous = previous;
@@ -797,13 +1074,19 @@ impl Tree {
         };
         let scratch = mem::take(&mut self.scratch);
         for (&directory, &count) in &scratch.directories {
-            let data = &mut self.directories[directory.index()];
             if count < totals.link_count {
-                data.shared_blocks = data.shared_blocks.saturating_add(totals.blocks);
-                data.shared_size = data.shared_size.saturating_add(totals.size);
+                let (blocks, size) = self.shared.get(&directory).copied().unwrap_or_default();
+                self.set_shared(
+                    directory,
+                    (
+                        blocks.saturating_add(totals.blocks),
+                        size.saturating_add(totals.size),
+                    ),
+                );
             }
+            let data = &self.directories[directory.index()];
             let entry = &mut self.entries[data.entry.index()];
-            entry.blocks = add_blocks(entry.blocks, totals.blocks);
+            entry.set_blocks(add_blocks(entry.blocks(), totals.blocks));
             entry.size = entry.size.saturating_add(totals.size);
         }
         self.scratch = scratch;
@@ -815,13 +1098,19 @@ impl Tree {
         };
         let scratch = mem::take(&mut self.scratch);
         for (&directory, &count) in &scratch.directories {
-            let data = &mut self.directories[directory.index()];
             if count < totals.link_count {
-                data.shared_blocks = data.shared_blocks.saturating_sub(totals.blocks);
-                data.shared_size = data.shared_size.saturating_sub(totals.size);
+                let (blocks, size) = self.shared.get(&directory).copied().unwrap_or_default();
+                self.set_shared(
+                    directory,
+                    (
+                        blocks.saturating_sub(totals.blocks),
+                        size.saturating_sub(totals.size),
+                    ),
+                );
             }
+            let data = &self.directories[directory.index()];
             let entry = &mut self.entries[data.entry.index()];
-            entry.blocks = entry.blocks.saturating_sub(totals.blocks);
+            entry.set_blocks(entry.blocks().saturating_sub(totals.blocks));
             entry.size = entry.size.saturating_sub(totals.size);
         }
         self.scratch = scratch;
@@ -831,10 +1120,10 @@ impl Tree {
     /// with the directories above them and the number of links below each. `None`, and nothing
     /// changes, if the links are marked so already.
     fn inode_totals(&mut self, link: LinkId, counted: bool) -> Option<InodeTotals> {
-        if self.links[link.index()].counted == counted {
+        if self.links[link.index()].counted() == counted {
             return None;
         }
-        let link_count = self.links[link.index()].link_count;
+        let link_count = self.links[link.index()].link_count();
         let mut found: u32 = 0;
         let mut inconsistent = false;
         let InodeScratch {
@@ -848,9 +1137,9 @@ impl Tree {
         let mut current = link;
         loop {
             let data = &mut self.links[current.index()];
-            data.counted = counted;
+            data.set_counted(counted);
             found = found.saturating_add(1);
-            if data.link_count != link_count {
+            if data.link_count() != link_count {
                 inconsistent = true;
             }
             current = data.next;
@@ -887,7 +1176,8 @@ impl Tree {
         } else {
             found
         };
-        let Entry { blocks, size, .. } = self.entries[self.links[link.index()].entry.index()];
+        let entry = &self.entries[self.links[link.index()].entry.index()];
+        let (blocks, size) = (entry.blocks(), entry.size);
         Some(InodeTotals {
             link_count,
             blocks,
@@ -901,13 +1191,19 @@ impl Tree {
     pub fn add_all_stats(&mut self, progress: &mut dyn FnMut(usize, usize)) {
         let inodes = mem::take(&mut self.inodes);
         let uncounted = mem::take(&mut self.uncounted);
-        let (total, links): (usize, Box<dyn Iterator<Item = Option<LinkId>>>) = match &uncounted {
-            UncountedInodes::All => (inodes.len(), Box::new(inodes.values().copied().map(Some))),
-            UncountedInodes::Listed(uncounted) => (
-                uncounted.len(),
-                Box::new(uncounted.iter().map(|inode| inodes.get(inode).copied())),
-            ),
+        let links: Vec<Option<LinkId>> = match &uncounted {
+            UncountedInodes::All => inodes.iter().copied().map(Some).collect(),
+            UncountedInodes::Listed(uncounted) => uncounted
+                .iter()
+                .map(|&inode| {
+                    let hash = self.inode_hasher.hash_one(inode);
+                    inodes
+                        .find(hash, |&link| self.inode(link) == inode)
+                        .copied()
+                })
+                .collect(),
         };
+        let total = links.len();
         for (done, link) in (1..).zip(links) {
             if let Some(link) = link {
                 self.add_stats(link);
@@ -931,7 +1227,7 @@ impl Tree {
     /// up to date, and the directories above it are not changed.
     pub fn update_sub_error(&mut self, directory: DirectoryId) {
         let sub_error = self.entries(directory).any(|id| self.has_error(id));
-        self.directories[directory.index()].sub_error = sub_error;
+        self.directories[directory.index()].set_sub_error(sub_error);
     }
 }
 
@@ -994,7 +1290,7 @@ mod tests {
     use std::num::NonZeroU32;
 
     use super::{
-        Directory, DirectoryId, Entry, EntryId, EntryKind, FileKind, Link, Tree, TreeError,
+        Directory, DirectoryId, EntryId, EntryKind, FileKind, Link, Node, Tree, TreeError,
         identifier,
     };
     use crate::Stat;
@@ -1082,8 +1378,8 @@ mod tests {
         assert_eq!(size_of::<Option<EntryId>>(), 4);
         assert_eq!(size_of::<Option<DirectoryId>>(), 4);
         assert_eq!(size_of::<EntryKind>(), 8);
-        assert_eq!(size_of::<Entry>(), 40);
+        assert_eq!(size_of::<Node>(), 24);
         assert_eq!(size_of::<Directory>(), 40);
-        assert_eq!(size_of::<Link>(), 32);
+        assert_eq!(size_of::<Link>(), 28);
     }
 }

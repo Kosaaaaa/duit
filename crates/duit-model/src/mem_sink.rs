@@ -113,7 +113,7 @@ impl MemorySink {
                     data.items = data.items.saturating_add(items).saturating_add(1);
                     let id = data.entry;
                     let entry = tree.entry_mut(id);
-                    entry.blocks = add_blocks(entry.blocks, blocks);
+                    entry.set_blocks(add_blocks(entry.blocks(), blocks));
                     entry.size = entry.size.saturating_add(size);
                 }
             }
@@ -141,7 +141,7 @@ impl MemorySink {
         let id = data.entry;
         if stat.entry_type != EntryType::HardLink {
             let entry = self.tree.entry_mut(id);
-            entry.blocks = add_blocks(entry.blocks, stat.blocks);
+            entry.set_blocks(add_blocks(entry.blocks(), stat.blocks));
             entry.size = entry.size.saturating_add(stat.size);
         }
         if let Some(entry_extended) = self.tree.extended_mut(id) {
@@ -189,9 +189,9 @@ impl Sink for MemorySink {
         let data = self.tree.directory(root);
         let (id, parent) = (data.entry, data.parent);
         self.tree.zero_stats(id, parent);
-        self.tree.directory_mut(root).device = device;
+        self.tree.directory_mut(root).set_device(device);
         let entry = self.tree.entry_mut(id);
-        entry.blocks = stat.blocks;
+        entry.set_blocks(stat.blocks);
         entry.size = stat.size;
         if let Some(entry_extended) = self.tree.extended_mut(id) {
             *entry_extended = EntryExtended {
@@ -216,7 +216,7 @@ impl Sink for MemorySink {
         let data = self.tree.directory_mut(directory.directory);
         data.items = data.items.saturating_add(1);
         if special == Special::ReadError {
-            data.sub_error = true;
+            data.set_sub_error(true);
         }
         self.add_file(
             directory,
@@ -276,7 +276,9 @@ impl Sink for MemorySink {
     }
 
     fn set_read_error(&mut self, directory: &mut MemoryDirectory) -> io::Result<()> {
-        self.tree.directory_mut(directory.directory).read_error = true;
+        self.tree
+            .directory_mut(directory.directory)
+            .set_read_error(true);
         Ok(())
     }
 
@@ -297,13 +299,13 @@ impl Sink for MemorySink {
         let data = self.tree.directory_mut(directory.directory);
         data.items = data.items.saturating_add(directory.items);
         if directory.sub_error {
-            data.sub_error = true;
+            data.set_sub_error(true);
         }
-        let (items, read_error, sub_error) = (data.items, data.read_error, data.sub_error);
+        let (items, read_error, sub_error) = (data.items, data.read_error(), data.sub_error());
         let entry = self.tree.entry_mut(id);
-        entry.blocks = add_blocks(entry.blocks, directory.blocks);
+        entry.set_blocks(add_blocks(entry.blocks(), directory.blocks));
         entry.size = entry.size.saturating_add(directory.size);
-        let (blocks, size) = (entry.blocks, entry.size);
+        let (blocks, size) = (entry.blocks(), entry.size);
         let mtime = self.tree.extended_mut(id).map(|entry_extended| {
             entry_extended.latest_mtime = entry_extended.latest_mtime.max(directory.mtime);
             entry_extended.latest_mtime

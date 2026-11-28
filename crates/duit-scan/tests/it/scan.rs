@@ -591,7 +591,7 @@ fn summary(tree: &Tree) -> Vec<String> {
                     "{path} link asize={} blocks={} nlink={}",
                     entry.size,
                     entry.blocks,
-                    tree.link(link).link_count
+                    tree.link(link).link_count()
                 )),
                 kind @ (EntryKind::Regular | EntryKind::NonRegular | EntryKind::Special(_)) => {
                     lines.push(format!(

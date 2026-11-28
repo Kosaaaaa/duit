@@ -54,7 +54,7 @@ fn to_stat(tree: &Tree, id: EntryId, entry_type: EntryType) -> Stat {
         EntryKind::HardLink(link) => {
             let link = tree.link(link);
             let device = tree.device(tree.directory(link.parent).device);
-            (device, link.inode, link.link_count)
+            (device, link.inode(), link.link_count())
         }
         EntryKind::Regular | EntryKind::NonRegular | EntryKind::Special(_) => (0, 0, 1),
     };

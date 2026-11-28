@@ -100,12 +100,21 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
 - **Tree memory: index-based arenas in safe Rust, with at most 2^32 - 1 entries, unlike ncdu.**
   Entries and names live in `Vec`-backed arenas and refer to each other by id. Budget: peak memory
   below ncdu's, the done criterion of M8. Each id is a `u32` with a `NonZero` niche, so an `Option`
-  of an id takes 4 bytes too, and a name ends where the name of the next entry starts, so an entry
-  stores no name length. An entry takes 40 bytes, a directory 40 more, and a hard link 32 more. That
-  is 1.19 times ncdu's peak for a scan with one thread, as measured in
-  [BENCHMARKS.md](BENCHMARKS.md), so it is over the budget. ncdu has no limit on the number of
-  entries. A scan or an import that would add more stops with `Maximum number of entries exceeded.`
-  The offset of a name is a `usize`, so the names have no limit of their own.
+  of an id takes 4 bytes too. An entry takes 24 bytes, as a file without its name in ncdu: the block
+  count in 60 bits with the type and a flag for extended information in the same `u64`, as
+  `Entry.Packed` in `model.zig`, the apparent size, the next entry, and the low 32 bits of the
+  offset of its name. A name ends where the name of the next entry starts, so an entry stores no
+  name length and the names no NUL byte, and the tree keeps the first entry of each 4 GiB of names,
+  so the names have no limit of their own. The data of a directory (20 bytes, with its device
+  identifier in 30 bits and its two error flags, as `Dir.Packed`) and of a hard link (28 bytes, with
+  its link count in 31 bits and its counted flag, as `Link.Pack`) are in lists of their own, in the
+  order of their entries, so an entry finds its data by a binary search instead of storing its id.
+  The shared sizes of a directory, which only directories above a hard link with links elsewhere
+  have, are in a map, and the extended information of `-e` is in a list sorted by entry. The first
+  link to each inode is in a `hashbrown` table of link ids (4 bytes each), hashed by the device and
+  inode of the link with the random keys of the standard library, as an import chooses its inodes.
+  ncdu has no limit on the number of entries. A scan or an import that would add more stops with
+  `Maximum number of entries exceeded.`
 - **Threads: `std::thread` with one writer, unlike ncdu.** At `scan.zig:271-293`, each ncdu thread
   reads its directory entry by entry and reports every entry to the sink itself, so the sinks lock
   what threads share. With `-t` above 1, duit threads take directories from a mutex and condvar
