@@ -332,7 +332,7 @@ stored, and it runs in a protected `release` environment. The GitHub Release doe
 Trusted Publishing needs a crate that exists already, so `0.1.0` is published by hand with an API
 token. Each crate then gets a trusted publisher for `release.yml` and the `release` environment.
 
-Done when a release after `0.1.0` publishes all five crates from the workflow.
+Done when a release after `0.1.0` publishes all five crates from the workflow. Done.
 
 ### M8: Faster and smaller than ncdu
 

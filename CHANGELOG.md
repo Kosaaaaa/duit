@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1
+
+Released on 2026-11-28.
+
+The Release workflow publishes the five crates to crates.io with Trusted Publishing. The `duit` binary behaves as in 0.1.0.
+
 ## 0.1.0
 
 Released on 2026-11-28.
