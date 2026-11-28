@@ -202,8 +202,8 @@ Releases are built by [dist](https://axodotdev.github.io/cargo-dist/), configure
 `dist-workspace.toml`. The `Release` workflow builds static Linux binaries (musl) and macOS
 binaries, packs each with `LICENSE`, `README.md`, and `duit.1`, and attaches them to a GitHub
 Release together with a shell installer. Its release notes are the entry for the version in
-[CHANGELOG.md](CHANGELOG.md). A job of the same workflow publishes the five crates to crates.io, and
-the GitHub Release does not wait for it.
+[CHANGELOG.md](CHANGELOG.md). After the GitHub Release is created, a job of the same workflow
+publishes the five crates to crates.io.
 
 dist finds that entry by the version in its heading, such as `## 0.1.0`. Keep each paragraph and
 list item of an entry on one line, because GitHub renders every line break in the release notes.
@@ -225,7 +225,9 @@ To release a version, for example `0.1.0`:
    `gh workflow run release.yml -f tag=dry-run`.
 4. Run it with the tag on `master`: `gh workflow run release.yml -f tag=v0.1.0`. It creates the tag
    on the commit it ran on and the GitHub Release, and fails on any other branch or when the tag
-   exists already. Then it publishes the crates.
+   exists already. Then it publishes the crates. crates.io rejects a version it has already, so when
+   the job fails after some crates are published, a rerun fails too: publish the remaining crates by
+   hand from the tag with `cargo publish -p <crate>`.
 
 `.github/workflows/release.yml` is maintained by hand, so that it passes zizmor. A dist upgrade
 changes `cargo-dist-version` in `dist-workspace.toml` together with `DIST_INSTALLER_URL` and

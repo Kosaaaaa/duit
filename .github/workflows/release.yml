@@ -242,13 +242,10 @@ jobs:
           name: artifacts-dist-manifest
           path: dist-manifest.json
 
-  # `announce` does not wait for this job: a crates.io outage must not hold back the GitHub
-  # Release, and a partial publish cannot be retried, because crates.io rejects a version it already
-  # has.
   publish-crates:
     needs:
-      - host
-    if: ${{ always() && needs.host.result == 'success' }}
+      - announce
+    if: ${{ always() && needs.announce.result == 'success' }}
     runs-on: "ubuntu-22.04"
     environment:
       name: release
@@ -263,8 +260,7 @@ jobs:
         id: auth
       - name: "Install Rust toolchain"
         run: rustup toolchain install --profile minimal
-      # The `cargo publish` dry run in CI builds every crate, so this job skips the verify build.
-      - run: cargo publish --workspace --locked --no-verify
+      - run: cargo publish --workspace --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
