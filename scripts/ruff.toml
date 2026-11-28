@@ -38,11 +38,7 @@ select = [
   "FA",
 ]
 ignore = [
-  "E731",
-  "S101",
-  "B008",
   "ANN401",
-  "A005",
   "S603",
   # https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules
   "COM812",
@@ -59,9 +55,3 @@ ignore = [
 [lint.per-file-ignores]
 # lldb's SB API takes booleans as positional arguments.
 "order_file_lldb.py" = ["FBT003"]
-
-[lint.isort]
-combine-as-imports = true
-
-[lint.pylint]
-max-args = 8

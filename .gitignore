@@ -13,7 +13,6 @@ fuzz/coverage/
 __pycache__/
 *.py[cod]
 .ruff_cache/
-.venv/
 
 flamegraph.svg
 perf.data
