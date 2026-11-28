@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uvx --python ~=3.14.0 python
 """Compare the scan time and the peak memory of duit with those of ncdu 2.9.2.
 
 Builds duit with the release profile, generates a deterministic tree of about one million entries
@@ -6,8 +6,8 @@ in `target/benchmark/`, and runs each case with both programs and the same flags
 the time, and `/usr/bin/time` for the peak resident set size. Writes the results to
 `target/benchmark/results.md` as a Markdown table, the one in `BENCHMARKS.md`.
 
-Usage: `make bench` or `python3 scripts/benchmark.py --help`. Needs only the Python standard
-library, `hyperfine`, ncdu 2.9.2, and `/usr/bin/time`.
+Usage: `make bench` or `uvx --python '~=3.14.0' python scripts/benchmark.py --help`. Needs uv,
+`hyperfine`, ncdu 2.9.2, and `/usr/bin/time`, and only the standard library of Python 3.14.
 """
 
 import argparse

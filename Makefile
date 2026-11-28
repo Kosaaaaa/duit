@@ -6,6 +6,7 @@ ARGS ?=
 T ?=
 
 prettier := npx prettier@3.9.0
+python := uvx --python '~=3.14.0' python
 
 ci_version = $(call ci_version_once,$(1),$(shell sed -n 's/^  $(1): \([0-9][0-9A-Za-z.+-]*\)$$/\1/p' .github/workflows/ci.yml))
 ci_version_once = $(if $(filter 1,$(words $(2))),$(2),$(error $(1) not found exactly once in .github/workflows/ci.yml))
@@ -62,10 +63,10 @@ check: fmt-check clippy typos shear deny man ## Run the CI checks except zizmor 
 	cargo nextest run --workspace --locked --profile ci --cargo-profile fast-build
 
 bench: ## Compare scan time and peak memory with ncdu 2.9.2, see BENCHMARKS.md
-	python3 scripts/benchmark.py
+	$(python) scripts/benchmark.py
 
 order: ## Regenerate crates/duit/duit.order, the linker order file for macOS, see BENCHMARKS.md
-	python3 scripts/order_file.py
+	$(python) scripts/order_file.py
 
 tools: ## Install the tools that CI uses, at the versions that CI pins
 	cargo install --locked cargo-nextest@$(call ci_version,CARGO_NEXTEST_VERSION)

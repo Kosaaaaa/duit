@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uvx --python ~=3.14.0 python
 
 import json
 import os
