@@ -241,7 +241,8 @@ fn malformed() {
         br#""}]]"#,
     ]
     .concat();
-    let truncated = export(false, Some(3), tree);
+    let compressed = export(false, Some(3), tree);
+    let truncated = &compressed[..compressed.len() - 1];
     let cases: &[&[u8]] = &[
         b"abcdefgh",
         br#"[2,0,{},[{"name":"a"}]]"#,
@@ -288,14 +289,20 @@ fn malformed() {
         br#"[1,0,{},[{"name":"a"#,
         b"[1,0,{},\n[{\"name\":\"a\"},\n  {\"name\":\"b\",\r\n\t\"asize\":x}]]",
         b"\x28\xb5\x2f\xfdjunkjunk",
-        &truncated[..truncated.len() - 1],
+        truncated,
     ];
     let mut rendered = String::new();
     for &input in cases {
         let result = result(input);
         #[cfg(feature = "test-ncdu")]
         assert_eq!(ncdu_result(input), result, "input: {}", label(input));
-        let _ = writeln!(rendered, "{}\n  {result}", label(input));
+        // The compressed bytes change with the version that the header names.
+        let name = if input == truncated {
+            "truncated zstd export".to_string()
+        } else {
+            label(input)
+        };
+        let _ = writeln!(rendered, "{name}\n  {result}");
     }
     assert_snapshot!(rendered, @r#"
     abcdefgh
@@ -388,7 +395,7 @@ fn malformed() {
       4:11: expected number
     (�/�junkjunk
       1:1: decompression error
-    (�/�\0X�\n\0&\u{11}9-��I\u{7}��n�]�����o�nI�\'{\u{13}\u{2}k햛...
+    truncated zstd export
       1:1: decompression error
     "#);
 }
