@@ -1,10 +1,3 @@
-//! Links the `duit` binary with `duit.order` on Apple targets.
-//!
-//! The order file lists the functions that the streaming paths run, so that the Apple linker lays
-//! them out next to each other and these paths keep fewer pages of code resident. The linker skips
-//! the names that it does not find, so a build whose symbol names differ, with another toolchain
-//! or other versions of the crates, links as without the file. `scripts/order_file.py` writes it.
-
 use std::env;
 use std::path::Path;
 

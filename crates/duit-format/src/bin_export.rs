@@ -248,8 +248,6 @@ impl<W: Write> BinaryExport<W> {
         if let Some(number) = self.block_number
             && !self.buffer.is_empty()
         {
-            // The frame is compressed into the block, as ncdu does, so that no second copy of it
-            // is in memory while the block is written.
             let start = HEADER_LENGTH + NUMBER_LENGTH;
             let bound = compress_bound(self.buffer.len());
             let mut block = vec![0; start + bound + FOOTER_LENGTH];
