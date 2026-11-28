@@ -2,6 +2,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import lldb
 
@@ -12,14 +13,14 @@ def record_entry(
     frame: lldb.SBFrame,
     location: lldb.SBBreakpointLocation,
     extra_args: lldb.SBStructuredData,
-    internal_dict: dict,
+    internal_dict: dict[str, Any],
 ) -> bool:
     entered.append(frame.GetSymbol().GetStartAddress().GetFileAddress())
     location.SetEnabled(False)
     return False
 
 
-def __lldb_init_module(debugger: lldb.SBDebugger, internal_dict: dict) -> None:
+def __lldb_init_module(debugger: lldb.SBDebugger, internal_dict: dict[str, Any]) -> None:
     target = debugger.CreateTarget(os.environ["ORDER_FILE_BINARY"])
     for symbol in target.GetModuleAtIndex(0):
         if symbol.GetType() == lldb.eSymbolTypeCode and symbol.GetStartAddress().IsValid():

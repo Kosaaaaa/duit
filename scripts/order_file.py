@@ -66,7 +66,7 @@ def text_functions_by_address(map_path: Path) -> dict[int, str]:
         elif (
             section == "# Symbols:"
             and len(fields) == SYMBOL_FIELDS
-            and text
+            and text is not None
             and int(fields[0], 16) in text
         ):
             functions[int(fields[0], 16)] = fields[2].split("] ", 1)[1]
