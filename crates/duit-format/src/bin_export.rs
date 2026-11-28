@@ -6,6 +6,7 @@ use std::io::{self, Write};
 
 use duit_model::{EntryType, Sink, Special, Stat};
 use zstd::bulk::Compressor;
+use zstd::zstd_safe::compress_bound;
 
 use crate::bin_format::{
     BLOCK_LENGTH_BITS, BlockPosition, DATA_BLOCK, FOOTER_LENGTH, HEADER_LENGTH,
@@ -247,14 +248,18 @@ impl<W: Write> BinaryExport<W> {
         if let Some(number) = self.block_number
             && !self.buffer.is_empty()
         {
-            let compressed = self.compressor.compress(&self.buffer)?;
-            let length = HEADER_LENGTH + NUMBER_LENGTH + compressed.len() + FOOTER_LENGTH;
+            let start = HEADER_LENGTH + NUMBER_LENGTH;
+            let bound = compress_bound(self.buffer.len());
+            let mut block = vec![0; start + bound + FOOTER_LENGTH];
+            let compressed = self
+                .compressor
+                .compress_to_buffer(&self.buffer, &mut block[start..start + bound])?;
+            let length = start + compressed + FOOTER_LENGTH;
+            block.truncate(length);
             let header = block_header(DATA_BLOCK, length)?;
-            let mut block = Vec::with_capacity(length);
-            block.extend_from_slice(&header);
-            block.extend_from_slice(&number.to_be_bytes());
-            block.extend_from_slice(&compressed);
-            block.extend_from_slice(&header);
+            block[..HEADER_LENGTH].copy_from_slice(&header);
+            block[HEADER_LENGTH..start].copy_from_slice(&number.to_be_bytes());
+            block[start + compressed..].copy_from_slice(&header);
             if self.file_offset >= 1 << 40 {
                 return Err(BinaryExportError::FileTooLarge.into());
             }

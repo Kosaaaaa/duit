@@ -122,6 +122,15 @@ def stamp():
     )
 
 
+def prepare_tree():
+    WORK.mkdir(parents=True, exist_ok=True)
+    if not STAMP.exists() or STAMP.read_text() != stamp():
+        print(f"Generating {TREE}", file=sys.stderr)
+        STAMP.unlink(missing_ok=True)
+        generate()
+        STAMP.write_text(stamp())
+
+
 def run(command, **kwargs):
     print("+ " + shlex.join(str(part) for part in command), file=sys.stderr)
     return subprocess.run([str(part) for part in command], check=True, **kwargs)
@@ -210,12 +219,7 @@ def main():
         sys.exit("hyperfine is required: https://github.com/sharkdp/hyperfine")
 
     run(["cargo", "build", "--release", "--locked", "--bin", "duit"], cwd=ROOT)
-    WORK.mkdir(parents=True, exist_ok=True)
-    if not STAMP.exists() or STAMP.read_text() != stamp():
-        print(f"Generating {TREE}", file=sys.stderr)
-        STAMP.unlink(missing_ok=True)
-        generate()
-        STAMP.write_text(stamp())
+    prepare_tree()
 
     programs = {"ncdu": [arguments.ncdu], "duit": [str(DUIT)]}
     common = ["--ignore-config", "-0"]
