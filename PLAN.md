@@ -345,6 +345,34 @@ Done when `make bench` shows a time ratio and a peak memory ratio below 1.00 in 
 that cannot close without `unsafe` code or without a change to the output is documented in
 BENCHMARKS.md, with the profile that shows its cause, and leaves M8 open.
 
+### M9: Homebrew from CI
+
+A `publish-homebrew` job in the Release workflow pushes a formula for the prebuilt binaries to the
+tap `Kosaaaaa/homebrew-tap`, so `brew install kosaaaaa/tap/duit` installs duit on macOS and Linux.
+dist writes the formula: `installers` in `dist-workspace.toml` gets `homebrew`, with a `tap`, and
+`build-global-artifacts` then builds `duit.rb` with the URL and the SHA-256 of each archive. The job
+is written by hand with pinned actions, like the rest of `release.yml`. The job that `dist generate`
+writes runs before `announce`, but the archives are uploaded only when `announce` creates the GitHub
+Release, so a formula pushed earlier points at missing files, and stays broken if `announce` fails.
+
+`publish-crates` and `publish-homebrew` both need `announce` and nothing else, and run side by side
+in the protected `release` environment, so one approval starts both. Neither the GitHub Release nor
+the other job waits for one of them. A failed `publish-homebrew` runs again alone with
+`gh run rerun --failed`, and a rerun after the formula was pushed commits nothing and succeeds. The
+job pushes with a deploy key of the tap, stored as a secret of the `release` environment.
+
+dist's formula installs `duit` and puts the other files of the archive in `share/duit`, so the job
+adds a line to the formula that installs `duit.1` as a man page. dist has no option for a man page,
+and the edit relies on the formula of the dist version that the workflow pins. The job runs on
+macOS. Homebrew installs a formula only from a tap, so before it pushes, the job commits the formula
+to its checkout of the tap, taps that checkout, and installs duit from it. It checks that the
+formula has a SHA-256 for each archive and that `duit --version` and `man -w duit` work. The tap
+repository and its deploy key are created by hand before the first release, as the first crates were
+published by hand for M7.
+
+Done when one run of the Release workflow for a release after `0.1.1` publishes all five crates and
+the formula, and `brew install kosaaaaa/tap/duit` then installs that version with its man page.
+
 M1 comes first because it has no UI: its output can be compared with ncdu's by a machine from the
 first day.
 
