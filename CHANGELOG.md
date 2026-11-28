@@ -1,15 +1,8 @@
 # Changelog
 
-## 0.2.0
-
-Not released yet.
-
-- Rename `Tree::create_directory` to `Tree::prepend_directory` and `Tree::create` to `Tree::prepend_file` in `duit-model`. This breaks code that calls the old names.
-- Export `is_event_count` from `duit-model` and `CLEAR_TO_END` from `duit-tui`.
-
 ## 0.1.0
 
-Released on 2026-11-26.
+Released on 2026-11-28.
 
 The first release of duit, a drop-in replacement for ncdu 2.9.2 with the same flags, keys, config files, and export formats.
 
