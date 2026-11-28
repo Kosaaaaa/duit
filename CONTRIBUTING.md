@@ -69,6 +69,16 @@ python3 scripts/benchmark.py
 The results go to `target/benchmark/results.md`. [BENCHMARKS.md](BENCHMARKS.md) records the last
 run.
 
+On macOS, `crates/duit/build.rs` links the `duit` binary with `crates/duit/duit.order`, which puts
+the functions of the streaming paths next to each other, so these paths keep fewer pages of code
+resident. The file lists symbol names, which change with the code, the versions of the crates, and
+the toolchain, and the linker skips the names that it does not find. Regenerate it with lldb before
+a benchmark run or a release, and commit it:
+
+```shell
+make order
+```
+
 ### Fuzzing
 
 The `fuzz/` directory holds [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) targets for the

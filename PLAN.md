@@ -228,6 +228,13 @@ The `duit` crate follows the uv layout: a library plus `src/bin/duit.rs`. The bi
   in the last name of the path.
 - **Panics: the terminal is restored from the panic hook.** The release profile uses
   `panic = "abort"`, so `Drop` guards do not run.
+- **Code layout: a linker order file on macOS.** `crates/duit/build.rs` passes
+  `crates/duit/duit.order` to the Apple linker, so the functions of the streaming paths lie on a few
+  pages and their peak memory stays below ncdu's (M8). `scripts/order_file.py` writes the file from
+  the functions that lldb sees each path enter. Its names hold the hash of each crate, so the file
+  goes stale silently with a change to the code, the crate versions, or the toolchain, and
+  `make order` rewrites it. The linker skips the names that it does not find, so a stale file never
+  fails a build. Other linkers get no order.
 - **`unsafe`: `#[expect(unsafe_code)]` plus a `SAFETY` comment.** The workspace lint warns on
   `unsafe`, and CI denies warnings.
 

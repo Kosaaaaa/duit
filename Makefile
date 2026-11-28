@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 .PHONY: help build run test test-one test-ncdu snapshots fmt fmt-check clippy typos shear deny \
-	man check bench tools hooks doc clean
+	man check bench order tools hooks doc clean
 
 ARGS ?=
 T ?=
@@ -63,6 +63,9 @@ check: fmt-check clippy typos shear deny man ## Run the CI checks except zizmor 
 
 bench: ## Compare scan time and peak memory with ncdu 2.9.2, see BENCHMARKS.md
 	python3 scripts/benchmark.py
+
+order: ## Regenerate crates/duit/duit.order, the linker order file for macOS, see BENCHMARKS.md
+	python3 scripts/order_file.py
 
 tools: ## Install the tools that CI uses, at the versions that CI pins
 	cargo install --locked cargo-nextest@$(call ci_version,CARGO_NEXTEST_VERSION)

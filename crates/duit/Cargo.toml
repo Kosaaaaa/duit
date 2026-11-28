@@ -9,7 +9,14 @@ authors = { workspace = true }
 license = { workspace = true }
 keywords = ["ncdu", "disk-usage", "du", "tui", "cli"]
 categories = ["command-line-utilities", "filesystem"]
-include = ["/src", "/LICENSE", "/README.md", "/duit.1"]
+include = [
+  "/src",
+  "/build.rs",
+  "/duit.order",
+  "/LICENSE",
+  "/README.md",
+  "/duit.1",
+]
 
 [lib]
 doctest = false
