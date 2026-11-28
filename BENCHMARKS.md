@@ -33,8 +33,8 @@ Every command starts with `--ignore-config -0`, and both programs get the same f
 
 ## Rerun
 
-With [uv](https://docs.astral.sh/uv/), [hyperfine](https://github.com/sharkdp/hyperfine), and ncdu
-2.9.2 on `PATH`:
+With [uv](https://docs.astral.sh/uv/), [hyperfine](https://github.com/sharkdp/hyperfine), ncdu 2.9.2
+on `PATH`, and `/usr/bin/time` (GNU time on Linux):
 
 ```shell
 make bench

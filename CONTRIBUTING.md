@@ -59,8 +59,8 @@ crates/duit/tests/fixtures/generate.sh
 
 `scripts/benchmark.py` compares the scan time and the peak memory of a release build of duit with
 those of ncdu 2.9.2, on a generated tree of about one million entries. It needs
-[uv](https://docs.astral.sh/uv/), [hyperfine](https://github.com/sharkdp/hyperfine), and ncdu 2.9.2
-on `PATH` (or `--ncdu PATH`), and takes about 20 minutes:
+[uv](https://docs.astral.sh/uv/), [hyperfine](https://github.com/sharkdp/hyperfine), ncdu 2.9.2 on
+`PATH` (or `--ncdu PATH`), and `/usr/bin/time` (GNU time on Linux), and takes about 20 minutes:
 
 ```shell
 uvx --python '~=3.14.0' python scripts/benchmark.py
